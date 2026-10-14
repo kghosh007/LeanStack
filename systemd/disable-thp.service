@@ -1,0 +1,12 @@
+[Unit]
+Description=Disable Transparent Huge Pages (THP) for MariaDB & Valkey Performance
+DefaultDependencies=no
+After=sysinit.target local-fs.target
+Before=mariadb.service valkey.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null && echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true'
+
+[Install]
+WantedBy=basic.target

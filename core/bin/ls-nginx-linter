@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""
+LeanStack Nginx Configuration & Security Headers Linter (cp-nginx-linter)
+Enforces multi-tenant sandbox constraints, AST/token isolation, and WebAssembly CSP rules.
+"""
+
+import sys
+import os
+import re
+import json
+import argparse
+
+PROHIBITED_DIRECTIVES = {
+    "user", "include", "listen", "server_name", "ssl_certificate",
+    "ssl_certificate_key", "ssl_trusted_certificate", "ssl_dhparam",
+    "access_by_lua", "content_by_lua", "rewrite_by_lua", "init_by_lua",
+    "init_worker_by_lua", "header_filter_by_lua", "body_filter_by_lua",
+    "log_by_lua", "lua_package_path", "lua_package_cpath",
+    "client_body_temp_path", "proxy_temp_path", "fastcgi_temp_path",
+    "uwsgi_temp_path", "scgi_temp_path", "perl", "perl_modules",
+    "perl_require", "load_module", "daemon", "master_process",
+    "worker_processes", "worker_cpu_affinity", "worker_rlimit_nofile",
+    "events", "http", "stream", "mail"
+}
+
+FORBIDDEN_PROXY_TARGETS = [
+    r"127\.0\.0\.1",
+    r"localhost",
+    r"0\.0\.0\.0",
+    r"169\.254\.169\.254",   # Cloud Instance Metadata
+    r"10\.\d+\.\d+\.\d+",
+    r"172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+",
+    r"192\.168\.\d+\.\d+",
+    r"\[::1\]"
+]
+
+def lint_headers(filepath, strict_csp=False):
+    """Lints security-headers.conf to ensure only safe add_header directives exist."""
+    if not os.path.exists(filepath):
+        return {"valid": False, "error": f"File not found: {filepath}", "line": 0}
+
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+
+    csp_found = False
+    csp_has_worker_blob = False
+
+    for idx, raw_line in enumerate(lines, 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if not line.endswith(";"):
+            return {
+                "valid": False,
+                "error": f"Line {idx}: Missing terminating semicolon ';'.",
+                "line": idx
+            }
+
+        tokens = line[:-1].strip().split()
+        if not tokens:
+            continue
+
+        directive = tokens[0].lower()
+        if directive != "add_header":
+            return {
+                "valid": False,
+                "error": f"Line {idx}: Unauthorized directive '{directive}'. Only 'add_header' is allowed in security headers.",
+                "line": idx
+            }
+
+        # Check for matching quotes
+        rest = " ".join(tokens[1:])
+        quote_count_single = rest.count("'")
+        quote_count_double = rest.count('"')
+        if quote_count_single % 2 != 0 or quote_count_double % 2 != 0:
+            return {
+                "valid": False,
+                "error": f"Line {idx}: Unmatched quotes in add_header directive.",
+                "line": idx
+            }
+
+        # Inspect Content-Security-Policy
+        if len(tokens) >= 2 and tokens[1].lower().strip('"\'') == "content-security-policy":
+            csp_found = True
+            csp_text = line.lower()
+            if "worker-src" in csp_text:
+                if "blob:" in csp_text:
+                    csp_has_worker_blob = True
+            else:
+                # If worker-src isn't explicitly set, check default-src
+                if "default-src" in csp_text and "blob:" in csp_text:
+                    csp_has_worker_blob = True
+
+    if csp_found and not csp_has_worker_blob:
+        msg = "Content-Security-Policy detected without 'worker-src ... blob:;'. WebAssembly client-side media requires 'worker-src \\'self\\' blob:;'."
+        if strict_csp:
+            return {"valid": False, "error": msg, "line": 0}
+
+    return {"valid": True, "message": "Security headers verified successfully."}
+
+
+def lint_rules(filepath, tenant_user=None):
+    """Lints custom-early.conf and custom-rules.conf for multi-tenant safety."""
+    if not os.path.exists(filepath):
+        return {"valid": False, "error": f"File not found: {filepath}", "line": 0}
+
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+
+    brace_depth = 0
+
+    for idx, raw_line in enumerate(lines, 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        # Track brace balance
+        brace_depth += line.count("{") - line.count("}")
+        if brace_depth < 0:
+            return {"valid": False, "error": f"Line {idx}: Unexpected closing brace '}}'.", "line": idx}
+
+        # Check prohibited directives anywhere in the line
+        for prohibited in PROHIBITED_DIRECTIVES:
+            if re.search(r"\b" + prohibited + r"\b", line):
+                return {
+                    "valid": False,
+                    "error": f"Line {idx}: Directive '{prohibited}' is strictly prohibited for tenant security.",
+                    "line": idx
+                }
+
+        # Check path traversal in root / alias
+        for d in ("root", "alias"):
+            m_path = re.search(r"\b" + d + r"\s+([^;]+);", line)
+            if m_path:
+                target_path = m_path.group(1).strip("\"'")
+                if ".." in target_path:
+                    return {
+                        "valid": False,
+                        "error": f"Line {idx}: Directory traversal '..' is prohibited in {d}.",
+                        "line": idx
+                    }
+                if tenant_user:
+                    expected_prefix = f"/home/{tenant_user}/htdocs"
+                    if not target_path.startswith(expected_prefix):
+                        return {
+                            "valid": False,
+                            "error": f"Line {idx}: Directive {d} path must stay within {expected_prefix}.",
+                            "line": idx
+                        }
+                else:
+                    for sys_dir in ("/etc", "/var", "/proc", "/sys", "/bin", "/usr", "/root", "/tmp"):
+                        if target_path == sys_dir or target_path.startswith(sys_dir + "/"):
+                            return {
+                                "valid": False,
+                                "error": f"Line {idx}: Directive {d} cannot target system path '{sys_dir}'.",
+                                "line": idx
+                            }
+
+        # Check fastcgi_pass socket binding
+        m_fcgi = re.search(r"\bfastcgi_pass\s+([^;]+);", line)
+        if m_fcgi:
+            target = m_fcgi.group(1).strip("\"'")
+            if tenant_user and not target.endswith(f"-{tenant_user}.sock"):
+                return {
+                    "valid": False,
+                    "error": f"Line {idx}: fastcgi_pass can only reference Unix socket for tenant '{tenant_user}'.",
+                    "line": idx
+                }
+            for forb in FORBIDDEN_PROXY_TARGETS:
+                if re.search(forb, target, re.IGNORECASE):
+                    return {
+                        "valid": False,
+                        "error": f"Line {idx}: fastcgi_pass cannot proxy to internal host '{target}'.",
+                        "line": idx
+                    }
+
+        # Check proxy_pass internal IP targets
+        m_proxy = re.search(r"\bproxy_pass\s+([^;]+);", line)
+        if m_proxy:
+            target = m_proxy.group(1).strip("\"'")
+            for forb in FORBIDDEN_PROXY_TARGETS:
+                if re.search(forb, target, re.IGNORECASE):
+                    return {
+                        "valid": False,
+                        "error": f"Line {idx}: proxy_pass cannot target internal or metadata host '{target}'.",
+                        "line": idx
+                    }
+
+    if brace_depth != 0:
+        return {"valid": False, "error": f"Unbalanced braces detected (depth: {brace_depth}).", "line": len(lines)}
+
+    return {"valid": True, "message": "Tenant custom rules verified successfully."}
+
+
+def lint_cache(filepath):
+    """Lints cache-config.conf to ensure only safe set $site_cache_enabled and set $site_cache_ttl directives exist."""
+    if not os.path.exists(filepath):
+        return {"valid": False, "error": f"File not found: {filepath}", "line": 0}
+
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+
+    for idx, raw_line in enumerate(lines, 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if not line.endswith(";"):
+            return {"valid": False, "error": f"Line {idx}: Missing terminating semicolon ';'.", "line": idx}
+
+        # Validate allowed variables
+        m_enabled = re.match(r"^set\s+\$site_cache_enabled\s+[01];$", line)
+        m_ttl = re.match(r"^set\s+\$site_cache_ttl\s+[0-9]+[smhd]?;$", line)
+        if not m_enabled and not m_ttl:
+            return {
+                "valid": False,
+                "error": f"Line {idx}: Unauthorized directive in cache-config.conf. Only 'set $site_cache_enabled 0|1;' and 'set $site_cache_ttl <duration>;' are allowed.",
+                "line": idx
+            }
+
+    return {"valid": True, "message": "Cache configuration verified successfully."}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="LeanStack Nginx Configuration & Security Headers Linter")
+    parser.add_argument("file", help="Path to Nginx configuration file to validate")
+    parser.add_argument("--mode", choices=["auto", "rules", "headers", "cache"], default="auto", help="Validation mode")
+    parser.add_argument("--user", default=None, help="Tenant username for path/socket isolation checks")
+    parser.add_argument("--strict-csp", action="store_true", help="Reject CSP without WebAssembly blob: worker-src")
+    args = parser.parse_args()
+
+    mode = args.mode
+    if mode == "auto":
+        base = os.path.basename(args.file)
+        if base == "security-headers.conf":
+            mode = "headers"
+        elif base == "cache-config.conf":
+            mode = "cache"
+        else:
+            mode = "rules"
+
+    if mode == "headers":
+        result = lint_headers(args.file, strict_csp=args.strict_csp)
+    elif mode == "cache":
+        result = lint_cache(args.file)
+    else:
+        result = lint_rules(args.file, tenant_user=args.user)
+
+    print(json.dumps(result, indent=2))
+    sys.exit(0 if result["valid"] else 1)
+
+
+if __name__ == "__main__":
+    main()

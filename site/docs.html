@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+
+<html class="dark scroll-smooth" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="text/html; charset=utf-8" http-equiv="Content-Type"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>LeanStack Documentation &amp; Operations Manual</title>
+<!-- Favicons & Touch Icons -->
+<link href="assets/img/favicon.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/img/favicon-32x32.png" rel="alternate icon" sizes="32x32" type="image/png"/>
+<link href="assets/img/favicon-16x16.png" rel="alternate icon" sizes="16x16" type="image/png"/>
+<link href="assets/img/favicon.ico" rel="shortcut icon"/>
+<link href="assets/img/apple-touch-icon.png" rel="apple-touch-icon" sizes="180x180"/>
+<meta content="Comprehensive operations manual and CLI reference for LeanStack: lsctl commands, self-hosting guide, hardware auto-tuning, in-house cron queue management, caching invalidation, and automated fleet upgrades." name="description"/>
+<meta content="LeanStack documentation, lsctl CLI reference, self host WordPress engine, Ubuntu WordPress VPS guide, MariaDB tuning command, FastCGI cache invalidation, Angie configuration gatekeeper, wp-cron queue manager, WordPress server migration" name="keywords"/>
+<meta content="Kuntal Ghosh" name="author"/>
+<meta content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" name="robots"/>
+<link href="https://leanstack.kuntalghosh.dev/docs.html" rel="canonical"/>
+<!-- OpenGraph / Facebook -->
+<meta content="article" property="og:type"/>
+<meta content="https://leanstack.kuntalghosh.dev/docs.html" property="og:url"/>
+<meta content="LeanStack" property="og:site_name"/>
+<meta content="Documentation — LeanStack Operations &amp; CLI Reference" property="og:title"/>
+<meta content="Official operations manual and lsctl CLI reference. Step-by-step guides for site provisioning, zero-downtime upgrades, security sandboxing, and inotify gatekeeper config." property="og:description"/>
+<meta content="https://leanstack.kuntalghosh.dev/assets/images/og-card.png" property="og:image"/>
+<!-- Twitter / X -->
+<meta content="summary_large_image" name="twitter:card"/>
+<meta content="https://leanstack.kuntalghosh.dev/docs.html" name="twitter:url"/>
+<meta content="Documentation — LeanStack Operations &amp; CLI Reference" name="twitter:title"/>
+<meta content="Operations manual and lsctl CLI command reference for LeanStack autonomous WordPress hosting engine." name="twitter:description"/>
+<meta content="https://leanstack.kuntalghosh.dev/assets/images/og-card.png" name="twitter:image"/>
+<!-- Schema.org TechArticle & BreadcrumbList JSON-LD -->
+<script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "TechArticle",
+        "@id": "https://leanstack.kuntalghosh.dev/docs.html#article",
+        "headline": "LeanStack Operations Manual & lsctl CLI Reference",
+        "description": "Comprehensive reference and technical guides for installing, administering, and upgrading LeanStack high-density WordPress infrastructure.",
+        "author": {
+          "@type": "Person",
+          "name": "Kuntal Ghosh",
+          "url": "https://kuntalghosh.dev"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "LeanStack",
+          "url": "https://leanstack.kuntalghosh.dev"
+        },
+        "mainEntityOfPage": "https://leanstack.kuntalghosh.dev/docs.html"
+      },
+      {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "Home",
+            "item": "https://leanstack.kuntalghosh.dev/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "Documentation",
+            "item": "https://leanstack.kuntalghosh.dev/docs.html"
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+<!-- Precision Typography: Inter & JetBrains Mono -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<!-- Pre-compiled, Purged & Minified Stylesheet (Zero Runtime CDN Overhead) -->
+<link href="assets/css/styles.min.css" rel="stylesheet"/>
+</head>
+<body class="bg-[#161413] text-[#F7F3F2] antialiased selection:bg-[#F72B00] selection:text-white">
+<!-- Skip to Main Content Accessibility Landmark -->
+<a class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#F72B00] focus:text-white focus:rounded-md focus:shadow-lg focus:outline-none" href="#main-content">Skip to main content</a>
+<!-- Toast Notification -->
+<div id="toast-notification">
+<svg class="w-4 h-4 text-[#00D084] flex-shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path>
+</svg>
+<span class="text-xs font-medium text-[#F7F3F2]" id="toast-message">Copied to clipboard!</span>
+</div>
+<!-- Announcement Bar -->
+<aside aria-label="Announcement" class="relative z-50 border-b border-[#332F2C] bg-[#110F0E] text-xs py-2.5 px-4 text-center text-[#A9A6A5]">
+<div class="max-w-editorial mx-auto flex items-center justify-center gap-2 flex-wrap">
+<span class="badge-pill badge-vermilion py-0.5 px-2.5">v1.2.0 Hyperion</span>
+<span class="text-[#F7F3F2] font-medium">Engineered for Ubuntu 22.04, 24.04 &amp; 26.04 LTS (x86_64).</span>
+<span class="hidden md:inline text-[#9E9A98]">•</span>
+<a class="text-[#F72B00] hover:text-[#FF6900] underline underline-offset-4 hidden md:inline" href="index.html#roadmap">View Public Release Roadmap →</a>
+</div>
+</aside>
+<!-- Sticky Editorial Navigation -->
+<header class="sticky top-0 z-40 border-b border-[#332F2C] bg-[#161413]/90 backdrop-blur-md">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+<!-- Brand Logo -->
+<a class="flex items-center gap-3.5 group" href="index.html">
+<div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#F72B00] to-[#CC1B02] p-0.5 shadow-[0_4px_16px_rgba(247,43,0,0.25)] group-hover:shadow-[0_6px_22px_rgba(247,43,0,0.4)] transition">
+<div class="w-full h-full bg-[#161413] rounded-[10px] flex items-center justify-center">
+<svg class="w-6 h-6 text-[#F72B00]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M4 6h16M4 12h11M4 18h7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path>
+<circle cx="18" cy="18" fill="#FF6900" r="2.5" stroke="none"></circle>
+</svg>
+</div>
+</div>
+<div class="flex flex-col">
+<span class="text-xl font-bold text-[#F7F3F2] tracking-tight">LeanStack</span>
+<span class="text-[11px] text-[#9E9A98] font-normal -mt-1">Autonomous WordPress Engine</span>
+</div>
+</a>
+<!-- Desktop Nav Links -->
+<nav class="hidden md:flex items-center gap-7 text-sm font-medium">
+<a aria-label="Architecture Specifications Page" class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="features.html">Architecture</a>
+<a class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="index.html#benchmarks">Benchmarks</a>
+<a class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="index.html#features">Features</a>
+<a class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="index.html#transparency">Transparency</a>
+<a class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="index.html#roadmap">Roadmap</a>
+<a aria-label="Documentation Manual Page" class="text-[#F72B00] font-semibold transition" href="docs.html">Documentation</a>
+</nav>
+<!-- Quick Action -->
+<div class="hidden md:flex items-center gap-3">
+<a class="btn-vermilion text-xs py-2 px-4" href="index.html#quickstart">
+<span>Install Command</span>
+<span class="font-bold">→</span>
+</a>
+</div>
+<!-- Mobile Menu Button -->
+<div class="md:hidden flex items-center">
+<button aria-label="Toggle navigation menu" class="p-2 rounded-lg bg-[#1E1B19] border border-[#332F2C] text-[#F7F3F2]" id="mobile-menu-toggle" type="button">
+<svg class="w-6 h-6" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</button>
+</div>
+</div>
+<!-- Mobile Nav Drawer -->
+<div class="hidden md:hidden border-b border-[#332F2C] bg-[#161413] px-4 pt-4 pb-6 space-y-3" id="mobile-menu">
+<a aria-label="Mobile Menu: Architecture Blueprint" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="features.html">Architecture Blueprint</a>
+<a aria-label="Mobile Menu: Benchmark Matrix" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="index.html#benchmarks">Benchmark Matrix</a>
+<a aria-label="Mobile Menu: Feature Catalog" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="index.html#features">Feature Catalog</a>
+<a aria-label="Mobile Menu: Technical Transparency" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="index.html#transparency">Technical Transparency</a>
+<a aria-label="Mobile Menu: Engineering Roadmap" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="index.html#roadmap">Engineering Roadmap</a>
+<a aria-label="Mobile Menu: Operations Docs" class="block py-2 text-[#F72B00] font-medium" href="docs.html">Operations Docs</a>
+</div>
+</header>
+<!-- DOCS CONTAINER -->
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8 py-10">
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
+<!-- LEFT SIDEBAR / TABLE OF CONTENTS -->
+<aside class="lg:col-span-3 sticky top-28 max-h-[calc(100vh-8rem)] overflow-y-auto pr-3 pb-8">
+<!-- Live Search Box -->
+<div class="mb-6">
+<label class="sr-only" for="doc-search">Search Documentation</label>
+<div class="relative">
+<input class="w-full bg-[#110F0E] border border-[#332F2C] rounded-lg py-2 pl-9 pr-3 text-xs text-[#F7F3F2] placeholder-[#7A7674] focus:outline-none focus:border-[#F72B00] transition" id="doc-search" placeholder="Search operations, commands..." type="text"/>
+<svg class="w-4 h-4 text-[#9E9A98] absolute left-2.5 top-2.5" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<!-- Navigation Links -->
+<div class="space-y-6 text-xs">
+<div>
+<div class="font-bold text-[#F72B00] uppercase tracking-wider text-[11px] mb-2 font-mono">Getting Started</div>
+<div class="space-y-1">
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#1-architecture-overview">1. Architecture Overview</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#2-installation-methods">2. Installation &amp; Self-Hosting</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#9E9A98] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition pl-4" href="#self-hosting-guide">↳ Self-Hosting &amp; Fleet Automation</a>
+</div>
+</div>
+<div>
+<div class="font-bold text-[#FF6900] uppercase tracking-wider text-[11px] mb-2 font-mono">Control Plane (lsctl)</div>
+<div class="space-y-1">
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#3-master-cli-reference">3. Master CLI (lsctl) Reference</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#4-operational-profiles">4. Operational Agency Profiles</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#5-caching-tier">5. Caching &amp; SSI Invalidation</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#6-security-tenant-rules">6. POSIX Sandboxing &amp; Inotify</a>
+</div>
+</div>
+<div>
+<div class="font-bold text-[#00D084] uppercase tracking-wider text-[11px] mb-2 font-mono">Fleet Operations</div>
+<div class="space-y-1">
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#7-scheduled-tasks">7. In-House Cron &amp; Systemd Timers</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#8-fleet-upgrade">8. Autonomous Fleet Upgrades</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#9-disaster-recovery">9. SQLite Backups &amp; Recovery</a>
+<a class="doc-sidebar-link flex items-center py-1.5 px-2 rounded text-[#A9A6A5] hover:text-[#F7F3F2] hover:bg-[#1E1B19] transition" href="#10-troubleshooting">10. Emergency Diagnostics</a>
+</div>
+</div>
+</div>
+</aside>
+<!-- MAIN DOCUMENTATION CONTENT -->
+<main id="main-content" role="main" class="lg:col-span-9 doc-content bg-[#1E1B19]/50 p-6 sm:p-10 rounded-2xl border border-[#332F2C]">
+<!-- HEADER -->
+<div class="border-b border-[#332F2C] pb-6 mb-10">
+<div class="flex flex-wrap items-center gap-2 mb-3">
+<span class="badge-pill badge-vermilion">Documentation v1.2.0 Hyperion</span>
+<span class="badge-pill badge-emerald">Ubuntu 22.04, 24.04 &amp; 26.04 LTS (x86_64)</span>
+</div>
+<h1 class="text-3xl sm:text-4xl font-bold text-[#F7F3F2] tracking-tight">LeanStack Production Operations Manual</h1>
+<p class="text-sm text-[#A9A6A5] mt-2 leading-relaxed">
+            The authoritative reference for deploying, operating, caching, sandboxing, and upgrading high-density WordPress infrastructure with <code class="text-[#F7F3F2] font-mono">lsctl</code>.
+          </p>
+</div>
+<!-- SECTION 1 -->
+<section class="doc-section scroll-mt-28" id="1-architecture-overview">
+<h2>1. Architecture Overview &amp; Ground-Up Thinking</h2>
+<p>
+            LeanStack discards legacy control panel paradigms. Instead of running persistent, memory-heavy background daemons in Java, Node.js, or Ruby that consume 1.5GB to 3GB of RAM before hosting a single website, LeanStack is built as an <strong>event-driven, decoupled control engine</strong>.
+          </p>
+<p>
+            The control plane (<code class="text-[#F7F3F2] font-mono">lsctl</code>) operates with an idle footprint of <strong>less than 15 MB RAM</strong> using SQLite in WAL mode. This guarantees that virtually 100% of your host's physical RAM is reserved for what actually drives your business: MariaDB buffer pools, Valkey object caching, and high-concurrency PHP workers.
+          </p>
+<div class="callout callout-info">
+<strong class="text-[#F72B00]">Why Sub-15MB RAM Changes Everything:</strong>
+            On a 4GB VPS, conventional panels steal up to 40% of the server's memory for their own administrative web GUI. Under LeanStack, that entire 4GB belongs to your WordPress workloads, easily tripling your concurrent tenant density without degrading Time-to-First-Byte (TTFB).
+          </div>
+</section>
+<!-- SECTION 2 -->
+<section class="doc-section scroll-mt-28" id="2-installation-methods">
+<h2>2. Installation &amp; Self-Hosting Guide</h2>
+<h3>2.1 Server Prerequisites</h3>
+<p>LeanStack is strictly verified for modern production cloud VPS and dedicated servers satisfying:</p>
+<ul>
+<li><strong>Operating System:</strong> Clean, minimal installation of <strong>Ubuntu 22.04 LTS</strong>, <strong>Ubuntu 24.04 LTS</strong>, or <strong>Ubuntu 26.04 LTS</strong> (x86_64 architecture).</li>
+<li><strong>CPU:</strong> 1 vCPU minimum (2+ vCPUs strongly recommended for production multi-tenant environments).</li>
+<li><strong>RAM:</strong> 1 GB minimum (2+ GB recommended for WooCommerce or high-traffic sites).</li>
+<li><strong>Network Ports:</strong> Port <code>22</code> (SSH), Port <code>80</code> (HTTP), and Port <code>443</code> (both TCP and UDP for HTTP/3 QUIC) must be open in your cloud provider's firewall.</li>
+</ul>
+<h3>2.2 Method A: 1-Line Hosted Bootstrap (Recommended)</h3>
+<p>On your fresh Ubuntu server, run the official zero-friction bootstrap installer:</p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>curl -fsSL https://leanstack.kuntalghosh.dev/install.sh | sudo bash</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="curl -fsSL https://leanstack.kuntalghosh.dev/install.sh | sudo bash">Copy</button>
+</div>
+<h3 id="self-hosting-guide">2.3 Method B: Self-Hosting &amp; Fleet Automation</h3>
+<p>
+            LeanStack is designed from the ground up for agencies, cloud engineers, and hosting providers who require full sovereignty over their infrastructure. You can self-host LeanStack across your private cluster using non-interactive deployment flags:
+          </p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>sudo /opt/leanstack/install.sh --non-interactive --profile=agency_woocommerce --php=8.5</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo /opt/leanstack/install.sh --non-interactive --profile=agency_woocommerce --php=8.5">Copy</button>
+</div>
+<div class="callout callout-warning">
+<strong class="text-[#FFA04D]">Public GitHub Repository:</strong>
+            The official public GitHub repository for LeanStack is scheduled for public release in <strong>Q4 2026</strong>. During this phase, enterprise installations are bootstrapped directly via the signed curl installer above.
+          </div>
+<h3>2.4 Cloud-Init &amp; Ansible Automation</h3>
+<p>To provision LeanStack automatically upon VPS creation in Hetzner, AWS, DigitalOcean, or Vultr, add this snippet to your Cloud-Init user data:</p>
+<pre class="bg-[#110F0E] p-3 rounded-lg border border-[#332F2C] font-mono text-xs my-2 text-[#A9A6A5]">
+#cloud-config
+runcmd:
+  - curl -fsSL https://leanstack.kuntalghosh.dev/install.sh -o /tmp/install.sh
+  - chmod +x /tmp/install.sh
+  - /tmp/install.sh --non-interactive --profile=default --php=8.5</pre>
+</section>
+<!-- SECTION 3 -->
+<section class="doc-section scroll-mt-28" id="3-master-cli-reference">
+<h2>3. Master CLI Reference (lsctl)</h2>
+<p>
+            The master command-line tool is installed at <code class="text-[#F7F3F2] font-mono">/usr/local/bin/lsctl</code> (LeanStack Control). It manages tenant lifecycles, runtime switching, diagnostics, and background task queues.
+          </p>
+<div class="callout callout-info">
+<strong class="text-[#F72B00]">Backwards Compatibility:</strong>
+            If you have scripts or muscle memory using <code class="text-[#F7F3F2] font-mono">cpctl</code>, LeanStack provides a transparent alias wrapper at <code class="text-[#F7F3F2] font-mono">/usr/local/bin/cpctl</code> pointing directly to <code class="text-[#F7F3F2] font-mono">lsctl</code>.
+          </div>
+<h3>3.1 Provisioning a WordPress Site</h3>
+<p>Creates an isolated POSIX user, dedicated PHP-FPM socket pool, MariaDB database, Valkey ACL credentials, Let's Encrypt SSL certificate, and compiled Angie virtual host:</p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>sudo lsctl site:create --domain=shop.example.com --profile=agency_woocommerce --php=8.5 --cf</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo lsctl site:create --domain=shop.example.com --profile=agency_woocommerce --php=8.5 --cf">Copy</button>
+</div>
+<p class="text-xs text-[#9E9A98]">Note: <code class="text-[#A9A6A5] font-mono">sudo lsctl wp:create</code> is also accepted as a synonym.</p>
+<h3>3.2 Zero-Downtime PHP Runtime Switching</h3>
+<p>Instantly transition a live site to any installed PHP runtime (e.g. 8.3, 8.4, or 8.5) with zero dropped connections:</p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>sudo lsctl site:php shop.example.com 8.5</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo lsctl site:php shop.example.com 8.5">Copy</button>
+</div>
+<h3>3.3 Site Inventory &amp; JSON Inspection</h3>
+<p>View all provisioned tenants or inspect a single tenant's metadata formatted for terminal or automation pipes:</p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>sudo lsctl site:list --json
+sudo lsctl site:info shop.example.com --json</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo lsctl site:list --json">Copy</button>
+</div>
+<h3>3.4 Deep Site Teardown (Zero Leftover Orphans)</h3>
+<p>Safely destroys a site while creating an atomic SQL safety snapshot in <code class="text-[#F7F3F2] font-mono">/var/backups/lsctl/trash/</code>. It removes all virtual hosts, SSL certificates, PHP-FPM pools, MariaDB database and user, Valkey keys, and Linux accounts:</p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>sudo lsctl site:delete shop.example.com</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo lsctl site:delete shop.example.com">Copy</button>
+</div>
+<h3>3.5 System Health Doctor</h3>
+<p>Audits Angie, MariaDB, Valkey, system sockets, open files, and storage metrics:</p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>sudo lsctl doctor</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo lsctl doctor">Copy</button>
+</div>
+<h3>3.6 Reconcile Tenant Sites</h3>
+<p>Synchronizes Must-Use plugins and Angie configuration templates across all registered tenants:</p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code>sudo lsctl sync-tenants</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo lsctl sync-tenants">Copy</button>
+</div>
+</section>
+<!-- SECTION 4 -->
+<section class="doc-section scroll-mt-28" id="4-operational-profiles">
+<h2>4. Operational Agency Profiles</h2>
+<p>
+            LeanStack agency profiles are configured in <code class="text-[#F7F3F2] font-mono">/etc/lsctl/profiles.yaml</code> (with fallback support for <code class="text-[#F7F3F2] font-mono">/etc/cpctl/profiles.yaml</code>). They allow operators to apply tailored PHP memory limits, caching heuristics, and worker bounds with a single flag:
+          </p>
+<table>
+<thead>
+<tr>
+<th>Profile Name</th>
+<th>Target Workload</th>
+<th>PHP Version</th>
+<th>Memory Limit</th>
+<th>Valkey Cache</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code class="text-[#F7F3F2]">default</code></td>
+<td>Standard blogs, portfolios &amp; corporate sites</td>
+<td>8.5</td>
+<td>256M</td>
+<td>Enabled</td>
+</tr>
+<tr>
+<td><code class="text-[#F7F3F2]">agency_woocommerce</code></td>
+<td>High-throughput WooCommerce online stores</td>
+<td>8.5</td>
+<td>512M</td>
+<td>Enabled</td>
+</tr>
+<tr>
+<td><code class="text-[#F7F3F2]">high_traffic</code></td>
+<td>High-volume news &amp; publishing portals</td>
+<td>8.5</td>
+<td>512M</td>
+<td>Enabled</td>
+</tr>
+<tr>
+<td><code class="text-[#F7F3F2]">headless_wp</code></td>
+<td>Decoupled GraphQL / REST API backend servers</td>
+<td>8.5</td>
+<td>256M</td>
+<td>Enabled</td>
+</tr>
+</tbody>
+</table>
+</section>
+<!-- SECTION 5 -->
+<section class="doc-section scroll-mt-28" id="5-caching-tier">
+<h2>5. Caching &amp; SSI Invalidation Suite</h2>
+<h3>5.1 Dedicated Per-Tenant FastCGI Microcache</h3>
+<p>
+            Each domain is given an isolated cache storage directory in <code class="text-[#F7F3F2] font-mono">/var/cache/angie/sites/${DOMAIN}/</code> and a dedicated Angie zone <code class="text-[#F7F3F2] font-mono">CACHE_&lt;domain&gt;</code>.
+          </p>
+<ul>
+<li><strong>Zero Noisy-Neighbor Cache Flushing:</strong> Purging site A has zero impact on the cache hit ratio of site B.</li>
+<li><strong>Surgical Single-URL Invalidation:</strong> When a post or page is published, updated, or trashed, LeanStack's Must-Use plugin calculates the MD5 hash of the URL and deletes only that specific cache file via <code class="text-[#F7F3F2] font-mono">levels=1:2</code> directory unlinking.</li>
+<li><strong>In-Dashboard Controls:</strong> Inside WordPress Admin, navigate to <strong>Tools &gt; LeanStack Cache</strong> to toggle caching on/off, change TTL, flush the entire site cache, or invalidate a specific URL.</li>
+</ul>
+<h3>5.2 Universal SSI Hole-Punching</h3>
+<p>
+            Dynamic personalized elements are rendered into cached HTML shells using Angie's native <code class="text-[#F7F3F2] font-mono">ssi on;</code> engine:
+          </p>
+<pre class="bg-[#110F0E] p-3 rounded-lg border border-[#332F2C] font-mono text-xs my-2 text-[#A9A6A5]">
+<span class="text-[#9E9A98]">&lt;!-- Dynamic Cart Count Hole-Punched at Wire Speed --&gt;</span>
+&lt;!--# include virtual="/leanstack-esi/?action=cart_count" --&gt;
+
+<span class="text-[#9E9A98]">&lt;!-- Nonce Injection (Prevents Expired Form Nonces on Cached Pages) --&gt;</span>
+&lt;!--# include virtual="/leanstack-esi/?action=nonce" --&gt;
+
+<span class="text-[#9E9A98]">&lt;!-- Batched Carousel Prices (1 Subrequest for Multiple Product Cards) --&gt;</span>
+&lt;!--# include virtual="/leanstack-esi/?action=batch_price&amp;ids=10,20,30" --&gt;</pre>
+<div class="callout callout-success">
+<strong class="text-[#00D084]">Visual Page Builder Immunity:</strong>
+            SSI tags are automatically disabled whenever a page builder editor session is active (e.g. <code class="text-[#F7F3F2] font-mono">?bricks=run</code>, <code class="text-[#F7F3F2] font-mono">?elementor-preview=</code>, <code class="text-[#F7F3F2] font-mono">?et_fb=</code>), ensuring visual canvases are never corrupted.
+          </div>
+<h3>5.3 Non-Conflicting APCu Application Cache</h3>
+<p>
+            LeanStack deploys APCu memory caching via <code class="text-[#F7F3F2] font-mono">wp-content/mu-plugins/leanstack-apcu.php</code> rather than dropping an <code class="text-[#F7F3F2] font-mono">object-cache.php</code> file. This preserves 100% compatibility with Valkey/Redis Object Cache Pro plugins without collisions. Keys are cryptographically isolated per tenant using <code class="text-[#F7F3F2] font-mono">ls_&lt;md5&gt;:</code> prefixes.
+          </p>
+<h3>5.4 Cloudflare Edge CDN Integration</h3>
+<p>
+            Configure your Cloudflare <strong>Zone ID</strong> and <strong>API Token</strong> under <strong>Tools &gt; LeanStack Cache &gt; Cloudflare Edge CDN</strong>. Single post updates trigger dual invalidation: clearing local FastCGI microcache files and Cloudflare Edge caches simultaneously.
+          </p>
+</section>
+<!-- SECTION 6 -->
+<section class="doc-section scroll-mt-28" id="6-security-tenant-rules">
+<h2>6. Tenant POSIX Sandboxing &amp; Inotify Gatekeeper</h2>
+<p>
+            LeanStack provides dedicated, safe configuration slots per tenant under <code class="text-[#F7F3F2] font-mono">/home/&lt;user&gt;/nginx/</code>:
+          </p>
+<ul>
+<li><code>custom-early.conf</code>: Evaluated before static asset caching. Ideal for image processors (CompressX WebP/AVIF rewrites).</li>
+<li><code>custom-rules.conf</code>: Evaluated before the WordPress router. Ideal for custom redirects and proxy rules.</li>
+<li><code>security-headers.conf</code>: HTTP security headers (CSP, HSTS, X-Frame-Options).</li>
+</ul>
+<div class="callout callout-info">
+<strong class="text-[#F72B00]">Inotify Gatekeeper (<code class="font-mono">ls-gatekeeper</code>):</strong>
+            Whenever a file in <code class="text-[#F7F3F2] font-mono">/home/*/nginx/</code> is modified, <code class="text-[#F7F3F2] font-mono">ls-gatekeeper</code> intercepts the write and runs <code class="text-[#F7F3F2] font-mono">ls-nginx-linter</code>. If any syntax error exists, the reload is blocked and logged, preventing broken configs from taking down Angie.
+          </div>
+<div class="callout callout-warning">
+<strong class="text-[#FFA04D]">WebAssembly Media (Wasm-vips) CSP Requirement:</strong>
+            If defining a Content Security Policy, ensure <code class="text-[#F7F3F2] font-mono">worker-src 'self' blob:;</code> is enabled to support client-side image processing in modern WordPress.
+          </div>
+</section>
+<!-- SECTION 7 -->
+<section class="doc-section scroll-mt-28" id="7-scheduled-tasks">
+<h2>7. In-House Anti-Thundering Cron Queue (ls-cron-queue)</h2>
+<p>
+            WordPress's default cron architecture executes scheduled maintenance jobs whenever a random visitor loads a page. During viral traffic spikes, this leads to catastrophic lock storms: dozens of visitor requests simultaneously trigger the same background cron job, locking database tables and adding hundreds of milliseconds of latency to page load times.
+          </p>
+<h3>7.1 The LeanStack Cron Architecture</h3>
+<p>
+            LeanStack eliminates this behavior at the root:
+          </p>
+<ol>
+<li><strong>Global Visitor Cron Lockout:</strong> In every tenant's <code class="text-[#F7F3F2] font-mono">wp-config.php</code>, LeanStack inserts <code class="text-[#F7F3F2] font-mono">define('DISABLE_WP_CRON', true);</code>, guaranteeing that visitor requests never invoke <code class="text-[#F7F3F2] font-mono">wp-cron.php</code>.</li>
+<li><strong>Serialized Systemd Dispatcher:</strong> Native Linux systemd timer <code class="text-[#F7F3F2] font-mono">/etc/systemd/system/ls-cron.timer</code> triggers every 60 seconds with strict 1s accuracy.</li>
+<li><strong>Atomic Flock Mutex:</strong> <code class="text-[#F7F3F2] font-mono">ls-cron-queue</code> acquires an exclusive file lock (<code class="text-[#F7F3F2] font-mono">/var/lock/ls-cron.lock</code>), ensuring that previous long-running cron batches never overlap with new runs.</li>
+<li><strong>Isolated WP-CLI Execution:</strong> Each tenant's due events are executed as that tenant's POSIX user with strict memory boundaries: <code class="text-[#F7F3F2] font-mono">sudo -u wp_example wp cron event run --due-now</code>.</li>
+</ol>
+<h3>7.2 Cron Queue Commands</h3>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code># Run all due crons across all registered tenants:
+sudo ls-cron-queue --all
+
+# Run crons for a specific tenant:
+sudo ls-cron-queue --domain=shop.example.com
+
+# Inspect cron execution log:
+tail -f /var/log/lsctl/cron.log</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sudo ls-cron-queue --all">Copy</button>
+</div>
+<table>
+<thead>
+<tr>
+<th>Systemd Service / Timer</th>
+<th>Frequency</th>
+<th>Function</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code class="text-[#F7F3F2]">ls-cron.timer</code></td>
+<td>Every 60s</td>
+<td>Dispatches serialized WP-CLI cron queues across all sites, eliminating visitor wait latency.</td>
+</tr>
+<tr>
+<td><code class="text-[#F7F3F2]">ls-cf-sync.timer</code></td>
+<td>Daily (03:00)</td>
+<td>Fetches current Cloudflare IPv4 &amp; IPv6 CIDRs and updates Angie real-ip directives.</td>
+</tr>
+<tr>
+<td><code class="text-[#F7F3F2]">ls-gatekeeper.service</code></td>
+<td>Continuous Inotify</td>
+<td>Validates tenant custom Nginx rules using <code class="text-[#F7F3F2]">ls-nginx-linter</code> before reloading Angie.</td>
+</tr>
+</tbody>
+</table>
+</section>
+<!-- SECTION 8 -->
+<section class="doc-section scroll-mt-28" id="8-fleet-upgrade">
+<h2>8. Autonomous Fleet Upgrades</h2>
+<p>
+            Upgrade your LeanStack installation across single servers or multi-server fleets with automated rollback protection:
+          </p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code># 1-Line Remote Upgrade:
+curl -fsSL https://leanstack.kuntalghosh.dev/update.sh | sudo bash
+
+# Or directly via lsctl CLI:
+sudo lsctl update
+
+# Simulate upgrade without making any system changes:
+sudo lsctl update --dry-run</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="curl -fsSL https://leanstack.kuntalghosh.dev/update.sh | sudo bash">Copy</button>
+</div>
+<p><strong>The Transactional Upgrade Pipeline automatically:</strong></p>
+<ol>
+<li>Executes pre-flight syntax checks on Angie configuration (<code class="text-[#F7F3F2] font-mono">angie -t</code>).</li>
+<li>Creates an atomic snapshot of <code class="text-[#F7F3F2] font-mono">/var/lib/lsctl/sites.db</code> in <code class="text-[#F7F3F2] font-mono">/var/backups/lsctl/</code>.</li>
+<li>Pulls the latest git release via <code class="text-[#F7F3F2] font-mono">git pull --ff-only</code>.</li>
+<li>Applies incremental forward schema migrations inside SQLite transactions.</li>
+<li>Synchronizes Must-Use plugins across all registered tenant sites.</li>
+<li>Validates syntax again and performs zero-downtime Angie reload. On any failure, automatically rolls back to snapshot.</li>
+</ol>
+</section>
+<!-- SECTION 9 -->
+<section class="doc-section scroll-mt-28" id="9-disaster-recovery">
+<h2>9. Backups &amp; Disaster Recovery</h2>
+<p>
+            LeanStack stores all site metadata, database credentials, and operational settings in SQLite at <code class="text-[#F7F3F2] font-mono">/var/lib/lsctl/sites.db</code> (with fallback resolution for <code class="text-[#F7F3F2] font-mono">/var/lib/cpctl/sites.db</code>).
+          </p>
+<div class="bg-[#110F0E] border border-[#332F2C] rounded-lg p-3 my-3 font-mono text-xs text-[#F7F3F2] flex items-center justify-between gap-2">
+<code># Backup control plane database:
+sqlite3 /var/lib/lsctl/sites.db ".backup '/var/backups/lsctl/manual_backup_$(date +%F).db'"
+
+# Export single WordPress database:
+cd /home/&lt;user&gt;/htdocs &amp;&amp; sudo -u &lt;user&gt; wp db export /home/&lt;user&gt;/backup.sql</code>
+<button class="btn-vermilion text-xs py-1 px-3" data-copy="sqlite3 /var/lib/lsctl/sites.db &quot;.backup '/var/backups/lsctl/manual_backup_$(date +%F).db'&quot;">Copy</button>
+</div>
+</section>
+<!-- SECTION 10 -->
+<section class="doc-section scroll-mt-28" id="10-troubleshooting">
+<h2>10. Emergency Diagnostics &amp; Health Doctor</h2>
+<p>Essential diagnostic commands when inspecting host behavior:</p>
+<pre class="bg-[#110F0E] p-3 rounded-lg border border-[#332F2C] font-mono text-xs my-2 text-[#A9A6A5]">
+<span class="text-[#9E9A98]"># 1. Comprehensive LeanStack health audit</span>
+sudo lsctl doctor
+
+<span class="text-[#9E9A98]"># 2. Test Angie configuration syntax</span>
+angie -t
+
+<span class="text-[#9E9A98]"># 3. Reconcile all tenant Must-Use plugins</span>
+sudo lsctl sync-tenants
+
+<span class="text-[#9E9A98]"># 4. View CrowdSec firewall decisions &amp; unblock an IP</span>
+cscli decisions list
+cscli decisions delete --ip &lt;your-ip&gt;
+
+<span class="text-[#9E9A98]"># 5. View Gatekeeper daemon real-time logs</span>
+journalctl -u ls-gatekeeper -f</pre>
+</section>
+</main>
+</div>
+</div>
+<!-- FOOTER -->
+<footer class="py-14 bg-[#110F0E] text-xs text-[#9E9A98] border-t border-[#332F2C] mt-20" role="contentinfo">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-6">
+<div class="flex items-center gap-3">
+<div class="w-6 h-6 rounded bg-[#F72B00] text-[#FFFFFF] flex items-center justify-center font-bold text-[10px]">LS</div>
+<span class="text-[#A9A6A5]">LeanStack v1.2.0 Hyperion</span>
+</div>
+<div class="flex flex-wrap items-center gap-5 text-[#9E9A98]">
+<a aria-label="LeanStack Homepage" class="hover:text-[#F7F3F2] transition" href="index.html">Home</a>
+<a aria-label="Architecture Specifications" class="hover:text-[#F7F3F2] transition" href="features.html">Architecture Deep-Dive</a>
+<a aria-label="Documentation Manual" class="hover:text-[#F7F3F2] transition" href="docs.html">Docs</a>
+<a aria-label="GitHub Repo" class="text-[#F72B00] hover:text-[#FF6900] transition font-semibold" href="https://github.com/okio/leanstack" rel="noopener noreferrer" target="_blank">GitHub ↗</a>
+<a aria-label="Author Site" class="hover:text-[#F7F3F2] transition" href="https://kuntalghosh.dev" rel="noopener noreferrer" target="_blank">Kuntal Ghosh ↗</a>
+<a aria-label="Analytics" class="hover:text-[#00D084] transition" href="analytics.html">🔒 Analytics</a>
+</div>
+<div class="text-[#9E9A98]">
+        Engineered with precision by Kuntal Ghosh
+      </div>
+</div>
+</footer>
+<script src="assets/js/analytics.js"></script>
+<script src="assets/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+# LeanStack API Directives
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteBase /api/
+
+# Route telemetry calls directly to telemetry/index.php
+RewriteRule ^telemetry/?$ telemetry/index.php [L,QSA]
+RewriteRule ^telemetry$ telemetry/index.php [L,QSA]
+</IfModule>
+
+DirectoryIndex index.php index.html

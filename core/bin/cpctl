@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# LeanStack Control Plane Legacy Compatibility Wrapper (cpctl -> lsctl)
+# ==============================================================================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export CLI_NAME="cpctl"
+exec "${SCRIPT_DIR}/lsctl" "$@"

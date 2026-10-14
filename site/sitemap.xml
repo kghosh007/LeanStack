@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.sitemaps.org/schemas/sitemap/0.9
+        http://www.sitemaps.org/schemas/sitemap/0.9/sitemap.xsd">
+
+  <!-- LeanStack Homepage & Interactive Control Center -->
+  <url>
+    <loc>https://leanstack.kuntalghosh.dev/</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+
+  <!-- Deep Architectural Blueprint & Technical Features -->
+  <url>
+    <loc>https://leanstack.kuntalghosh.dev/features.html</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Operations Manual, CLI Reference & Self-Hosting Guide -->
+  <url>
+    <loc>https://leanstack.kuntalghosh.dev/docs.html</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Direct Automated Installer Script -->
+  <url>
+    <loc>https://leanstack.kuntalghosh.dev/install.sh</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+
+  <!-- Direct Automated Upgrade & Migration Script -->
+  <url>
+    <loc>https://leanstack.kuntalghosh.dev/update.sh</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.7</priority>
+  </url>
+
+</urlset>

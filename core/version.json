@@ -1,0 +1,8 @@
+{
+  "version": "1.2.0",
+  "name": "LeanStack",
+  "codename": "Hyperion",
+  "min_ubuntu_version": "22.04",
+  "supported_ubuntu_versions": ["22.04", "24.04", "26.04"],
+  "release_channel": "stable"
+}

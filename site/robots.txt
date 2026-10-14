@@ -1,0 +1,15 @@
+# Robots.txt for LeanStack (https://leanstack.kuntalghosh.dev)
+# Autonomous High-Density WordPress Hosting Engine
+
+User-agent: *
+Allow: /
+Allow: /assets/
+Allow: /features.html
+Allow: /docs.html
+Allow: /install.sh
+Allow: /update.sh
+Disallow: /analytics.html
+Disallow: /api/
+
+# Sitemaps
+Sitemap: https://leanstack.kuntalghosh.dev/sitemap.xml

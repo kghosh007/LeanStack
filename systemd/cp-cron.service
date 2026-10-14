@@ -1,0 +1,12 @@
+[Unit]
+Description=LeanStack Centralized Anti-Thundering WP-Cron Queue
+After=network.target mariadb.service valkey.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cp-cron-queue
+TimeoutSec=180
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+CPUSchedulingPolicy=other
+Nice=10

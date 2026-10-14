@@ -1,0 +1,1070 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# LeanStack Control Plane Engine (lsctl)
+# Ultra-Lightweight WordPress Control Engine for High-Density Hosting
+# ==============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Configuration & Templates Paths
+if [ -d "/var/lib/lsctl" ]; then
+    DB_DIR="/var/lib/lsctl"
+elif [ -d "/var/lib/cpctl" ]; then
+    DB_DIR="/var/lib/cpctl"
+else
+    DB_DIR="/var/lib/lsctl"
+fi
+DB_FILE="${LEANSTACK_DB:-${DB_DIR}/sites.db}"
+
+if [ -d "/etc/lsctl/templates" ]; then
+    TEMPLATE_DIR="/etc/lsctl/templates"
+    PROFILES_FILE="/etc/lsctl/profiles.yaml"
+elif [ -d "/etc/cpctl/templates" ]; then
+    TEMPLATE_DIR="/etc/cpctl/templates"
+    PROFILES_FILE="/etc/cpctl/profiles.yaml"
+else
+    TEMPLATE_DIR="${SCRIPT_DIR}/../templates"
+    PROFILES_FILE="${SCRIPT_DIR}/../config/profiles.yaml"
+fi
+
+BACKUP_DIR="/var/backups/lsctl/trash"
+WP_MASTER_TEMPLATE="/opt/templates/wordpress"
+
+# SQLite wrapper: uses sqlite3 CLI if present, or Python standard library sqlite3
+db_exec() {
+    local sql="$1"
+    if command -v sqlite3 &>/dev/null; then
+        sqlite3 "$DB_FILE" "$sql"
+    else
+        python3 -c "
+import sqlite3, sys
+conn = sqlite3.connect('$DB_FILE')
+cur = conn.cursor()
+try:
+    for stmt in sys.argv[1].strip().split(';'):
+        if stmt.strip():
+            cur.execute(stmt)
+    conn.commit()
+finally:
+    conn.close()
+" "$sql"
+    fi
+}
+
+db_query() {
+    local sql="$1"
+    if command -v sqlite3 &>/dev/null; then
+        sqlite3 -separator '|' "$DB_FILE" "$sql"
+    else
+        python3 -c "
+import sqlite3, sys
+conn = sqlite3.connect('$DB_FILE')
+cur = conn.cursor()
+try:
+    cur.execute(sys.argv[1])
+    for row in cur.fetchall():
+        print('|'.join(str(x) if x is not None else '' for x in row))
+finally:
+    conn.close()
+" "$sql"
+    fi
+}
+
+init_db() {
+    mkdir -p "$DB_DIR"
+    chmod 700 "$DB_DIR" 2>/dev/null || true
+    db_exec "
+CREATE TABLE IF NOT EXISTS sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT UNIQUE NOT NULL,
+    user TEXT NOT NULL,
+    php_version TEXT NOT NULL,
+    pool_type TEXT NOT NULL,
+    pool_mode TEXT DEFAULT 'dynamic',
+    memory_limit TEXT DEFAULT '256M',
+    table_prefix TEXT DEFAULT 'wp_',
+    is_cf INTEGER DEFAULT 0,
+    profile_used TEXT DEFAULT 'default',
+    site_path TEXT NOT NULL,
+    db_name TEXT NOT NULL,
+    db_user TEXT NOT NULL,
+    db_pass TEXT NOT NULL,
+    admin_user TEXT NOT NULL,
+    admin_pass TEXT NOT NULL,
+    admin_email TEXT NOT NULL,
+    wp_version TEXT DEFAULT 'latest',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version INTEGER UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+"
+}
+
+COMMAND="${1:-}"
+
+show_help() {
+    cat << 'EOF'
+==============================================================================
+LeanStack Engine (lsctl) - Ultra-Lightweight WordPress Control Plane
+==============================================================================
+Commands:
+  wp:create       Provision a site using an agency profile (or site:create)
+  site:php        Atomic zero-downtime PHP migration (8.1 - 8.5)
+  site:delete     Deep multi-tier site, database & certificate teardown
+  site:list       List all registered sites (--json supported)
+  site:info       Display full credentials & configuration (--json supported)
+  profile:list    List all available operational profiles (--json supported)
+  profile:show    Display full details of a profile (--json supported)
+  profile:create  Create or scaffold a custom profile
+  profile:delete  Remove a custom profile
+  sys:tune        Re-probe hardware and apply dynamic tuning profiles
+  cf:sync         Synchronize Cloudflare IP ranges into Angie
+  cron:run        Execute anti-thundering background cron queue
+  doctor          Comprehensive system health & diagnostic check
+  update          Autonomous zero-downtime upgrade & migration engine
+  migrate         Run database schema migrations only
+  sync-tenants    Reconcile MU-plugins and configs across all sites
+
+Options for wp:create:
+  sudo lsctl wp:create --domain=example.com [options]
+    --profile=agency_woocommerce (Default: default)
+    --php=8.5                    (Default: 8.5)
+    --admin-user=user            (Overrides profile default)
+    --admin-email=me@site.com    (Overrides profile default)
+    --admin-pass=secret          (Auto-generates if omitted)
+    --memory-limit=512M          (Overrides profile default)
+    --cf                         (Enables Cloudflare Proxy & SSL headers)
+    --site-title="My Store"      (Default: Domain name)
+==============================================================================
+EOF
+    exit 0
+}
+
+[ -z "$COMMAND" ] || [ "$COMMAND" == "help" ] || [ "$COMMAND" == "--help" ] && show_help
+
+# Privilege Guard for state-modifying operations
+require_root() {
+    if [ "$EUID" -ne 0 ]; then
+        echo "❌ Error: lsctl $COMMAND requires administrative privileges." >&2
+        echo "Please execute: sudo lsctl $*" >&2
+        exit 1
+    fi
+}
+
+case "$COMMAND" in
+    update|upgrade)
+        require_root
+        shift
+        if [ -x "/usr/local/bin/cp-upgrade" ]; then
+            /usr/local/bin/cp-upgrade "$@"
+        else
+            python3 "${SCRIPT_DIR}/cp-upgrade" "$@"
+        fi
+        exit 0
+        ;;
+
+    migrate)
+        require_root
+        shift
+        if [ -x "/usr/local/bin/cp-upgrade" ]; then
+            /usr/local/bin/cp-upgrade --migrate-only "$@"
+        else
+            python3 "${SCRIPT_DIR}/cp-upgrade" --migrate-only "$@"
+        fi
+        exit 0
+        ;;
+
+    sync-tenants|site:sync-plugins)
+        require_root
+        shift
+        if [ -x "/usr/local/bin/cp-upgrade" ]; then
+            /usr/local/bin/cp-upgrade --sync-tenants-only "$@"
+        else
+            python3 "${SCRIPT_DIR}/cp-upgrade" --sync-tenants-only "$@"
+        fi
+        exit 0
+        ;;
+
+    cf:sync)
+        require_root
+        if [ -x "/usr/local/bin/cp-cf-sync" ]; then
+            /usr/local/bin/cp-cf-sync
+        else
+            bash "${SCRIPT_DIR}/cp-cf-sync"
+        fi
+        exit 0
+        ;;
+
+    cron:run)
+        if [ -x "/usr/local/bin/cp-cron-queue" ]; then
+            /usr/local/bin/cp-cron-queue
+        else
+            bash "${SCRIPT_DIR}/cp-cron-queue"
+        fi
+        exit 0
+        ;;
+
+    profile:list|profile:ls)
+        JSON_MODE=0
+        for arg in "$@"; do
+            [ "$arg" == "--json" ] && JSON_MODE=1
+        done
+
+        python3 - "$PROFILES_FILE" "$JSON_MODE" << 'PY'
+import yaml, json, sys, os
+p_file = sys.argv[1]
+json_mode = int(sys.argv[2])
+try:
+    if not os.path.exists(p_file):
+        print(f"ERROR: Profiles configuration file {p_file} not found.", file=sys.stderr)
+        sys.exit(1)
+    with open(p_file, "r") as f:
+        profiles = yaml.safe_load(f) or {}
+    if json_mode == 1:
+        print(json.dumps(profiles, indent=2))
+    else:
+        print("==========================================================================================")
+        print("LEANSTACK OPERATIONAL WORDPRESS PROFILES")
+        print("==========================================================================================")
+        h_prof = "PROFILE"
+        h_php = "PHP"
+        h_mem = "MEM"
+        h_pool = "POOL"
+        h_cf = "CF"
+        h_theme = "THEME"
+        h_desc = "DESCRIPTION"
+        print(f"{h_prof:<22} {h_php:<6} {h_mem:<7} {h_pool:<9} {h_cf:<6} {h_theme:<16} {h_desc}")
+        print("-" * 95)
+        for name, p in profiles.items():
+            desc = p.get("description", "")
+            php = p.get("php", "8.5")
+            mem = p.get("memory_limit", "256M")
+            pool = p.get("pool_mode", "dynamic")
+            cf = "yes" if p.get("cf", False) else "no"
+            theme = p.get("theme", "none") or "none"
+            print(f"{name:<22} {php:<6} {mem:<7} {pool:<9} {cf:<6} {theme[:15]:<16} {desc}")
+        print("==========================================================================================")
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+        exit 0
+        ;;
+
+    profile:show|profile:info)
+        P_NAME="${2:-}"
+        [ -z "$P_NAME" ] && { echo "Usage: lsctl profile:show <name> [--json]"; exit 1; }
+        JSON_MODE=0
+        for arg in "$@"; do
+            [ "$arg" == "--json" ] && JSON_MODE=1
+        done
+
+        python3 - "$PROFILES_FILE" "$P_NAME" "$JSON_MODE" << 'PY'
+import yaml, json, sys, os
+p_file = sys.argv[1]
+p_name = sys.argv[2]
+json_mode = int(sys.argv[3])
+try:
+    if not os.path.exists(p_file):
+        print(f"ERROR: Profiles file {p_file} not found.", file=sys.stderr)
+        sys.exit(1)
+    with open(p_file, "r") as f:
+        profiles = yaml.safe_load(f) or {}
+    if p_name not in profiles:
+        print(f"ERROR: Profile '{p_name}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+    p = profiles[p_name]
+    if json_mode == 1:
+        print(json.dumps(p, indent=2))
+    else:
+        print("==========================================================")
+        print(f"Profile Name:    {p_name}")
+        print(f"Description:     {p.get('description', '')}")
+        print(f"PHP Version:     {p.get('php', '8.5')}")
+        print(f"Memory Limit:    {p.get('memory_limit', '256M')}")
+        print(f"Pool Mode:       {p.get('pool_mode', 'dynamic')}")
+        print(f"Cloudflare Edge: {'Enabled' if p.get('cf', False) else 'Disabled'}")
+        print(f"Cache Engine:    {p.get('cache', 'on')}")
+        print(f"Plugins:         {', '.join(p.get('plugins', []))}")
+        print(f"Theme:           {p.get('theme', '') or 'None'}")
+        print(f"Admin User:      {p.get('admin_user', 'admin')}")
+        print(f"Admin Email:     {p.get('admin_email', 'admin@example.com')}")
+        print(f"Timezone:        {p.get('timezone', 'UTC')}")
+        print("==========================================================")
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+        exit 0
+        ;;
+
+    profile:create)
+        require_root
+        P_NAME="${2:-}"
+        [ -z "$P_NAME" ] && { echo "Usage: sudo lsctl profile:create <name> [--description=...] [--php=8.5] [--mem=256M] [--cf]"; exit 1; }
+
+        DESC="Custom agency profile"
+        PHP="8.5"
+        MEM="256M"
+        POOL="dynamic"
+        CF="false"
+        THEME="twentytwentyfour"
+
+        for arg in "$@"; do
+            case $arg in
+                --description=*) DESC="${arg#*=}" ;;
+                --php=*) PHP="${arg#*=}" ;;
+                --mem=*|--memory-limit=*) MEM="${arg#*=}" ;;
+                --pool-mode=*) POOL="${arg#*=}" ;;
+                --cf) CF="true" ;;
+                --theme=*) THEME="${arg#*=}" ;;
+            esac
+        done
+
+        python3 - "$PROFILES_FILE" "$P_NAME" "$DESC" "$PHP" "$MEM" "$POOL" "$CF" "$THEME" << 'PY'
+import yaml, sys
+p_file = sys.argv[1]
+p_name = sys.argv[2]
+desc = sys.argv[3]
+php = sys.argv[4]
+mem = sys.argv[5]
+pool = sys.argv[6]
+cf = sys.argv[7].lower() == "true"
+theme = sys.argv[8]
+
+try:
+    with open(p_file, "r") as f:
+        profiles = yaml.safe_load(f) or {}
+    if p_name in profiles:
+        print(f"ERROR: Profile '{p_name}' already exists.", file=sys.stderr)
+        sys.exit(1)
+    profiles[p_name] = {
+        "description": desc,
+        "admin_user": "admin",
+        "admin_email": "admin@example.com",
+        "php": php,
+        "pool_mode": pool,
+        "memory_limit": mem,
+        "timezone": "UTC",
+        "cache": "on",
+        "cf": cf,
+        "plugins": ["redis-cache"],
+        "theme": theme
+    }
+    with open(p_file, "w") as f:
+        yaml.dump(profiles, f, default_flow_style=False)
+    print(f"✅ Created new operational profile: {p_name}")
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+        exit 0
+        ;;
+
+    profile:delete|profile:rm)
+        require_root
+        P_NAME="${2:-}"
+        [ -z "$P_NAME" ] && { echo "Usage: sudo lsctl profile:delete <name>"; exit 1; }
+        [ "$P_NAME" == "default" ] && { echo "ERROR: Cannot delete the default core profile."; exit 1; }
+
+        python3 - "$PROFILES_FILE" "$P_NAME" << 'PY'
+import yaml, sys
+p_file = sys.argv[1]
+p_name = sys.argv[2]
+try:
+    with open(p_file, "r") as f:
+        profiles = yaml.safe_load(f) or {}
+    if p_name not in profiles:
+        print(f"ERROR: Profile '{p_name}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+    del profiles[p_name]
+    with open(p_file, "w") as f:
+        yaml.dump(profiles, f, default_flow_style=False)
+    print(f"🗑️ Removed profile: {p_name}")
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PY
+        exit 0
+        ;;
+
+    site:list)
+        init_db
+        JSON_MODE=0
+        for arg in "$@"; do
+            [ "$arg" == "--json" ] && JSON_MODE=1
+        done
+
+        if [ "$JSON_MODE" -eq 1 ]; then
+            python3 -c "
+import sqlite3, json
+conn = sqlite3.connect('$DB_FILE')
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute('SELECT id, domain, user, php_version, pool_mode, memory_limit, profile_used, created_at FROM sites ORDER BY id ASC')
+rows = [dict(r) for r in cur.fetchall()]
+print(json.dumps(rows, indent=2))
+"
+        else
+            if command -v sqlite3 &>/dev/null; then
+                sqlite3 -header -column "$DB_FILE" "SELECT id, domain, user AS tenant_user, php_version, pool_mode, memory_limit, profile_used, created_at FROM sites;"
+            else
+                python3 -c "
+import sqlite3
+conn = sqlite3.connect('$DB_FILE')
+cur = conn.cursor()
+cur.execute('SELECT id, domain, user, php_version, pool_mode, memory_limit, profile_used, created_at FROM sites')
+rows = cur.fetchall()
+print(f'{\"ID\":<4} {\"DOMAIN\":<26} {\"TENANT USER\":<16} {\"PHP\":<6} {\"POOL\":<8} {\"MEM\":<6} {\"PROFILE\":<18} {\"CREATED AT\"}')
+print('-' * 100)
+for r in rows:
+    print(f'{r[0]:<4} {r[1]:<26} {r[2]:<16} {r[3]:<6} {r[4]:<8} {r[5]:<6} {r[6]:<18} {r[7]}')
+"
+            fi
+        fi
+        exit 0
+        ;;
+
+    site:info)
+        init_db
+        TARGET_DOMAIN="${2:-}"
+        [ -z "$TARGET_DOMAIN" ] && { echo "Usage: lsctl site:info <domain> [--json]"; exit 1; }
+
+        JSON_MODE=0
+        for arg in "$@"; do
+            [ "$arg" == "--json" ] && JSON_MODE=1
+        done
+
+        if [ "$JSON_MODE" -eq 1 ]; then
+            python3 -c "
+import sqlite3, json
+conn = sqlite3.connect('$DB_FILE')
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute('SELECT * FROM sites WHERE domain=?', ('$TARGET_DOMAIN',))
+row = cur.fetchone()
+if row:
+    print(json.dumps(dict(row), indent=2))
+else:
+    print(json.dumps({'error': 'Site not found'}, indent=2))
+"
+        else
+            python3 -c "
+import sqlite3
+conn = sqlite3.connect('$DB_FILE')
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute('SELECT * FROM sites WHERE domain=?', ('$TARGET_DOMAIN',))
+r = cur.fetchone()
+if not r:
+    print('ERROR: Site not found.')
+else:
+    print('==========================================================')
+    print(f'Domain:          https://{r[\"domain\"]}')
+    print(f'Tenant User:     {r[\"user\"]}')
+    print(f'PHP Version:     {r[\"php_version\"]} ({r[\"pool_mode\"]}, {r[\"memory_limit\"]})')
+    print(f'Profile Used:    {r[\"profile_used\"]}')
+    print(f'Site Root:       {r[\"site_path\"]}')
+    print(f'Database:        {r[\"db_name\"]} (User: {r[\"db_user\"]})')
+    print(f'Table Prefix:    {r[\"table_prefix\"]}')
+    print(f'Admin Email:     {r[\"admin_email\"]}')
+    print(f'Admin User:      {r[\"admin_user\"]}')
+    print(f'Cloudflare:      {\"Enabled\" if r[\"is_cf\"] else \"Disabled\"}')
+    print(f'Created At:      {r[\"created_at\"]}')
+    print('==========================================================')
+"
+        fi
+        exit 0
+        ;;
+
+    site:php)
+        require_root
+        init_db
+        DOMAIN="${2:-}"
+        NEW_PHP="${3:-}"
+        [ -z "$DOMAIN" ] || [ -z "$NEW_PHP" ] && { echo "Usage: sudo lsctl site:php <domain> <8.1|8.2|8.3|8.4|8.5>"; exit 1; }
+        [ ! -d "/etc/php/${NEW_PHP}" ] && { echo "ERROR: PHP ${NEW_PHP} is not installed on this system."; exit 1; }
+
+        SITE_ROW=$(db_query "SELECT user, php_version, pool_type, pool_mode, memory_limit, site_path FROM sites WHERE domain='$DOMAIN';")
+        [ -z "$SITE_ROW" ] && { echo "ERROR: Site '$DOMAIN' not found."; exit 1; }
+
+        USER_NAME=$(echo "$SITE_ROW" | cut -d '|' -f 1)
+        OLD_PHP=$(echo "$SITE_ROW" | cut -d '|' -f 2)
+        POOL_TYPE=$(echo "$SITE_ROW" | cut -d '|' -f 3)
+        POOL_MODE=$(echo "$SITE_ROW" | cut -d '|' -f 4)
+        MEMORY_LIMIT=$(echo "$SITE_ROW" | cut -d '|' -f 5)
+        WEB_ROOT=$(echo "$SITE_ROW" | cut -d '|' -f 6)
+
+        [ "$OLD_PHP" == "$NEW_PHP" ] && { echo "Notice: Site is already executing on PHP ${NEW_PHP}."; exit 0; }
+
+        echo ">>> Switching ${DOMAIN} atomically from PHP ${OLD_PHP} to ${NEW_PHP}..."
+
+        NEW_POOL="/etc/php/${NEW_PHP}/fpm/pool.d/${USER_NAME}.conf"
+        NEW_STAGED="${NEW_POOL}.staged"
+        OLD_POOL="/etc/php/${OLD_PHP}/fpm/pool.d/${USER_NAME}.conf"
+        NEW_SOCKET="/run/php/php${NEW_PHP}-${USER_NAME}.sock"
+
+        cp "${TEMPLATE_DIR}/pool.conf.tpl" "$NEW_STAGED"
+        sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$NEW_STAGED"
+        sed -i "s|{{SOCKET_PATH}}|${NEW_SOCKET}|g" "$NEW_STAGED"
+        sed -i "s|{{POOL_MODE}}|${POOL_MODE}|g" "$NEW_STAGED"
+        sed -i "s|{{MAX_CHILDREN}}|30|g" "$NEW_STAGED"
+        sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|g" "$NEW_STAGED"
+        sed -i "s|{{MEMORY_LIMIT}}|${MEMORY_LIMIT}|g" "$NEW_STAGED"
+
+        if [ "$POOL_MODE" == "dynamic" ]; then
+            DYNAMIC_SETTINGS="pm.start_servers = 6\npm.min_spare_servers = 4\npm.max_spare_servers = 12"
+            sed -i "s|{{PM_DYNAMIC_SETTINGS}}|${DYNAMIC_SETTINGS}|g" "$NEW_STAGED"
+        else
+            sed -i "s|{{PM_DYNAMIC_SETTINGS}}||g" "$NEW_STAGED"
+        fi
+
+        mv "$NEW_STAGED" "$NEW_POOL"
+        php-fpm${NEW_PHP} -t &>/dev/null || { echo "ERROR: PHP syntax check failed."; rm -f "$NEW_POOL"; exit 1; }
+        systemctl reload "php${NEW_PHP}-fpm"
+
+        READY=0
+        for i in {1..8}; do
+            [ -S "$NEW_SOCKET" ] && { READY=1; break; }
+            sleep 0.5
+        done
+        [ $READY -ne 1 ] && { echo "ERROR: PHP-FPM socket failed to initialize."; rm -f "$NEW_POOL"; exit 1; }
+
+        # Update Angie Vhost
+        VHOST_FILE="/etc/angie/http.d/${DOMAIN}.conf"
+        if [ -f "$VHOST_FILE" ]; then
+            sed -i "s|fastcgi_pass unix:/run/php/php[0-9.]*-${USER_NAME}.sock;|fastcgi_pass unix:${NEW_SOCKET};|g" "$VHOST_FILE"
+            angie -t &>/dev/null && systemctl reload angie
+        fi
+
+        # Purge Old Pool
+        [ -f "$OLD_POOL" ] && rm -f "$OLD_POOL" && systemctl reload "php${OLD_PHP}-fpm" 2>/dev/null || true
+        rm -f "/run/php/php${OLD_PHP}-${USER_NAME}.sock"
+        rm -rf /var/cache/angie/fastcgi/* 2>/dev/null || true
+
+        db_exec "UPDATE sites SET php_version='${NEW_PHP}' WHERE domain='${DOMAIN}';"
+        echo "✅ Atomically migrated ${DOMAIN} to PHP ${NEW_PHP}!"
+        exit 0
+        ;;
+
+    site:delete)
+        require_root
+        init_db
+        DOMAIN="${2:-}"
+        FLAG="${3:-}"
+        [ -z "$DOMAIN" ] && { echo "Usage: sudo lsctl site:delete <domain> [--force]"; exit 1; }
+
+        SITE_ROW=$(db_query "SELECT user, php_version, db_name, db_user, site_path FROM sites WHERE domain='$DOMAIN';")
+        [ -z "$SITE_ROW" ] && { echo "ERROR: Site '$DOMAIN' not registered."; exit 1; }
+
+        USER_NAME=$(echo "$SITE_ROW" | cut -d '|' -f 1)
+        PHP_VER=$(echo "$SITE_ROW" | cut -d '|' -f 2)
+        DB_NAME=$(echo "$SITE_ROW" | cut -d '|' -f 3)
+        DB_USER=$(echo "$SITE_ROW" | cut -d '|' -f 4)
+        WEB_ROOT=$(echo "$SITE_ROW" | cut -d '|' -f 5)
+
+        if [ "$FLAG" != "--force" ]; then
+            echo "⚠️  WARNING: You are about to permanently delete '${DOMAIN}'."
+            echo "This operation will destroy:"
+            echo "  - Web files in /home/${USER_NAME}"
+            echo "  - MariaDB Database: \`${DB_NAME}\` and User: '${DB_USER}'"
+            echo "  - PHP-FPM pools and active tenant processes"
+            echo "  - Angie Virtual Host & ACME Let's Encrypt certificates"
+            echo ""
+            read -p "Type the domain name to confirm deletion: " CONFIRM
+            [ "$CONFIRM" != "$DOMAIN" ] && { echo "Aborted."; exit 1; }
+        fi
+
+        echo ">>> Executing deep multi-tier teardown for: ${DOMAIN}..."
+
+        # 1. Pre-Deletion Safety Database Snapshot
+        mkdir -p "$BACKUP_DIR"
+        mariadb-dump --single-transaction --quick "$DB_NAME" 2>/dev/null | gzip > "${BACKUP_DIR}/${DOMAIN}_$(date +%s).sql.gz" || true
+
+        # 2. Web Server & ACME Purge
+        rm -f "/etc/angie/http.d/${DOMAIN}.conf"
+        rm -f "/etc/angie/cache-zones/${DOMAIN}.conf" 2>/dev/null || true
+        rm -rf "/var/cache/angie/sites/${DOMAIN}" 2>/dev/null || true
+        rm -rf "/etc/angie/tenant-custom/${DOMAIN}" 2>/dev/null || true
+        rm -rf "/var/lib/angie/acme/${DOMAIN}"* 2>/dev/null || true
+        angie -t &>/dev/null && systemctl reload angie 2>/dev/null || true
+
+        # 3. Terminate Tenant Processes & Remove Pools
+        pkill -u "$USER_NAME" 2>/dev/null || true
+        for VER in 8.1 8.2 8.3 8.4 8.5; do
+            POOL_FILE="/etc/php/${VER}/fpm/pool.d/${USER_NAME}.conf"
+            if [ -f "$POOL_FILE" ]; then
+                rm -f "$POOL_FILE"
+                systemctl reload "php${VER}-fpm" 2>/dev/null || true
+            fi
+        done
+        rm -f /run/php/php*-${USER_NAME}.sock 2>/dev/null || true
+
+        # 4. Database Teardown
+        mariadb -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`; DROP USER IF EXISTS '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
+
+        # 5. Invalidate In-Memory Cache Keys & Purge Valkey ACL
+        valkey-cli -s /run/valkey/valkey.sock --scan --pattern "${USER_NAME}_*" 2>/dev/null | xargs -r valkey-cli -s /run/valkey/valkey.sock del 2>/dev/null || true
+        if [ -f /etc/valkey/users.acl ]; then
+            sed -i "/user ${USER_NAME} /d" /etc/valkey/users.acl 2>/dev/null || true
+            valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+        fi
+
+        # 6. Tenant User Filesystem Removal
+        sed -i "/ ${DOMAIN}$/d" /etc/hosts 2>/dev/null || true
+        crontab -u "$USER_NAME" -r 2>/dev/null || true
+        userdel -r "$USER_NAME" 2>/dev/null || rm -rf "/home/${USER_NAME}"
+
+        # 7. Remove from Database
+        db_exec "DELETE FROM sites WHERE domain='$DOMAIN';"
+        rm -rf /var/cache/angie/fastcgi/* 2>/dev/null || true
+
+        echo "🗑️  Site ${DOMAIN} completely purged with zero orphans."
+        echo "Safety snapshot archived at: ${BACKUP_DIR}/"
+        exit 0
+        ;;
+
+    wp:create|site:create)
+        require_root
+        init_db
+
+        PROFILE="default"
+        DOMAIN=""
+        CLI_ADMIN_USER=""
+        CLI_ADMIN_EMAIL=""
+        CLI_ADMIN_PASS=""
+        CLI_PHP=""
+        CLI_POOL_MODE=""
+        CLI_MEM_LIMIT=""
+        CLI_CF=""
+        CLI_TITLE=""
+
+        for arg in "$@"; do
+            case $arg in
+                --domain=*) DOMAIN="${arg#*=}" ;;
+                --profile=*) PROFILE="${arg#*=}" ;;
+                --admin-user=*) CLI_ADMIN_USER="${arg#*=}" ;;
+                --admin-email=*) CLI_ADMIN_EMAIL="${arg#*=}" ;;
+                --admin-pass=*) CLI_ADMIN_PASS="${arg#*=}" ;;
+                --php=*) CLI_PHP="${arg#*=}" ;;
+                --pool-mode=*) CLI_POOL_MODE="${arg#*=}" ;;
+                --memory-limit=*) CLI_MEM_LIMIT="${arg#*=}" ;;
+                --cf) CLI_CF=1 ;;
+                --cf=*) [ "${arg#*=}" == "on" ] && CLI_CF=1 || CLI_CF=0 ;;
+                --site-title=*) CLI_TITLE="${arg#*=}" ;;
+            esac
+        done
+
+        [ -z "$DOMAIN" ] && { echo "ERROR: --domain is required."; exit 1; }
+
+        # Strict Input Sanitization & Validation
+        if ! [[ "$DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+            echo "ERROR: Invalid domain name format '$DOMAIN'." >&2
+            exit 1
+        fi
+        if [ -n "$CLI_PHP" ] && ! [[ "$CLI_PHP" =~ ^8\.[1-5]$ ]]; then
+            echo "ERROR: Invalid or unsupported PHP version '$CLI_PHP'." >&2
+            exit 1
+        fi
+        if [ -n "$CLI_MEM_LIMIT" ] && ! [[ "$CLI_MEM_LIMIT" =~ ^[0-9]+[MG]$ ]]; then
+            echo "ERROR: Invalid memory limit format '$CLI_MEM_LIMIT'." >&2
+            exit 1
+        fi
+        if [ -n "$CLI_ADMIN_USER" ] && ! [[ "$CLI_ADMIN_USER" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+            echo "ERROR: Invalid admin username format." >&2
+            exit 1
+        fi
+
+        # Parse YAML Profile safely using Python (No eval)
+        PROFILE_DATA=$(python3 - "$PROFILES_FILE" "$PROFILE" << 'PY'
+import yaml, json, sys
+p_file = sys.argv[1]
+p_name = sys.argv[2]
+try:
+    with open(p_file, "r") as f:
+        data = yaml.safe_load(f) or {}
+    p = data.get(p_name)
+    if not p:
+        sys.exit(2)
+    print(json.dumps(p))
+except Exception:
+    sys.exit(1)
+PY
+)
+        RET=$?
+        if [ $RET -eq 2 ]; then
+            echo "ERROR: Profile '$PROFILE' not found in $PROFILES_FILE" >&2
+            exit 1
+        elif [ $RET -ne 0 ]; then
+            echo "ERROR: Failed to parse $PROFILES_FILE" >&2
+            exit 1
+        fi
+
+        P_ADMIN_USER=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_user', 'admin'))" "$PROFILE_DATA")
+        P_ADMIN_EMAIL=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_email', 'admin@example.com'))" "$PROFILE_DATA")
+        P_ADMIN_PASS=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_pass', ''))" "$PROFILE_DATA")
+        P_PHP=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('php', '8.5'))" "$PROFILE_DATA")
+        P_POOL_MODE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('pool_mode', 'dynamic'))" "$PROFILE_DATA")
+        P_MEM=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('memory_limit', '256M'))" "$PROFILE_DATA")
+        P_TIMEZONE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('timezone', 'UTC'))" "$PROFILE_DATA")
+        P_CACHE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('cache', 'on'))" "$PROFILE_DATA")
+        P_CF=$(python3 -c "import json, sys; print('1' if json.loads(sys.argv[1]).get('cf', False) else '0')" "$PROFILE_DATA")
+        P_THEME=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('theme', ''))" "$PROFILE_DATA")
+        P_PLUGINS=$(python3 -c "import json, sys; pl = json.loads(sys.argv[1]).get('plugins', []); print(' '.join(pl) if isinstance(pl, list) else '')" "$PROFILE_DATA")
+
+        ADMIN_USER="${CLI_ADMIN_USER:-$P_ADMIN_USER}"
+        ADMIN_EMAIL="${CLI_ADMIN_EMAIL:-$P_ADMIN_EMAIL}"
+        ADMIN_PASS="${CLI_ADMIN_PASS:-$P_ADMIN_PASS}"
+        PHP_VER="${CLI_PHP:-$P_PHP}"
+        POOL_MODE="${CLI_POOL_MODE:-$P_POOL_MODE}"
+        MEMORY_LIMIT="${CLI_MEM_LIMIT:-$P_MEM}"
+        SITE_TITLE="${CLI_TITLE:-$DOMAIN}"
+        [ -n "$CLI_CF" ] && IS_CF=$CLI_CF || IS_CF=$P_CF
+        CACHE_ARG="$P_CACHE"
+        TIMEZONE="$P_TIMEZONE"
+        THEME="$P_THEME"
+        PLUGINS="$P_PLUGINS"
+
+        [ -z "$ADMIN_PASS" ] && ADMIN_PASS=$(openssl rand -hex 12)
+
+        EXISTS=$(db_query "SELECT count(*) FROM sites WHERE domain='$DOMAIN';")
+        [ "$EXISTS" -gt 0 ] && { echo "ERROR: Domain $DOMAIN is already registered."; exit 1; }
+
+        # System User slug (Domain derived + random 4 chars)
+        CLEAN_DOMAIN=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '_')
+        SHORT_SLUG=$(echo "$CLEAN_DOMAIN" | cut -c 1-14 | sed 's/_$//')
+        RAND_SUFFIX=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+        USER_NAME="${SHORT_SLUG}_${RAND_SUFFIX}"
+        [[ "$USER_NAME" =~ ^[0-9] ]] && USER_NAME="s_${USER_NAME}"
+
+        # Subdomain detection (prevents invalid www. on subdomains)
+        DOT_COUNT=$(awk -F. '{print NF-1}' <<< "$DOMAIN")
+        [ "$DOT_COUNT" -eq 1 ] && SERVER_NAMES="${DOMAIN} www.${DOMAIN}" || SERVER_NAMES="${DOMAIN}"
+
+        WEB_ROOT="/home/${USER_NAME}/htdocs"
+        LOG_DIR="/home/${USER_NAME}/logs"
+        SOCKET_PATH="/run/php/php${PHP_VER}-${USER_NAME}.sock"
+
+        RAND_PREFIX=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 6)
+        TABLE_PREFIX="${RAND_PREFIX}_"
+        RAND_SALT=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 6)
+        CACHE_KEY_SALT="${RAND_SALT}_"
+
+        # Rollback Trap
+        cleanup_on_error() {
+            echo "❌ Provisioning failed. Executing automatic rollback..."
+            mariadb -e "DROP DATABASE IF EXISTS \`${USER_NAME}_db\`; DROP USER IF EXISTS '${USER_NAME}_u'@'localhost';" 2>/dev/null || true
+            rm -f "/etc/angie/http.d/${DOMAIN}.conf" "/etc/php/${PHP_VER}/fpm/pool.d/${USER_NAME}.conf"
+            rm -f "/etc/angie/cache-zones/${DOMAIN}.conf" 2>/dev/null || true
+            rm -rf "/var/cache/angie/sites/${DOMAIN}" 2>/dev/null || true
+            rm -rf "/etc/angie/tenant-custom/${DOMAIN}" 2>/dev/null || true
+            if [ -f /etc/valkey/users.acl ]; then
+                sed -i "/user ${USER_NAME} /d" /etc/valkey/users.acl 2>/dev/null || true
+                valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+            fi
+            userdel -r "$USER_NAME" 2>/dev/null || rm -rf "/home/${USER_NAME}"
+            exit 1
+        }
+        trap cleanup_on_error ERR
+
+        echo ">>> Provisioning Site: ${DOMAIN} (Profile: ${PROFILE})"
+        echo ">>> Tenant: ${USER_NAME} | PHP: ${PHP_VER} | Pool: ${POOL_MODE}"
+
+        groupadd -f tenants
+        groupadd -f valkey
+        useradd -m -s /bin/false -U -G tenants,valkey -d "/home/${USER_NAME}" "$USER_NAME"
+        grep -q " ${DOMAIN}" /etc/hosts || echo "127.0.0.1 ${DOMAIN}" >> /etc/hosts
+
+        mkdir -p "$WEB_ROOT" "$LOG_DIR" "/home/${USER_NAME}/tmp"
+
+        # Download or copy WordPress Core
+        if [ -d "$WP_MASTER_TEMPLATE" ] && [ -f "${WP_MASTER_TEMPLATE}/wp-settings.php" ]; then
+            cp -a "${WP_MASTER_TEMPLATE}/"* "${WEB_ROOT}/"
+        else
+            echo ">>> Downloading WordPress Core via WP-CLI..."
+            /usr/local/bin/wp core download --path="${WEB_ROOT}" --allow-root >/dev/null
+        fi
+
+        # MariaDB Database Creation
+        DB_NAME="${USER_NAME}_db"
+        DB_USER="${USER_NAME}_u"
+        DB_PASS=$(openssl rand -hex 12)
+
+        mariadb -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci;"
+        mariadb -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+        mariadb -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
+        mariadb -e "FLUSH PRIVILEGES;"
+
+        # PHP-FPM Pool Generation
+        POOL_FILE="/etc/php/${PHP_VER}/fpm/pool.d/${USER_NAME}.conf"
+        cp "${TEMPLATE_DIR}/pool.conf.tpl" "$POOL_FILE"
+        sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$POOL_FILE"
+        sed -i "s|{{SOCKET_PATH}}|${SOCKET_PATH}|g" "$POOL_FILE"
+        sed -i "s|{{POOL_MODE}}|${POOL_MODE}|g" "$POOL_FILE"
+        sed -i "s|{{MAX_CHILDREN}}|30|g" "$POOL_FILE"
+        sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|g" "$POOL_FILE"
+        sed -i "s|{{MEMORY_LIMIT}}|${MEMORY_LIMIT}|g" "$POOL_FILE"
+
+        if [ "$POOL_MODE" == "dynamic" ]; then
+            DYNAMIC_SETTINGS="pm.start_servers = 6\npm.min_spare_servers = 4\npm.max_spare_servers = 12"
+            sed -i "s|{{PM_DYNAMIC_SETTINGS}}|${DYNAMIC_SETTINGS}|g" "$POOL_FILE"
+        else
+            sed -i "s|{{PM_DYNAMIC_SETTINGS}}||g" "$POOL_FILE"
+        fi
+
+        php-fpm${PHP_VER} -t
+        systemctl reload "php${PHP_VER}-fpm"
+        TARGET_SOCKET="unix:${SOCKET_PATH}"
+
+        # Cryptographic Salts
+        SALT_KEYS="define( 'AUTH_KEY',         '$(openssl rand -hex 32)' );
+define( 'SECURE_AUTH_KEY',  '$(openssl rand -hex 32)' );
+define( 'LOGGED_IN_KEY',    '$(openssl rand -hex 32)' );
+define( 'NONCE_KEY',        '$(openssl rand -hex 32)' );
+define( 'AUTH_SALT',        '$(openssl rand -hex 32)' );
+define( 'SECURE_AUTH_SALT', '$(openssl rand -hex 32)' );
+define( 'LOGGED_IN_SALT',   '$(openssl rand -hex 32)' );
+define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
+
+        [ "$CACHE_ARG" == "on" ] && CACHE_LINE="define( 'WP_CACHE', true );" || CACHE_LINE="// define( 'WP_CACHE', false );"
+
+        # Valkey 8 Native ACL User & Database Index Generation
+        VALKEY_PASS=$(openssl rand -hex 16)
+        SITE_COUNT=$(db_query "SELECT count(*) FROM sites;")
+        [ -z "$SITE_COUNT" ] && SITE_COUNT=0
+        VALKEY_DB=$(( (SITE_COUNT % 120) + 1 ))
+
+        ACL_FILE="/etc/valkey/users.acl"
+        if [ -f "$ACL_FILE" ]; then
+            sed -i "/user ${USER_NAME} /d" "$ACL_FILE" 2>/dev/null || true
+            echo "user ${USER_NAME} on >${VALKEY_PASS} ~${USER_NAME}:* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select|${VALKEY_DB} +flushdb" >> "$ACL_FILE"
+            valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+        fi
+
+        # Generate wp-config.php
+        WP_CONFIG="${WEB_ROOT}/wp-config.php"
+        cp "${TEMPLATE_DIR}/wp-config.php.tpl" "$WP_CONFIG"
+        sed -i "s|{{DB_NAME}}|${DB_NAME}|g" "$WP_CONFIG"
+        sed -i "s|{{DB_USER}}|${DB_USER}|g" "$WP_CONFIG"
+        sed -i "s|{{DB_PASS}}|${DB_PASS}|g" "$WP_CONFIG"
+        sed -i "s|{{DOMAIN}}|${DOMAIN}|g" "$WP_CONFIG"
+        sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$WP_CONFIG"
+        sed -i "s|{{TABLE_PREFIX}}|${TABLE_PREFIX}|g" "$WP_CONFIG"
+        sed -i "s|{{CACHE_KEY_SALT}}|${CACHE_KEY_SALT}|g" "$WP_CONFIG"
+        sed -i "s|{{CACHE_CONSTANTS}}|${CACHE_LINE}|g" "$WP_CONFIG"
+        sed -i "s|{{VALKEY_PASSWORD}}|${VALKEY_PASS}|g" "$WP_CONFIG"
+        sed -i "s|{{VALKEY_DATABASE}}|${VALKEY_DB}|g" "$WP_CONFIG"
+
+        awk -v r="$SALT_KEYS" '{gsub(/\{\{SALT_KEYS\}\}/, r)}1' "$WP_CONFIG" > "${WP_CONFIG}.tmp" && mv "${WP_CONFIG}.tmp" "$WP_CONFIG"
+
+        # Hardened Multi-Tenant Filesystem Permissions
+        chown -R "${USER_NAME}:${USER_NAME}" "/home/${USER_NAME}"
+        chown -R "${USER_NAME}:www-data" "$WEB_ROOT" "$LOG_DIR"
+        chmod 750 "/home/${USER_NAME}"
+        chmod 750 "$WEB_ROOT"
+        chmod 700 "/home/${USER_NAME}/tmp"
+        chmod 750 "$LOG_DIR"
+        chmod 640 "$WP_CONFIG"
+
+        # Deploy LeanStack MU-Plugins Suite
+        mkdir -p "${WEB_ROOT}/wp-content/mu-plugins"
+        for tpl in leanstack-shield.php leanstack-bridge.php leanstack-holepunch.php leanstack-apcu.php; do
+            if [ -f "${TEMPLATE_DIR}/${tpl}.tpl" ]; then
+                cp "${TEMPLATE_DIR}/${tpl}.tpl" "${WEB_ROOT}/wp-content/mu-plugins/${tpl}"
+            fi
+        done
+        chown -R "${USER_NAME}:${USER_NAME}" "${WEB_ROOT}/wp-content/mu-plugins"
+        chmod 750 "${WEB_ROOT}/wp-content/mu-plugins"
+        chmod 644 "${WEB_ROOT}/wp-content/mu-plugins"/*.php 2>/dev/null || true
+
+        # Scaffold Nginx Tenant Custom Configuration & Security Headers
+        TENANT_NGINX="/home/${USER_NAME}/nginx"
+        PROD_CUSTOM="/etc/angie/tenant-custom/${DOMAIN}"
+        mkdir -p "$TENANT_NGINX" "$PROD_CUSTOM"
+
+        cat > "${TENANT_NGINX}/custom-early.conf" << 'EOF'
+# ==============================================================================
+# Tenant Custom Slot 1: Pre-Static Interceptor (CompressX, Caching, AVIF/WebP)
+# Rules here are evaluated before static caching and after global security lockouts.
+# ==============================================================================
+EOF
+
+        cat > "${TENANT_NGINX}/custom-rules.conf" << 'EOF'
+# ==============================================================================
+# Tenant Custom Slot 2: Custom Redirects & Application Rules
+# Rules here are evaluated after static caching and before the WordPress router.
+# ==============================================================================
+EOF
+
+        cat > "${TENANT_NGINX}/cache-config.conf" << 'EOF'
+# ==============================================================================
+# Tenant FastCGI Cache Configuration (Managed via WordPress Tools > LeanStack Cache)
+# ==============================================================================
+set $site_cache_enabled 1;
+set $site_cache_ttl 3600s;
+EOF
+
+        cat > "${TENANT_NGINX}/security-headers.conf" << 'EOF'
+# ==============================================================================
+# Tenant Security Headers & Policies (Managed via WordPress Settings > Security Headers)
+# ==============================================================================
+add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+add_header Content-Security-Policy "default-src 'self' https: data: 'unsafe-inline' 'unsafe-eval'; worker-src 'self' blob:; frame-ancestors 'self';" always;
+EOF
+
+        cat > "${TENANT_NGINX}/.status.json" << EOF
+{
+  "status": "active",
+  "message": "Baseline configuration verified and active.",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+        cp "${TENANT_NGINX}/custom-early.conf" "${PROD_CUSTOM}/custom-early.conf"
+        cp "${TENANT_NGINX}/custom-rules.conf" "${PROD_CUSTOM}/custom-rules.conf"
+        cp "${TENANT_NGINX}/cache-config.conf" "${PROD_CUSTOM}/cache-config.conf"
+        cp "${TENANT_NGINX}/security-headers.conf" "${PROD_CUSTOM}/security-headers.conf"
+
+        # Scaffold Per-Site Dedicated FastCGI Cache Directory & Angie Zone
+        ZONE_KEY=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '_')
+        SITE_CACHE_DIR="/var/cache/angie/sites/${DOMAIN}"
+        mkdir -p "$SITE_CACHE_DIR" /etc/angie/cache-zones
+        chown -R "${USER_NAME}:www-data" "$SITE_CACHE_DIR"
+        chmod 770 "$SITE_CACHE_DIR"
+
+        cat > "/etc/angie/cache-zones/${DOMAIN}.conf" << EOF
+fastcgi_cache_path ${SITE_CACHE_DIR} levels=1:2 keys_zone=CACHE_${ZONE_KEY}:20m inactive=7d max_size=512m use_temp_path=off;
+EOF
+
+        # Compatibility symlink for plugins expecting .nginx.conf
+        ln -sf "${TENANT_NGINX}/custom-early.conf" "${WEB_ROOT}/.nginx.conf"
+
+        chown -R "${USER_NAME}:www-data" "$TENANT_NGINX"
+        chmod 750 "$TENANT_NGINX"
+        chmod 644 "${TENANT_NGINX}"/*.conf "${TENANT_NGINX}/.status.json"
+        chown -R root:www-data "$PROD_CUSTOM"
+        chmod 750 "$PROD_CUSTOM"
+        chmod 644 "${PROD_CUSTOM}"/*.conf "/etc/angie/cache-zones/${DOMAIN}.conf" 2>/dev/null || true
+
+        # WP-CLI Core Installation
+        sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp core install \
+            --path="${WEB_ROOT}" \
+            --url="https://${DOMAIN}" \
+            --title="${SITE_TITLE}" \
+            --admin_user="${ADMIN_USER}" \
+            --admin_password="${ADMIN_PASS}" \
+            --admin_email="${ADMIN_EMAIL}" \
+            --skip-email
+
+        # Set Timezone
+        sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp option update timezone_string "$TIMEZONE" --path="${WEB_ROOT}" 2>/dev/null || true
+
+        # Install Plugins
+        if [ -n "$PLUGINS" ]; then
+            for PLUG in $PLUGINS; do
+                sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp plugin install "$PLUG" --activate --path="${WEB_ROOT}" 2>/dev/null || true
+            done
+            [ "$CACHE_ARG" == "on" ] && sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp redis enable --path="${WEB_ROOT}" 2>/dev/null || true
+        fi
+
+        # Install Theme
+        if [ -n "$THEME" ]; then
+            sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp theme install "$THEME" --activate --path="${WEB_ROOT}" 2>/dev/null || \
+            sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp theme activate "$THEME" --path="${WEB_ROOT}" 2>/dev/null || true
+        fi
+
+        # Angie Virtual Host Generation
+        VHOST_FILE="/etc/angie/http.d/${DOMAIN}.conf"
+        cp "${TEMPLATE_DIR}/vhost.conf.tpl" "$VHOST_FILE"
+        sed -i "s|{{DOMAIN}}|${SERVER_NAMES}|g" "$VHOST_FILE"
+        sed -i "s|{{PRIMARY_DOMAIN}}|${DOMAIN}|g" "$VHOST_FILE"
+        sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|g" "$VHOST_FILE"
+        sed -i "s|{{LOG_DIR}}|${LOG_DIR}|g" "$VHOST_FILE"
+        sed -i "s|{{TARGET_SOCKET}}|${TARGET_SOCKET}|g" "$VHOST_FILE"
+        sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$VHOST_FILE"
+        sed -i "s|{{ZONE_KEY}}|${ZONE_KEY}|g" "$VHOST_FILE"
+
+        angie -t
+        systemctl reload angie
+
+        trap - ERR
+
+        # Register in SQLite
+        db_exec "
+INSERT INTO sites (domain, user, php_version, pool_type, pool_mode, memory_limit, table_prefix, is_cf, profile_used, site_path, db_name, db_user, db_pass, admin_user, admin_pass, admin_email, wp_version)
+VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY_LIMIT', '$TABLE_PREFIX', $IS_CF, '$PROFILE', '$WEB_ROOT', '$DB_NAME', '$DB_USER', '$DB_PASS', '$ADMIN_USER', '$ADMIN_PASS', '$ADMIN_EMAIL', 'latest');
+"
+
+        echo ""
+        echo "=========================================================="
+        echo "🎉 WordPress Provisioned Successfully!"
+        echo "=========================================================="
+        echo "Domain:          https://${DOMAIN}"
+        echo "Profile:         ${PROFILE}"
+        echo "Tenant User:     ${USER_NAME}"
+        echo "Admin User:      ${ADMIN_USER}"
+        echo "Admin Pass:      ${ADMIN_PASS}"
+        echo "DB Name:         ${DB_NAME}"
+        echo "Table Prefix:    ${TABLE_PREFIX}"
+        echo "=========================================================="
+        exit 0
+        ;;
+
+    doctor)
+        echo "=========================================================="
+        echo "🩺 LeanStack Diagnostic & Doctor Self-Healing Check"
+        echo "=========================================================="
+
+        check_svc() {
+            local svc="$1"
+            if systemctl is-active --quiet "$svc" 2>/dev/null; then
+                echo "  [PASS] Service $svc is running"
+            else
+                echo "  [FAIL] Service $svc is not running!"
+            fi
+        }
+
+        check_socket() {
+            local sock="$1"
+            if [ -S "$sock" ]; then
+                echo "  [PASS] Socket $sock is active"
+            else
+                echo "  [WARN] Socket $sock not found"
+            fi
+        }
+
+        echo ">>> Service Status Checks:"
+        check_svc angie
+        check_svc mariadb
+        check_svc valkey
+
+        echo ">>> Core Sockets:"
+        check_socket /run/valkey/valkey.sock
+        check_socket /run/mysqld/mysqld.sock
+
+        echo ">>> Syntax Gatekeeper Checks:"
+        if command -v angie &>/dev/null; then
+            angie -t 2>/dev/null && echo "  [PASS] Angie syntax valid" || echo "  [FAIL] Angie syntax errors found!"
+        fi
+
+        echo ">>> Storage & Memory Health:"
+        df -h / | awk 'NR==2 {print "  Disk / Usage: "$3" used / "$2" total ("$5" full)"}'
+        free -m | awk 'NR==2 {print "  Memory Usage: "$3"MB used / "$2"MB total"}'
+        echo "=========================================================="
+        exit 0
+        ;;
+
+    *)
+        show_help
+        ;;
+esac

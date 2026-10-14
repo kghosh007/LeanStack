@@ -1,0 +1,17 @@
+# LeanStack Server Directives & API Routing for LiteSpeed / Apache
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteBase /
+
+# Ensure /api/telemetry routes to api/telemetry/index.php
+RewriteRule ^api/telemetry/?$ api/telemetry/index.php [L,QSA]
+</IfModule>
+
+# Protect data storage files from direct external access
+<FilesMatch "\.(sqlite|db|json|hash)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>
+
+# Force UTF-8 Charset
+AddDefaultCharset UTF-8

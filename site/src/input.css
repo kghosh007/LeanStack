@@ -1,0 +1,513 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==============================================================================
+   LeanStack Precision Stylesheet
+   - Base Palette: Warm Dark Graphite/Espresso (#161413), Ivory Contrast (#F7F3F2)
+   - Signature Accent: Vibrant Vermilion (#F72B00), Dark Vermilion (#CC1B02)
+   - Highlights: Luminous Amber (#FF6900), Emerald Speed (#00D084)
+   - Typography: Clean Inter & JetBrains Mono (Optimal for Performance, CWV & Accessibility)
+   ============================================================================== */
+
+:root {
+  --wp-base: #161413;
+  --wp-base-surface: #1E1B19;
+  --wp-base-elevated: #282422;
+  --wp-base-card: rgba(30, 27, 25, 0.85);
+  
+  --wp-border: #332F2C;
+  --wp-border-highlight: #4D4744;
+  
+  --wp-contrast: #F7F3F2;
+  --wp-contrast-2: #A9A6A5;
+  --wp-contrast-3: #9E9A98; /* Accessible WCAG AA compliant muted text (>6.5:1 contrast) */
+  --wp-contrast-80: #D1CECD;
+
+  --wp-accent: #F72B00;
+  --wp-accent-dark: #CC1B02;
+  --wp-accent-glow: rgba(247, 43, 0, 0.16);
+
+  --wp-amber: #FF6900;
+  --wp-emerald: #00D084;
+  --wp-cyan: #0693E3;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background-color: var(--wp-base);
+  color: var(--wp-contrast-2);
+  overflow-x: hidden;
+  line-height: 1.7;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, .font-serif, .display-serif {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: var(--wp-contrast);
+  letter-spacing: -0.025em;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 1.85rem;
+  line-height: 1.25;
+}
+
+h3 {
+  font-size: 1.25rem;
+  line-height: 1.35;
+}
+
+code, pre, .font-mono {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-track {
+  background: var(--wp-base);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--wp-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--wp-border-highlight);
+}
+
+/* Background Mesh Pattern */
+.bg-subtle-mesh {
+  background-size: 40px 40px;
+  background-image: 
+    linear-gradient(to right, rgba(247, 243, 242, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(247, 243, 242, 0.02) 1px, transparent 1px);
+}
+
+/* Generative Helix / Wave Canvas Container */
+#hero-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0.85;
+  z-index: 0;
+}
+
+/* Editorial Glass & Card Surfaces */
+.editorial-card {
+  background: var(--wp-base-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--wp-border);
+  transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.editorial-card:hover {
+  border-color: var(--wp-border-highlight);
+}
+
+/* Signature Buttons */
+.btn-vermilion, .btn-vermillion {
+  background-color: var(--wp-accent);
+  color: #FFFFFF;
+  font-weight: 600;
+  padding: 0.65rem 1.45rem;
+  border-radius: 9999px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 18px var(--wp-accent-glow);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid transparent;
+}
+
+.btn-vermilion:hover, .btn-vermillion:hover {
+  background-color: var(--wp-accent-dark);
+  box-shadow: 0 6px 24px rgba(247, 43, 0, 0.35);
+  transform: translateY(-1px);
+}
+
+.btn-editorial-outline {
+  background: transparent;
+  color: var(--wp-contrast);
+  border: 1px solid var(--wp-border-highlight);
+  font-weight: 500;
+  padding: 0.65rem 1.45rem;
+  border-radius: 9999px;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.btn-editorial-outline:hover {
+  border-color: var(--wp-contrast);
+  background: rgba(247, 243, 242, 0.05);
+  transform: translateY(-1px);
+}
+
+/* Badge Tags */
+.badge-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.badge-vermilion, .badge-vermillion {
+  background: rgba(247, 43, 0, 0.12);
+  color: #FF5A36;
+  border: 1px solid rgba(247, 43, 0, 0.3);
+}
+
+.badge-emerald {
+  background: rgba(0, 208, 132, 0.12);
+  color: #00D084;
+  border: 1px solid rgba(0, 208, 132, 0.3);
+}
+
+.badge-amber {
+  background: rgba(255, 105, 0, 0.12);
+  color: #FFA04D;
+  border: 1px solid rgba(255, 105, 0, 0.3);
+}
+
+.badge-subtle {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--wp-contrast-2);
+  border: 1px solid var(--wp-border);
+}
+
+/* Callout Alert Boxes */
+.callout {
+  padding: 1.15rem 1.35rem;
+  border-radius: 0.6rem;
+  border-left-width: 3px;
+  margin: 1.35rem 0;
+  background: var(--wp-base-surface);
+}
+
+.callout-info {
+  border-left-color: var(--wp-accent);
+  background: rgba(247, 43, 0, 0.04);
+}
+
+.callout-warning {
+  border-left-color: var(--wp-amber);
+  background: rgba(255, 105, 0, 0.04);
+}
+
+.callout-success {
+  border-left-color: var(--wp-emerald);
+  background: rgba(0, 208, 132, 0.04);
+}
+
+/* Terminal Styling */
+.terminal-window {
+  background: #110F0E;
+  border: 1px solid var(--wp-border);
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.7);
+}
+
+.terminal-header {
+  background: #191614;
+  border-bottom: 1px solid var(--wp-border);
+}
+
+.terminal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* Benchmark Bar Styling */
+.benchmark-track {
+  background: #191614;
+  border: 1px solid var(--wp-border);
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+  height: 22px;
+}
+
+.benchmark-fill-leanstack {
+  background: linear-gradient(90deg, #F72B00, #FF6900);
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.benchmark-fill-other {
+  background: #332F2C;
+  height: 100%;
+  border-radius: 5px;
+  transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Floating Toast Notification */
+#toast-notification {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  z-index: 9999;
+  background: var(--wp-base-elevated);
+  border: 1px solid var(--wp-accent);
+  color: var(--wp-contrast);
+  padding: 0.75rem 1.25rem;
+  border-radius: 9999px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), 0 0 20px var(--wp-accent-glow);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transform: translateY(150%);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+  font-size: 0.82rem;
+}
+
+#toast-notification.active {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Documentation Content Formatting */
+.doc-content h2 {
+  color: var(--wp-contrast);
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin-top: 2.75rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--wp-border);
+  scroll-margin-top: 6rem;
+}
+
+.doc-content h3 {
+  color: var(--wp-contrast);
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  scroll-margin-top: 6rem;
+}
+
+.doc-content p {
+  margin-bottom: 1.15rem;
+  line-height: 1.75;
+}
+
+.doc-content ul, .doc-content ol {
+  margin-bottom: 1.35rem;
+  padding-left: 1.5rem;
+}
+
+.doc-content li {
+  margin-bottom: 0.45rem;
+}
+
+.doc-content table {
+  width: 100%;
+  margin: 1.75rem 0;
+  border-collapse: collapse;
+}
+
+.doc-content th {
+  background: var(--wp-base-surface);
+  color: var(--wp-contrast);
+  font-weight: 600;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--wp-border);
+  text-align: left;
+  font-size: 0.85rem;
+}
+
+.doc-content td {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--wp-border);
+  color: var(--wp-contrast-2);
+  font-size: 0.85rem;
+}
+
+.doc-content tr:nth-child(even) {
+  background: rgba(30, 27, 25, 0.4);
+}
+
+/* Wide Editorial Layout (1380px) */
+.max-w-editorial {
+  max-width: 1380px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Interactive Concurrency Slider */
+input[type=range].custom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  background: #282422;
+  height: 6px;
+  border-radius: 9999px;
+  outline: none;
+}
+
+input[type=range].custom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #F72B00;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(247, 43, 0, 0.6);
+  border: 2px solid #F7F3F2;
+  transition: transform 0.15s ease;
+}
+
+input[type=range].custom-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+}
+
+/* Interactive Pipeline Nodes */
+.pipeline-node {
+  background: #1E1B19;
+  border: 1px solid var(--wp-border);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: pointer;
+}
+
+.pipeline-node:hover {
+  border-color: var(--wp-border-highlight);
+  background: #24201E;
+}
+
+.pipeline-node.active {
+  border-color: var(--wp-accent);
+  background: rgba(247, 43, 0, 0.08);
+  box-shadow: 0 0 20px rgba(247, 43, 0, 0.15);
+}
+
+/* Dynamic Hole-Punching Visualizer */
+.holepunch-pulse {
+  position: relative;
+  border: 2px dashed #FF6900;
+  background: rgba(255, 105, 0, 0.08);
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.75rem;
+  transition: all 0.3s ease;
+}
+
+.holepunch-pulse.active-glow {
+  border-color: #F72B00;
+  background: rgba(247, 43, 0, 0.16);
+  box-shadow: 0 0 22px rgba(247, 43, 0, 0.35);
+}
+
+/* Horizon Radial Blur for Ambient Orbital Lattice */
+.horizon-glow {
+  position: absolute;
+  top: 35%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 720px;
+  height: 420px;
+  background: radial-gradient(ellipse at center, rgba(247, 43, 0, 0.12) 0%, rgba(255, 105, 0, 0.05) 50%, transparent 70%);
+  pointer-events: none;
+  filter: blur(50px);
+  z-index: 1;
+}
+
+/* Concurrency Worker Slots */
+.worker-slot {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background-color: #282422;
+  border: 1px solid #383431;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.worker-slot.active-red {
+  background-color: #F72B00;
+  border-color: #FF6900;
+  box-shadow: 0 0 10px rgba(247, 43, 0, 0.6);
+}
+
+.worker-slot.active-green {
+  background-color: #00D084;
+  border-color: #55EFC4;
+  box-shadow: 0 0 8px rgba(0, 208, 132, 0.5);
+}
+
+/* Cache Architecture Visualizer Cards */
+.cache-page-card {
+  transition: all 0.25s ease;
+  border: 1px solid #332F2C;
+}
+
+.cache-page-card.warm {
+  border-color: rgba(0, 208, 132, 0.45);
+  background-color: #161413;
+  box-shadow: 0 0 15px rgba(0, 208, 132, 0.06);
+}
+
+.cache-page-card.purging {
+  border-color: #FF6900;
+  background-color: rgba(255, 105, 0, 0.12);
+  box-shadow: 0 0 20px rgba(255, 105, 0, 0.3);
+}
+
+.cache-page-card.cold {
+  border-color: #2E2A28;
+  background-color: #110F0E;
+  opacity: 0.55;
+}
+
+/* SSI Anatomy Frames */
+.ssi-shell-frame {
+  border: 2px dashed rgba(0, 208, 132, 0.6);
+  background: rgba(0, 208, 132, 0.03);
+  border-radius: 1rem;
+  transition: all 0.3s ease;
+}
+
+.ssi-shell-frame.uncached-alert {
+  border-color: #F72B00;
+  background: rgba(247, 43, 0, 0.06);
+}
+
+.ssi-hole-box {
+  border: 2px dashed #F72B00;
+  background: rgba(247, 43, 0, 0.08);
+  border-radius: 0.5rem;
+  transition: all 0.25s ease;
+}
+
+.ssi-hole-box.pulsing {
+  box-shadow: 0 0 18px rgba(247, 43, 0, 0.45);
+  background: rgba(247, 43, 0, 0.18);
+}

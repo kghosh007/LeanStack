@@ -1,0 +1,63 @@
+# ==============================================================================
+# LeanStack Agency WordPress Profiles
+# Selectable during provisioning via --profile=<name>
+# Manage via: cpctl profile:list, cpctl profile:show, cpctl profile:create
+# ==============================================================================
+
+default:
+  description: "Standard high-density WordPress profile"
+  admin_user: "admin"
+  admin_email: "admin@example.com"
+  php: "8.5"
+  pool_mode: "dynamic"
+  memory_limit: "256M"
+  timezone: "UTC"
+  cache: "on"
+  cf: false
+  plugins:
+    - "redis-cache"
+  theme: "twentytwentyfour"
+
+agency_woocommerce:
+  description: "High-throughput WooCommerce E-Commerce Profile"
+  admin_user: "su_admin"
+  admin_email: "orders@example.com"
+  php: "8.5"
+  pool_mode: "dynamic"
+  memory_limit: "512M"
+  timezone: "UTC"
+  cache: "on"
+  cf: true
+  plugins:
+    - "woocommerce"
+    - "redis-cache"
+  theme: "storefront"
+
+high_traffic:
+  description: "Heavy traffic publishing portal with aggressive microcaching"
+  admin_user: "editor"
+  admin_email: "editorial@example.com"
+  php: "8.5"
+  pool_mode: "dynamic"
+  memory_limit: "384M"
+  timezone: "UTC"
+  cache: "on"
+  cf: true
+  plugins:
+    - "redis-cache"
+  theme: "twentytwentyfour"
+
+headless_wp:
+  description: "Decoupled headless WordPress serving GraphQL and REST APIs"
+  admin_user: "api_admin"
+  admin_email: "api@example.com"
+  php: "8.5"
+  pool_mode: "dynamic"
+  memory_limit: "256M"
+  timezone: "UTC"
+  cache: "on"
+  cf: false
+  plugins:
+    - "wp-graphql"
+    - "redis-cache"
+  theme: ""

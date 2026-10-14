@@ -1,0 +1,9 @@
+[Unit]
+Description=Trigger LeanStack Cloudflare IP Sync Weekly
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

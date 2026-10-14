@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# LeanStack Centralized Anti-Thundering Cron Queue (cp-cron-queue)
+# Executes WordPress scheduled tasks via WP-CLI with strict concurrency bounds
+# ==============================================================================
+set -euo pipefail
+
+DB_FILE="/var/lib/cpctl/sites.db"
+[ ! -f "$DB_FILE" ] && exit 0
+
+LOG_DIR="/var/log/cpctl"
+mkdir -p "$LOG_DIR"
+LOG_FILE="${LOG_DIR}/cron.log"
+
+run_site_cron() {
+    local domain="$1"
+    local user="$2"
+    local site_path="$3"
+    local php_ver="$4"
+
+    if [ -d "$site_path" ] && [ -x "/usr/bin/php${php_ver}" ] && [ -x "/usr/local/bin/wp" ]; then
+        # Run WP-CLI cron as tenant user with timeout and strict PHP runtime sandboxing
+        timeout 60 sudo -u "$user" /usr/bin/php${php_ver} \
+            -d open_basedir="${site_path}:/home/${user}/tmp" \
+            -d disable_functions="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,show_source,dl" \
+            /usr/local/bin/wp cron event run --due-now --path="$site_path" --quiet 2>> "$LOG_FILE" || true
+    fi
+}
+export -f run_site_cron
+export LOG_FILE
+
+# Query active sites: domain, user, site_path, php_version
+SITES=$(python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('$DB_FILE')
+    cur = conn.cursor()
+    cur.execute('SELECT domain, user, site_path, php_version FROM sites')
+    for row in cur.fetchall():
+        print(f'{row[0]}|{row[1]}|{row[2]}|{row[3]}')
+except Exception:
+    pass
+")
+
+[ -z "$SITES" ] && exit 0
+
+# Execute with max 4 parallel workers (Zero CPU starvation)
+echo "$SITES" | while IFS='|' read -r domain user site_path php_ver; do
+    [ -n "$domain" ] && echo "$domain $user $site_path $php_ver"
+done | xargs -n 4 -P 4 bash -c 'run_site_cron "$@"' _

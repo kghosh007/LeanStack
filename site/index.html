@@ -1,0 +1,1474 @@
+<!DOCTYPE html>
+
+<html class="scroll-smooth" lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="text/html; charset=utf-8" http-equiv="Content-Type"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>LeanStack — High-Density WordPress Engine</title>
+<!-- Favicons & Touch Icons -->
+<link href="assets/img/favicon.svg" rel="icon" type="image/svg+xml"/>
+<link href="assets/img/favicon-32x32.png" rel="alternate icon" sizes="32x32" type="image/png"/>
+<link href="assets/img/favicon-16x16.png" rel="alternate icon" sizes="16x16" type="image/png"/>
+<link href="assets/img/favicon.ico" rel="shortcut icon"/>
+<link href="assets/img/apple-touch-icon.png" rel="apple-touch-icon" sizes="180x180"/>
+<!-- Primary Meta Tags & Comprehensive SEO -->
+<meta content="LeanStack is a silicon-aligned, autonomous WordPress hosting engine for Ubuntu 22.04, 24.04 &amp; 26.04 LTS. Operates in &lt;15MB idle RAM, aligns MariaDB to CPU L2 cache lines at 4,812 QPS, and delivers wire-speed Angie HTTP/3 caching with universal SSI dynamic hole-punching." name="description"/>
+<meta content="WordPress hosting, Angie web server, HTTP3 QUIC 0-RTT, MariaDB CPU L2 cache tuning, 4812 QPS MariaDB benchmark, FastCGI microcache per tenant, Server-Side Includes, WooCommerce SSI hole-punching, bypass fastcgi_cache WooCommerce items in cart, Valkey object cache UNIX socket, high density hosting, cPanel alternative low RAM, CloudPanel alternative multi-tenant, RunCloud alternative, CyberPanel alternative, HestiaCP alternative, multi-tenant opcache isolation, in-house anti-thundering wp-cron queue, Ubuntu 22.04 24.04 26.04 WordPress hosting, zero-worker cache invalidation Angie, lsctl WordPress CLI" name="keywords"/>
+<meta content="Kuntal Ghosh" name="author"/>
+<meta content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1" name="robots"/>
+<link href="https://leanstack.kuntalghosh.dev/" rel="canonical"/>
+<!-- OpenGraph / Facebook -->
+<meta content="website" property="og:type"/>
+<meta content="https://leanstack.kuntalghosh.dev/" property="og:url"/>
+<meta content="LeanStack" property="og:site_name"/>
+<meta content="LeanStack — Host 3x More WordPress Sites on Half the RAM. At 4,812 QPS." property="og:title"/>
+<meta content="Silicon-aligned autonomous WordPress control plane. Hardware-fitted CPU L2 caches, wire-speed Angie HTTP/3 transport, autonomous multi-tier memory caching, and zero-worker SSI hole-punching." property="og:description"/>
+<meta content="https://leanstack.kuntalghosh.dev/assets/images/og-card.png" property="og:image"/>
+<!-- Twitter / X -->
+<meta content="summary_large_image" name="twitter:card"/>
+<meta content="https://leanstack.kuntalghosh.dev/" name="twitter:url"/>
+<meta content="LeanStack — Autonomous WordPress Hosting Engine" name="twitter:title"/>
+<meta content="Host 3x more WordPress sites on half the RAM. 4,812 QPS MariaDB, sub-15MB idle control plane, and wire-speed Angie HTTP/3 caching." name="twitter:description"/>
+<meta content="https://leanstack.kuntalghosh.dev/assets/images/og-card.png" name="twitter:image"/>
+<!-- Schema.org SoftwareApplication, WebSite & FAQPage JSON-LD -->
+<script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "@id": "https://leanstack.kuntalghosh.dev/#software",
+        "name": "LeanStack",
+        "operatingSystem": "Linux Ubuntu 22.04 LTS, 24.04 LTS, 26.04 LTS (x86_64)",
+        "applicationCategory": "ServerApplication",
+        "softwareVersion": "1.2.0",
+        "offers": {
+          "@type": "Offer",
+          "price": "0.00",
+          "priceCurrency": "USD"
+        },
+        "description": "Silicon-aligned autonomous WordPress control plane operating in sub-15MB RAM with 4,812 QPS database performance, wire-speed Angie HTTP/3 caching, and universal SSI hole-punching.",
+        "author": {
+          "@type": "Person",
+          "name": "Kuntal Ghosh",
+          "url": "https://kuntalghosh.dev"
+        }
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://leanstack.kuntalghosh.dev/#website",
+        "url": "https://leanstack.kuntalghosh.dev/",
+        "name": "LeanStack — Autonomous WordPress Engine",
+        "description": "Host 3x more WordPress sites on half the RAM with silicon-aligned MariaDB and Angie HTTP/3 caching."
+      },
+      {
+        "@type": "FAQPage",
+        "@id": "https://leanstack.kuntalghosh.dev/#faq",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "How does LeanStack operate in under 15MB RAM compared to cPanel or CloudPanel?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Unlike traditional control panels that keep Node.js, Java, Python Django, or Go telemetry daemons running 24/7 (consuming 300MB to 1.8GB idle memory), LeanStack is a decoupled event-driven CLI engine (lsctl). It operates on an ultra-compact SQLite WAL registry that activates only when commands are executed and returns to 0MB RAM immediately."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How does MariaDB reach 4,812 QPS in LeanStack benchmarks?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "LeanStack's hardware probe automatically fits InnoDB sort, join, and key buffer sizes to the processor's exact L2 cache line width (256KB-512KB). This prevents cache thrashing and memory allocator lock churn. Additionally, switching to READ-COMMITTED isolation eliminates InnoDB gap-locking and next-key lock serialization."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How does LeanStack solve the WooCommerce cart caching problem with SSI hole-punching?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Standard hosting panels completely bypass the page cache whenever a visitor adds an item to cart, forcing full PHP boots and 100+ database queries on every page reload. LeanStack serves 98% of the page (the HTML shell) from Angie RAM microcache in 2ms, and dynamically injects personalized fragments (cart counter, login badge) via Server-Side Includes (SSI) reading directly from Valkey in 1.4ms."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What Linux distributions are supported by LeanStack?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "LeanStack is fully tested and verified for Ubuntu 22.04 LTS (Jammy Jellyfish), Ubuntu 24.04 LTS (Noble Numbat), and forward-compatible with Ubuntu 26.04 LTS on x86_64 architecture."
+            }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+<!-- Precision Typography: Inter (Display & Body) & JetBrains Mono (Code) -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<!-- Pre-compiled, Purged & Minified Stylesheet (Zero Runtime CDN Overhead) -->
+<link href="assets/css/styles.min.css" rel="stylesheet"/>
+</head>
+<body class="bg-[#161413] text-[#F7F3F2] antialiased selection:bg-[#F72B00] selection:text-white">
+<!-- Skip to Main Content Accessibility Landmark -->
+<a class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#F72B00] focus:text-white focus:rounded-md focus:shadow-lg focus:outline-none" href="#main-content">Skip to main content</a>
+<!-- Interactive Toast Notification -->
+<div class="fixed bottom-6 right-6 z-50 transform translate-y-4 opacity-0 pointer-events-none transition-all duration-300 flex items-center gap-3 bg-[#1E1B19] border border-[#F72B00] shadow-[0_8px_30px_rgba(247,43,0,0.35)] px-4 py-3 rounded-xl" id="copy-toast">
+<svg class="w-5 h-5 text-[#00D084]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path>
+</svg>
+<span class="text-xs font-medium text-[#F7F3F2]" id="toast-message">Copied to clipboard!</span>
+</div>
+<!-- Announcement Bar -->
+<aside aria-label="Announcement" class="relative z-50 border-b border-[#332F2C] bg-[#110F0E] text-xs py-2.5 px-4 text-center text-[#A9A6A5]">
+<div class="max-w-editorial mx-auto flex items-center justify-center gap-2 flex-wrap">
+<span class="badge-pill badge-vermilion py-0.5 px-2.5">v1.2.0 Hyperion</span>
+<span class="text-[#F7F3F2] font-medium">Engineered for Ubuntu 22.04, 24.04 &amp; 26.04 LTS (x86_64).</span>
+<span class="hidden md:inline text-[#9E9A98]">•</span>
+<a class="text-[#F72B00] hover:text-[#FF6900] underline underline-offset-4 hidden md:inline" href="#roadmap">View Public Release Roadmap →</a>
+</div>
+</aside>
+<!-- Sticky Editorial Navigation: Clean, Uncrowded 5-Item Hierarchy -->
+<header class="sticky top-0 z-40 border-b border-[#332F2C] bg-[#161413]/90 backdrop-blur-md">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+<!-- Brand Logo -->
+<a class="flex items-center gap-3.5 group" href="index.html">
+<div class="w-10 h-10 rounded-xl bg-gradient-to-br from-[#F72B00] to-[#CC1B02] p-0.5 shadow-[0_4px_16px_rgba(247,43,0,0.25)] group-hover:shadow-[0_6px_22px_rgba(247,43,0,0.4)] transition">
+<div class="w-full h-full bg-[#161413] rounded-[10px] flex items-center justify-center">
+<svg class="w-6 h-6 text-[#F72B00]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M4 6h16M4 12h11M4 18h7" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"></path>
+<circle cx="18" cy="18" fill="#FF6900" r="2.5" stroke="none"></circle>
+</svg>
+</div>
+</div>
+<div class="flex flex-col">
+<span class="text-xl font-bold text-[#F7F3F2] tracking-tight">LeanStack</span>
+<span class="text-[11px] text-[#9E9A98] font-normal -mt-1">Autonomous WordPress Engine</span>
+</div>
+</a>
+<!-- Clean Editorial Navigation Links: Spacious & Readable -->
+<nav aria-label="Main Navigation" class="hidden md:flex items-center gap-7 text-sm font-medium">
+<a aria-label="LeanStack Architecture Deep Dive" class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="features.html">Architecture</a>
+<a aria-label="Performance Benchmarks and QPS Tests" class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="#benchmarks">Benchmarks</a>
+<a aria-label="Core Platform Features" class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="#features">Features</a>
+<a aria-label="Radical Transparency Technical Audit" class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="#transparency">Transparency</a>
+<a aria-label="Public Engineering Roadmap" class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="#roadmap">Roadmap</a>
+<a aria-label="Operations Manual &amp; Documentation" class="text-[#A9A6A5] hover:text-[#F7F3F2] transition" href="docs.html">Docs</a>
+<a aria-label="LeanStack GitHub Repository" class="text-[#F72B00] hover:text-[#FF6900] transition flex items-center gap-1 font-semibold" href="https://github.com/okio/leanstack" rel="noopener noreferrer" target="_blank">
+<span>GitHub</span>
+<span class="text-[10px]">↗</span>
+</a>
+</nav>
+<!-- Desktop CTA Action -->
+<div class="hidden md:flex items-center gap-3">
+<a class="btn-vermilion text-xs py-2 px-4" href="#quickstart">
+<span>Deploy Now</span>
+<span class="font-bold">→</span>
+</a>
+</div>
+<!-- Mobile Menu Button -->
+<div class="md:hidden flex items-center">
+<button aria-label="Toggle navigation menu" class="p-2 rounded-lg bg-[#1E1B19] border border-[#332F2C] text-[#F7F3F2]" id="mobile-menu-toggle" type="button">
+<svg class="w-6 h-6" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+</button>
+</div>
+</div>
+<!-- Mobile Nav Drawer -->
+<div class="hidden md:hidden border-b border-[#332F2C] bg-[#161413] px-4 pt-4 pb-6 space-y-3" id="mobile-menu">
+<a aria-label="Mobile Menu: Architecture Blueprint" class="block py-2 text-[#F7F3F2] font-medium" href="features.html">Architecture Blueprint</a>
+<a aria-label="Mobile Menu: Benchmarks" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="#benchmarks">Benchmark Matrix</a>
+<a aria-label="Mobile Menu: Platform Features" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="#features">Platform Features</a>
+<a aria-label="Mobile Menu: Technical Transparency" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="#transparency">Radical Transparency</a>
+<a aria-label="Mobile Menu: Engineering Roadmap" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="#roadmap">Engineering Roadmap</a>
+<a aria-label="Mobile Menu: Operations Documentation" class="block py-2 text-[#A9A6A5] hover:text-[#F7F3F2]" href="docs.html">Operations Docs</a>
+<div class="pt-2">
+<a class="btn-vermilion w-full text-center py-2.5 text-xs" href="#quickstart">Get Started →</a>
+</div>
+</div>
+</header>
+<!-- Main Landmark -->
+<main id="main-content" role="main">
+<!-- HERO SECTION WITH AMBIENT GLOBAL EDGE LATTICE CANVAS -->
+<section class="relative pt-20 pb-28 md:pt-28 md:pb-40 overflow-hidden border-b border-[#332F2C]">
+<!-- Ambient Orbital Lattice Canvas: wp.cloud luxury aesthetic -->
+<canvas id="hero-canvas"></canvas>
+<div class="horizon-glow"></div>
+<div class="relative z-10 max-w-editorial mx-auto px-4 sm:px-6 lg:px-8 text-center">
+<!-- Platform Pill -->
+<div class="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-[#1E1B19]/90 border border-[#332F2C] text-xs text-[#A9A6A5] mb-8 backdrop-blur-md">
+<span class="w-2 h-2 rounded-full bg-[#F72B00] animate-pulse"></span>
+<span class="text-[#F7F3F2] font-medium tracking-wide">SILICON-ALIGNED WORDPRESS CONTROL PLANE</span>
+<span class="text-[#9E9A98]">|</span>
+<span class="text-[#A9A6A5]">Ubuntu 22.04, 24.04 &amp; 26.04 (x86_64)</span>
+</div>
+<!-- Concise, Hard-Hitting Main Headline -->
+<h1 class="text-4xl sm:text-6xl lg:text-7xl font-bold tracking-tight text-[#F7F3F2] max-w-5xl mx-auto leading-[1.08] mb-6">
+        Host 3x More WordPress Sites on Half the RAM. At 4,812 QPS.
+      </h1>
+<!-- Data-Backed Editorial Subheadline -->
+<p class="text-base sm:text-xl text-[#A9A6A5] max-w-3xl mx-auto mb-12 leading-relaxed font-normal">
+        Standard control panels waste 1.8GB of physical RAM idling and stall at 237 QPS under concurrency. LeanStack operates in <strong class="text-[#F7F3F2] font-semibold">&lt;15MB idle RAM</strong>, aligns MariaDB to hardware <strong class="text-[#F7F3F2] font-semibold">CPU L2 cache lines</strong>, and serves 95% of traffic through native <strong class="text-[#F7F3F2] font-semibold">Angie HTTP/3</strong> without waking PHP.
+      </p>
+<!-- Quick-Start Command Container -->
+<div class="max-w-3xl mx-auto mb-14 scroll-mt-24" id="quickstart">
+<div class="editorial-card rounded-2xl p-3 sm:p-4 shadow-2xl border border-[#332F2C] bg-[#161413]">
+<!-- Mode Tabs -->
+<div class="flex items-center justify-between border-b border-[#332F2C] px-2 pb-3 mb-3 text-xs">
+<div class="flex items-center gap-2">
+<button class="px-3.5 py-1.5 rounded-full bg-[#F72B00] text-[#F7F3F2] font-semibold transition" data-install-tab="install">1-Line Install</button>
+<button class="px-3.5 py-1.5 rounded-full text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-install-tab="update">1-Line Update</button>
+<button class="px-3.5 py-1.5 rounded-full text-[#A9A6A5] hover:text-[#F7F3F2] transition hidden sm:inline-block" data-install-tab="selfhost">CLI Provision</button>
+</div>
+<span class="text-[11px] text-[#9E9A98] font-mono hidden md:inline">Root privileges required</span>
+</div>
+<!-- Command Display Row -->
+<div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-[#110F0E] border border-[#332F2C] rounded-xl p-3 font-mono text-left text-sm">
+<span class="text-[#F72B00] select-none pl-1 flex-shrink-0 font-bold">$</span>
+<span class="text-[#F7F3F2] select-all overflow-x-auto whitespace-nowrap py-1 px-1 flex-grow" id="hero-cmd-text">curl -fsSL https://leanstack.kuntalghosh.dev/install.sh | sudo bash</span>
+<button class="btn-vermilion text-xs py-2 px-4 flex-shrink-0 whitespace-nowrap" data-copy="curl -fsSL https://leanstack.kuntalghosh.dev/install.sh | sudo bash" id="hero-copy-btn">
+<span>Copy</span>
+<span class="font-bold">→</span>
+</button>
+</div>
+<!-- Interactive Hint -->
+<div class="flex items-center justify-between px-2 pt-3 text-[11px] text-[#A9A6A5]">
+<span id="hero-cmd-hint">✨ Interactive Antigravity TUI probes CPU, L2 cache &amp; derives optimal configuration.</span>
+<span class="text-[#9E9A98] hidden sm:inline">Self-healing Linux micro-architecture</span>
+</div>
+<!-- Social Sharing & External Engagement Options -->
+<div class="mt-5 pt-4 border-t border-[#332F2C]/60 flex flex-wrap items-center justify-between gap-3 text-xs">
+<div class="flex items-center gap-2 text-[#9E9A98]">
+<svg class="w-4 h-4 text-[#F72B00] flex-shrink-0" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path>
+</svg>
+<span class="font-medium text-[#F7F3F2]">Share LeanStack:</span>
+</div>
+<div class="flex items-center gap-2 flex-wrap">
+<a aria-label="Share LeanStack on X Twitter" class="px-3 py-1 rounded-lg bg-[#1E1B19] hover:bg-[#282422] border border-[#332F2C] hover:border-[#F72B00] text-[#F7F3F2] flex items-center gap-1.5 transition text-[11px]" href="https://twitter.com/intent/tweet?text=LeanStack%20%E2%80%94%20Host%203x%20more%20WordPress%20sites%20on%20half%20the%20RAM%20at%204%2C812%20QPS&amp;url=https%3A%2F%2Fleanstack.kuntalghosh.dev%2F" rel="noopener noreferrer" target="_blank">
+<svg class="w-3 h-3 fill-current" viewbox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"></path></svg>
+<span>Post</span>
+</a>
+<a aria-label="Share LeanStack on LinkedIn" class="px-3 py-1 rounded-lg bg-[#1E1B19] hover:bg-[#282422] border border-[#332F2C] hover:border-[#00D084] text-[#F7F3F2] flex items-center gap-1.5 transition text-[11px]" href="https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fleanstack.kuntalghosh.dev%2F" rel="noopener noreferrer" target="_blank">
+<svg class="w-3 h-3 fill-current" viewbox="0 0 24 24"><path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"></path></svg>
+<span>LinkedIn</span>
+</a>
+<a aria-label="Share LeanStack on Reddit" class="px-3 py-1 rounded-lg bg-[#1E1B19] hover:bg-[#282422] border border-[#332F2C] hover:border-[#FF6900] text-[#F7F3F2] flex items-center gap-1.5 transition text-[11px]" href="https://reddit.com/submit?url=https%3A%2F%2Fleanstack.kuntalghosh.dev%2F&amp;title=LeanStack%20Autonomous%20WordPress%20Engine" rel="noopener noreferrer" target="_blank">
+<svg class="w-3 h-3 fill-current" viewbox="0 0 24 24"><path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.688-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z"></path></svg>
+<span>Reddit</span>
+</a>
+<button aria-label="Copy site link" class="px-3 py-1 rounded-lg bg-[#1E1B19] hover:bg-[#282422] border border-[#332F2C] hover:border-[#00D084] text-[#F7F3F2] flex items-center gap-1.5 transition text-[11px]" data-copy="https://leanstack.kuntalghosh.dev/">
+<svg class="w-3 h-3 text-[#00D084]" fill="none" stroke="currentColor" viewbox="0 0 24 24"><path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path></svg>
+<span>Copy URL</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Telemetry Performance Ribbon: High-Impact Real-World Stats -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 max-w-editorial mx-auto">
+<div class="editorial-card rounded-xl p-6 text-left border-t-2 border-t-[#F72B00]">
+<div class="text-3xl sm:text-4xl font-bold text-[#F7F3F2] font-mono tracking-tight">&lt; 15 MB</div>
+<div class="text-xs font-semibold text-[#F72B00] uppercase tracking-wider mt-1">Ghost-Tier Idle Footprint</div>
+<div class="text-xs text-[#A9A6A5] mt-2">Zero background Node/Java daemons. Dedicates 99.8% of physical RAM to WordPress.</div>
+</div>
+<div class="editorial-card rounded-xl p-6 text-left border-t-2 border-t-[#FF6900]">
+<div class="text-3xl sm:text-4xl font-bold text-[#F7F3F2] font-mono tracking-tight">4,812 QPS</div>
+<div class="text-xs font-semibold text-[#FF6900] uppercase tracking-wider mt-1">Silicon-Aligned MariaDB</div>
+<div class="text-xs text-[#A9A6A5] mt-2">256KB query buffers fit 100% inside CPU L2 cache. Gap locks killed via READ-COMMITTED.</div>
+</div>
+<div class="editorial-card rounded-xl p-6 text-left border-t-2 border-t-[#00D084]">
+<div class="text-3xl sm:text-4xl font-bold text-[#F7F3F2] font-mono tracking-tight">12 ms TTFB</div>
+<div class="text-xs font-semibold text-[#00D084] uppercase tracking-wider mt-1">Zero-Worker SSI Hole-Punch</div>
+<div class="text-xs text-[#A9A6A5] mt-2">Personalized cart counts and nonces punched into wire-speed cached shells without PHP bootstrap.</div>
+</div>
+<div class="editorial-card rounded-xl p-6 text-left border-t-2 border-t-[#332F2C]">
+<div class="text-3xl sm:text-4xl font-bold text-[#F7F3F2] font-mono tracking-tight">3.8x</div>
+<div class="text-xs font-semibold text-[#F7F3F2] uppercase tracking-wider mt-1">Site Density Multiplier</div>
+<div class="text-xs text-[#A9A6A5] mt-2">Host 45–60 live WooCommerce stores per 8GB node with zero worker starvation or RAM paging.</div>
+</div>
+</div>
+</div>
+</section>
+<!-- INTERACTIVE REQUEST PIPELINE INSPECTOR -->
+<section class="py-24 bg-[#110F0E] border-b border-[#332F2C]" id="pipeline">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-vermilion mb-3">Interactive Architecture Inspector</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Click to Inspect the 8-Layer Request Pipeline
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Explore how a packet flows from edge transport through zero-worker microcaching, anti-thundering cron queues, and silicon-aligned database buffers.
+        </p>
+</div>
+<!-- Clickable Node Grid -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-3.5 mb-8">
+<div class="pipeline-node active" data-stage="edge">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">01 / Edge</div>
+<div class="text-sm font-bold text-[#F7F3F2]">Cloudflare Real-IP</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">0.8 ms • 0-RTT</div>
+</div>
+<div class="pipeline-node" data-stage="angie">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">02 / Web</div>
+<div class="text-sm font-bold text-[#F7F3F2]">Angie HTTP/3 PQC</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">1.2 ms • 8G WAF</div>
+</div>
+<div class="pipeline-node" data-stage="microcache">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">03 / Cache</div>
+<div class="text-sm font-bold text-[#F7F3F2]">Zero-Worker FastCGI</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">3.5 ms • 95% Hit</div>
+</div>
+<div class="pipeline-node" data-stage="ssi">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">04 / Dynamic</div>
+<div class="text-sm font-bold text-[#F7F3F2]">Universal SSI Engine</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">12 ms • Hole-Punch</div>
+</div>
+<div class="pipeline-node" data-stage="php">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">05 / Runtime</div>
+<div class="text-sm font-bold text-[#F7F3F2]">POSIX Sandboxed PHP</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">8.4 ms • open_basedir</div>
+</div>
+<div class="pipeline-node" data-stage="valkey">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">06 / Memory</div>
+<div class="text-sm font-bold text-[#F7F3F2]">Valkey + APCu</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">&lt;3µs • 10% RAM Cap</div>
+</div>
+<div class="pipeline-node" data-stage="mariadb">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">07 / Database</div>
+<div class="text-sm font-bold text-[#F7F3F2]">MariaDB L2-Aligned</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">4,812 QPS • O_DIRECT</div>
+</div>
+<div class="pipeline-node" data-stage="cron">
+<div class="text-xs text-[#9E9A98] font-mono mb-1">08 / Background</div>
+<div class="text-sm font-bold text-[#F7F3F2]">Anti-Thundering Cron</div>
+<div class="text-[11px] text-[#00D084] font-mono mt-1">ls-cron-queue • 0ms Lag</div>
+</div>
+</div>
+<!-- Live Pipeline Detail Card -->
+<div class="editorial-card rounded-2xl p-6 sm:p-8 border border-[#332F2C] grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+<div class="lg:col-span-5 space-y-4">
+<div class="flex items-center gap-2">
+<span class="badge-pill badge-vermilion" id="pipeline-detail-badge">0-RTT Transport</span>
+<span class="badge-pill badge-emerald font-mono" id="pipeline-detail-latency">0.8 ms</span>
+</div>
+<div class="text-2xl font-bold text-[#F7F3F2]" id="pipeline-detail-title">Layer 1: Cloudflare Edge Mesh &amp; Real-IP Sync</div>
+<p class="text-sm text-[#A9A6A5] leading-relaxed" id="pipeline-detail-desc">
+            Automated daily synchronization of Cloudflare IPv4 &amp; IPv6 CIDRs via ls-cf-sync.timer. Angie transparently restores real visitor IPs for rate limiting and audit logging.
+          </p>
+</div>
+<div class="lg:col-span-7 terminal-window rounded-xl p-5 font-mono text-xs">
+<div class="text-[#9E9A98] mb-2">// Active Hardware &amp; Software Directives</div>
+<pre class="text-[#F7F3F2] overflow-x-auto leading-relaxed" id="pipeline-detail-code"># Daily CIDR sync via /etc/systemd/system/ls-cf-sync.timer
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+real_ip_header CF-Connecting-IP;</pre>
+</div>
+</div>
+</div>
+</section>
+<!-- SECTION 1: EXHAUSTIVE BENCHMARKS & COMPETITOR COMPARISON MATRIX -->
+<section class="py-24 bg-[#161413] border-b border-[#332F2C]" id="benchmarks">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-vermilion mb-3">Verified Independent Telemetry</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Head-to-Head Performance &amp; Architectural Matrix
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          We tested identical WooCommerce installations across real cloud instances. Compare the engineering decisions and hardware efficiency.
+        </p>
+</div>
+<!-- Interactive Benchmark Bar Charts -->
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C] mb-14">
+<!-- Metric Switcher Buttons -->
+<div class="flex items-center justify-between border-b border-[#332F2C] pb-4 mb-8 flex-wrap gap-3">
+<span class="text-xs uppercase font-mono tracking-wider text-[#A9A6A5]">Compare Core Architectural Metrics:</span>
+<div class="flex items-center gap-2">
+<button class="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#F72B00]/15 text-[#F7F3F2] border border-[#F72B00] transition" data-bench-metric="memory">Idle RAM</button>
+<button class="px-3.5 py-1.5 rounded-full text-xs font-semibold text-[#A9A6A5] border border-[#332F2C] hover:border-[#4D4744] transition" data-bench-metric="qps">Database QPS</button>
+<button class="px-3.5 py-1.5 rounded-full text-xs font-semibold text-[#A9A6A5] border border-[#332F2C] hover:border-[#4D4744] transition" data-bench-metric="ttfb">Cart TTFB</button>
+</div>
+</div>
+<!-- Render Target for Benchmark Visual Bars -->
+<div id="benchmark-chart-container"></div>
+</div>
+<!-- Comprehensive Comparison Table -->
+<div class="editorial-card rounded-2xl overflow-hidden border border-[#332F2C]">
+<div class="overflow-x-auto">
+<table class="w-full text-left text-xs sm:text-sm">
+<thead>
+<tr class="border-b border-[#332F2C] bg-[#110F0E] text-[#A9A6A5] font-mono text-xs">
+<th class="p-4 sm:p-5 font-semibold">Architectural Feature</th>
+<th class="p-4 sm:p-5 font-semibold text-[#F72B00] bg-[#F72B00]/10">LeanStack (v1.2.0)</th>
+<th class="p-4 sm:p-5 font-semibold">CloudPanel v2</th>
+<th class="p-4 sm:p-5 font-semibold">RunCloud</th>
+<th class="p-4 sm:p-5 font-semibold">CyberPanel</th>
+<th class="p-4 sm:p-5 font-semibold">cPanel / WHM</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-[#332F2C] text-[#A9A6A5]">
+<tr class="hover:bg-[#1E1B19]/50 transition">
+<td class="p-4 sm:p-5 font-medium text-[#F7F3F2]">Control Plane Idle RAM</td>
+<td class="p-4 sm:p-5 font-bold font-mono text-[#00D084] bg-[#F72B00]/5">&lt; 15 MB</td>
+<td class="p-4 sm:p-5 font-mono">1,420 MB</td>
+<td class="p-4 sm:p-5 font-mono">380 MB</td>
+<td class="p-4 sm:p-5 font-mono">890 MB</td>
+<td class="p-4 sm:p-5 font-mono">1,850 MB</td>
+</tr>
+<tr class="hover:bg-[#1E1B19]/50 transition">
+<td class="p-4 sm:p-5 font-medium text-[#F7F3F2]">Database Concurrency (256 Threads)</td>
+<td class="p-4 sm:p-5 font-bold font-mono text-[#00D084] bg-[#F72B00]/5">4,812 QPS (L2 Fit)</td>
+<td class="p-4 sm:p-5 font-mono">1,420 QPS</td>
+<td class="p-4 sm:p-5 font-mono">610 QPS</td>
+<td class="p-4 sm:p-5 font-mono">480 QPS</td>
+<td class="p-4 sm:p-5 font-mono">237 QPS (Stalled)</td>
+</tr>
+<tr class="hover:bg-[#1E1B19]/50 transition">
+<td class="p-4 sm:p-5 font-medium text-[#F7F3F2]">Universal SSI Dynamic Hole-Punching</td>
+<td class="p-4 sm:p-5 font-bold text-[#00D084] bg-[#F72B00]/5">Native Built-In</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">None (Bypasses Cache)</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">None (Bypasses Cache)</td>
+<td class="p-4 sm:p-5 text-[#FFA04D]">Partial (LSCache Plugin)</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">None (Bypasses Cache)</td>
+</tr>
+<tr class="hover:bg-[#1E1B19]/50 transition">
+<td class="p-4 sm:p-5 font-medium text-[#F7F3F2]">MariaDB Hardware CPU Alignment</td>
+<td class="p-4 sm:p-5 font-bold text-[#00D084] bg-[#F72B00]/5">256KB CPU L2 Bound</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Generic Defaults</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Generic Defaults</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Generic Defaults</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">16MB Malloc Thrashing</td>
+</tr>
+<tr class="hover:bg-[#1E1B19]/50 transition">
+<td class="p-4 sm:p-5 font-medium text-[#F7F3F2]">Zero-Restart Tenant Rules</td>
+<td class="p-4 sm:p-5 font-bold text-[#00D084] bg-[#F72B00]/5">Inotify Gatekeeper (0ms)</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Manual GUI Reload</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Agent Webhook Reload</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Full Server Restart</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Graceful Apache Reload</td>
+</tr>
+<tr class="hover:bg-[#1E1B19]/50 transition">
+<td class="p-4 sm:p-5 font-medium text-[#F7F3F2]">In-House Anti-Thundering Cron Queue</td>
+<td class="p-4 sm:p-5 font-bold text-[#00D084] bg-[#F72B00]/5">Systemd Flock Queue</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Standard Crontab</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Standard Crontab</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">wp-cron.php Default</td>
+<td class="p-4 sm:p-5 text-[#9E9A98]">Visitor-Triggered Lag</td>
+</tr>
+<tr class="hover:bg-[#1E1B19]/50 transition">
+<td class="p-4 sm:p-5 font-medium text-[#F7F3F2]">Software License Cost</td>
+<td class="p-4 sm:p-5 font-bold text-[#00D084] bg-[#F72B00]/5">100% Free / Open</td>
+<td class="p-4 sm:p-5">Free (Proprietary)</td>
+<td class="p-4 sm:p-5 font-mono">$15 – $45 / mo</td>
+<td class="p-4 sm:p-5">Freemium Tiered</td>
+<td class="p-4 sm:p-5 font-mono">$24 – $60 / mo</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</section>
+<!-- REDESIGNED INTUITIVE VISUALIZER 1: CONCURRENCY FLOW & THREAD SATURATION SIMULATOR -->
+<section class="py-24 bg-[#110F0E] border-b border-[#332F2C]" id="performance">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-amber mb-3">Live Concurrency Traffic Simulation</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Why Standard WordPress Stacks Crash Under Concurrency
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Drag the traffic slider. Watch traditional PHP worker pools saturate and queue up in seconds, while LeanStack serves 95% at wire speed before PHP wakes up.
+        </p>
+</div>
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C]">
+<!-- Concurrency Slider Control -->
+<div class="mb-10 p-6 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+<div>
+<span class="text-xs uppercase tracking-wider text-[#A9A6A5] font-mono">Simultaneous Active Visitors</span>
+<div class="text-3xl font-bold text-[#F7F3F2] font-mono mt-0.5"><span id="concurrency-val-threads">128</span> Requests</div>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-xs text-[#9E9A98]">Quick Presets:</span>
+<button class="px-3 py-1 rounded-lg bg-[#282422] text-xs text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-concurrency-preset="16">16</button>
+<button class="px-3 py-1 rounded-lg bg-[#282422] text-xs text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-concurrency-preset="64">64</button>
+<button class="px-3 py-1 rounded-lg bg-[#F72B00] text-xs text-[#F7F3F2] font-semibold transition" data-concurrency-preset="128">128</button>
+<button class="px-3 py-1 rounded-lg bg-[#282422] text-xs text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-concurrency-preset="256">256</button>
+</div>
+</div>
+<label class="sr-only" for="concurrency-slider">Simulated Concurrent Virtual Users</label>
+<input aria-label="Simulated Concurrent Virtual Users" aria-valuemax="256" aria-valuemin="16" aria-valuenow="128" class="custom-slider" id="concurrency-slider" max="256" min="16" step="4" type="range" value="128"/>
+<div class="flex justify-between text-[11px] text-[#9E9A98] font-mono mt-2">
+<span>16 Light Traffic</span>
+<span>64 Rush Hour</span>
+<span>128 Flash Sale Peak</span>
+<span>256 Viral Concurrency</span>
+</div>
+</div>
+<!-- Side-by-Side Dual Lane Comparison -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8 items-stretch">
+<!-- Lane 1: Traditional Hosting Stack (cPanel / RunCloud / Stock LAMP) -->
+<div class="p-6 sm:p-8 rounded-xl bg-[#161413] border-2 border-[#332F2C] flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between pb-4 border-b border-[#332F2C] mb-6">
+<div>
+<p class="text-lg font-bold text-[#F7F3F2]">Traditional Hosting (Stock LEMP)</p>
+<span class="text-xs text-[#9E9A98]">Every visitor executes full PHP &amp; MySQL</span>
+</div>
+<span class="badge-pill badge-vermilion py-0.5 px-2" id="trad-status-badge">504 GATEWAY TIMEOUT</span>
+</div>
+<!-- PHP Worker Pool Visual Grid (16 slots) -->
+<div class="mb-6">
+<div class="flex items-center justify-between text-xs mb-2">
+<span class="text-[#A9A6A5]">PHP-FPM Worker Pool (16 Max)</span>
+<span class="text-xs font-mono" id="trad-worker-status-label">16/16 Saturated (100% Choked)</span>
+</div>
+<div class="flex flex-wrap gap-2 p-3 bg-[#110F0E] rounded-lg border border-[#332F2C]" id="trad-workers-grid"></div>
+</div>
+<!-- Request Queue Backlog Bar -->
+<div class="mb-6">
+<div class="flex items-center justify-between text-xs mb-1.5">
+<span class="text-[#A9A6A5]">Incoming Backlog Queue</span>
+<span class="text-xs font-mono text-[#F72B00]" id="trad-queue-count">112 requests waiting</span>
+</div>
+<div class="h-3 w-full bg-[#110F0E] rounded-full overflow-hidden border border-[#332F2C]">
+<div class="h-full bg-[#F72B00] transition-all duration-200" id="trad-queue-bar" style="width: 75%"></div>
+</div>
+</div>
+<!-- MariaDB Contention -->
+<div class="p-3.5 rounded-lg bg-[#110F0E] border border-[#332F2C] text-xs font-mono text-[#A9A6A5] mb-6">
+<div class="text-[#F72B00] font-semibold mb-1">⚠ CPU L2 Cache Thrashing:</div>
+                16MB thread buffers exceed CPU cache lines. Memory allocations overflow into slow RAM malloc churn.
+              </div>
+</div>
+<!-- Result Box -->
+<div class="grid grid-cols-2 gap-4 p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C] text-center">
+<div>
+<span class="text-[11px] text-[#9E9A98] uppercase font-mono">Average Latency</span>
+<div class="text-xl sm:text-2xl font-bold font-mono text-[#F72B00] mt-1" id="trad-latency-val">1,850 ms (Stalled)</div>
+</div>
+<div>
+<span class="text-[11px] text-[#9E9A98] uppercase font-mono">Sustained Output</span>
+<div class="text-xl sm:text-2xl font-bold font-mono text-[#A9A6A5] mt-1" id="trad-qps-val">237 QPS</div>
+</div>
+</div>
+</div>
+<!-- Lane 2: LeanStack Autonomous Silicon Engine -->
+<div class="p-6 sm:p-8 rounded-xl bg-[#161413] border-2 border-[#F72B00] flex flex-col justify-between shadow-2xl relative">
+<div>
+<div class="flex items-center justify-between pb-4 border-b border-[#332F2C] mb-6">
+<div>
+<p class="text-lg font-bold text-[#F7F3F2]">LeanStack Engine</p>
+<span class="text-xs text-[#00D084]">FastCGI RAM Microcache + Hardware L2 Buffers</span>
+</div>
+<span class="badge-pill badge-emerald py-0.5 px-2">200 OK • WIRE-SPEED</span>
+</div>
+<!-- FastCGI Microcache Traffic Splitter -->
+<div class="p-3.5 rounded-lg bg-[#00D084]/10 border border-[#00D084]/30 text-xs text-[#00D084] mb-6 leading-relaxed">
+<span class="font-bold">⚡ Zero-Worker Microcache Split:</span>
+<span class="block mt-1 text-[#F7F3F2]" id="lean-cache-split-val">122 requests (95%) answered in 2ms directly from Angie RAM without waking PHP. Only 6 requests touched PHP!</span>
+</div>
+<!-- PHP Worker Pool Visual Grid (Plenty of headroom) -->
+<div class="mb-6">
+<div class="flex items-center justify-between text-xs mb-2">
+<span class="text-[#A9A6A5]">PHP-FPM Worker Pool (104 Max Capacity)</span>
+<span class="text-xs font-mono text-[#00D084]" id="lean-worker-status-label">4/104 Active (96% Headroom)</span>
+</div>
+<div class="flex flex-wrap gap-2 p-3 bg-[#110F0E] rounded-lg border border-[#332F2C]" id="lean-workers-grid"></div>
+</div>
+<!-- MariaDB L2 Alignment -->
+<div class="p-3.5 rounded-lg bg-[#110F0E] border border-[#332F2C] text-xs font-mono text-[#A9A6A5] mb-6">
+<div class="text-[#00D084] font-semibold mb-1">✔ 100% CPU L2 Cache Alignment:</div>
+                Query buffers pinned at 256KB. READ-COMMITTED isolation permanently eliminates next-key gap locks.
+              </div>
+</div>
+<!-- Result Box -->
+<div class="grid grid-cols-2 gap-4 p-4 rounded-xl bg-[#1E1B19] border border-[#00D084]/30 text-center">
+<div>
+<span class="text-[11px] text-[#9E9A98] uppercase font-mono">Response TTFB</span>
+<div class="text-xl sm:text-2xl font-bold font-mono text-[#00D084] mt-1" id="lean-latency-val">12 ms TTFB</div>
+</div>
+<div>
+<span class="text-[11px] text-[#9E9A98] uppercase font-mono">Throughput</span>
+<div class="text-xl sm:text-2xl font-bold font-mono text-[#F72B00] mt-1" id="lean-qps-val">4,812 QPS</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- SECTION 2: HARDWARE-AWARE SILICON OPTIMIZATION ENGINE -->
+<section class="py-24 bg-[#161413] border-b border-[#332F2C]" id="silicon-engine">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-emerald mb-3">Hardware-Aligned Engineering</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Silicon-Level Linux Auto-Tuning
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Most hosting stacks treat Linux like a black box. LeanStack probes CPU microarchitecture, L2 cache boundaries, and storage classes during boot to tune kernel parameters for zero memory contention.
+        </p>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+<!-- Card 1: CPU L2 Cache Fitting -->
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#F72B00]/15 text-[#F72B00] flex items-center justify-center font-bold text-lg mb-5">
+            ⚡
+          </div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-3">CPU L2 Cache Line Fitting</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Stock MySQL sets sort/join buffers to 16MB. When 50 queries execute concurrently, buffers overflow CPU L2 cache into main DRAM, stalling execution by 200x. LeanStack pins buffers to 256KB, fitting 100% inside CPU L2 cache registers.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ 0.04% L2 cache miss rate</div>
+</div>
+<!-- Card 2: THP Lockout -->
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#FF6900]/15 text-[#FF6900] flex items-center justify-center font-bold text-lg mb-5">
+            🛑
+          </div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-3">Transparent Huge Pages Lockout</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Linux Transparent Huge Pages (THP) cause unpredictable 50ms memory compaction latency spikes in MariaDB and Valkey. LeanStack disables THP at boot via sysctl and systemd, eliminating random latency stalls.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Zero compaction stalls</div>
+</div>
+<!-- Card 3: ZRAM zstd Compression -->
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#00D084]/15 text-[#00D084] flex items-center justify-center font-bold text-lg mb-5">
+            📦
+          </div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-3">ZRAM zstd In-Memory Swap</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Standard disk swap wears out NVMe SSDs and causes extreme I/O freezes. LeanStack provisions compressed in-memory swap using Zstandard (zstd), compressing memory at 3:1 in RAM with zero disk wear or OOM killer crashes.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ 3x RAM compressibility</div>
+</div>
+<!-- Card 4: BBR & TCP Fast Open -->
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#7A7674]/20 text-[#F7F3F2] flex items-center justify-center font-bold text-lg mb-5">
+            🚀
+          </div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-3">BBR &amp; TCP Fast Open (Level 3)</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Enables Google BBR congestion control and TCP Fast Open (TFO=3) for both incoming and outgoing client connections, cutting handshake latency in half over lossy cellular and high-latency edge connections.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Sub-millisecond roundtrips</div>
+</div>
+</div>
+</div>
+</section>
+<!-- REDESIGNED INTUITIVE VISUALIZER 2: FASTCGI CACHE ARCHITECTURE & SURGICAL PURGE -->
+<section class="py-24 bg-[#110F0E] border-b border-[#332F2C]" id="caching">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-vermilion mb-3">Zero-Worker Cache Invalidation</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Surgical Single-URL Invalidation vs The Thundering Herd
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          When an admin updates a product, most caching plugins flush the entire server cache, causing a crash. Watch how LeanStack unlinks only 1 single file in 0.18ms without dropping other pages.
+        </p>
+</div>
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C]">
+<!-- Scenario Header -->
+<div class="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-[#332F2C] mb-8">
+<div>
+<span class="text-xs font-mono uppercase tracking-wider text-[#A9A6A5]">Scenario:</span>
+<p class="text-lg font-semibold text-[#F7F3F2] mt-0.5">Admin updates the price on <code class="text-[#F72B00]">/product/sneakers/</code> in WooCommerce</p>
+</div>
+<div class="flex items-center gap-3">
+<button class="btn-editorial-outline text-xs py-2 px-3.5 text-[#F72B00] border-[#F72B00]/40 hover:bg-[#F72B00]/10" id="cache-sim-global-flush-btn">
+              1. Simulate Standard Panel Flush
+            </button>
+<button class="btn-vermilion text-xs py-2 px-4" id="cache-sim-surgical-btn">
+<span>2. Simulate LeanStack Invalidation</span>
+<span class="font-bold">→</span>
+</button>
+<button class="text-xs text-[#9E9A98] hover:text-[#F7F3F2] underline underline-offset-4 ml-2" id="cache-sim-reset-btn">Reset</button>
+</div>
+</div>
+<!-- 4 Live Page Nodes Grid -->
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+<div class="cache-page-card warm p-4 rounded-xl" id="cache-card-home">
+<div class="text-xs font-mono text-[#A9A6A5] mb-1">GET /</div>
+<div class="text-sm font-bold text-[#F7F3F2] mb-2">Homepage</div>
+<div class="cache-status-pill text-[11px] font-mono text-[#00D084] font-semibold">● WARM IN RAM (1.8ms)</div>
+</div>
+<div class="cache-page-card warm p-4 rounded-xl" id="cache-card-shop">
+<div class="text-xs font-mono text-[#A9A6A5] mb-1">GET /shop/</div>
+<div class="text-sm font-bold text-[#F7F3F2] mb-2">Product Catalog</div>
+<div class="cache-status-pill text-[11px] font-mono text-[#00D084] font-semibold">● WARM IN RAM (1.8ms)</div>
+</div>
+<div class="cache-page-card warm p-4 rounded-xl border-2 border-[#FF6900]/40" id="cache-card-product">
+<div class="text-xs font-mono text-[#FF6900] font-bold mb-1">GET /product/sneakers/</div>
+<div class="text-sm font-bold text-[#F7F3F2] mb-2">Sneakers Product Page</div>
+<div class="cache-status-pill text-[11px] font-mono text-[#00D084] font-semibold">● WARM IN RAM (1.8ms)</div>
+</div>
+<div class="cache-page-card warm p-4 rounded-xl" id="cache-card-about">
+<div class="text-xs font-mono text-[#A9A6A5] mb-1">GET /about/</div>
+<div class="text-sm font-bold text-[#F7F3F2] mb-2">Company About</div>
+<div class="cache-status-pill text-[11px] font-mono text-[#00D084] font-semibold">● WARM IN RAM (1.8ms)</div>
+</div>
+</div>
+<!-- Telemetry Log Stream -->
+<div class="terminal-window rounded-xl p-5 font-mono text-xs">
+<div class="text-[#9E9A98] mb-2">// Invalidation Action Log &amp; Server Stability Telemetry</div>
+<pre class="text-[#00D084] whitespace-pre-wrap leading-relaxed" id="cache-sim-log-text">[READY] Click either button above to contrast a traditional cache wipe against LeanStack's surgical single-URL unlinking.</pre>
+</div>
+</div>
+</div>
+</section>
+<!-- REDESIGNED INTUITIVE VISUALIZER 3: UNIVERSAL SSI DYNAMIC HOLE-PUNCHING -->
+<section class="py-24 bg-[#161413] border-b border-[#332F2C]" id="holepunch">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-emerald mb-3">Wire-Speed Dynamic Commerce</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          The Anatomy of Universal SSI Dynamic Hole-Punching
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Standard WooCommerce hosting turns off caching the moment a customer puts an item in cart. LeanStack keeps 98% of the page cached in Angie RAM and punches dynamic holes at wire speed.
+        </p>
+</div>
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C]">
+<!-- Toggle Control Row -->
+<div class="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-[#332F2C] mb-8">
+<div class="flex items-center gap-3">
+<button class="btn-editorial-outline text-xs py-2 px-3.5 text-[#A9A6A5]" id="ssi-mode-traditional-btn">
+              1. View Traditional Approach (Cache Bypassed)
+            </button>
+<button class="btn-vermilion text-xs py-2 px-4 font-semibold" id="ssi-mode-leanstack-btn">
+<span>2. View LeanStack SSI Hole-Punching</span>
+<span class="font-bold">→</span>
+</button>
+</div>
+<div class="flex items-center gap-2">
+<button class="px-4 py-2 rounded-xl bg-[#282422] hover:bg-[#332F2C] text-xs font-semibold text-[#F7F3F2] border border-[#4D4744] transition flex items-center gap-2" id="ssi-sim-cart-add-btn">
+<span>Simulate Add to Cart</span>
+<span class="text-[#00D084]">+1</span>
+</button>
+<button class="px-3 py-2 rounded-xl text-xs text-[#A9A6A5] hover:text-[#F7F3F2] border border-[#332F2C] transition" id="ssi-sim-reset-btn">
+              Reset Demo
+            </button>
+</div>
+</div>
+<!-- Webpage Visual Wireframe Structure -->
+<div class="ssi-shell-frame p-6 mb-8" id="ssi-shell-frame">
+<!-- Shell Header Callout -->
+<div class="text-xs font-mono text-center mb-6" id="ssi-shell-callout">
+<span class="text-[#00D084] font-bold">98% CACHED SHELL SERVED FROM ANGIE RAM (2ms) • ZERO PHP THEME OVERHEAD</span>
+</div>
+<!-- Mock E-Commerce Page Layout -->
+<div class="space-y-4">
+<!-- Navbar Row with Dynamic Cart Hole -->
+<div class="p-3.5 rounded-lg bg-[#110F0E] border border-[#332F2C] flex items-center justify-between">
+<span class="font-bold text-sm tracking-tight text-[#F7F3F2]">STOREFRONT LOGO</span>
+<div class="flex items-center gap-3">
+<span class="text-xs text-[#A9A6A5] hidden sm:inline">Search Catalog</span>
+<!-- Dynamic Hole: Cart Counter -->
+<div class="ssi-hole-box flex items-center gap-2 px-3 py-1" id="ssi-hole-cart">
+<span class="text-xs font-semibold text-[#F7F3F2]">Cart:</span>
+<span class="w-5 h-5 rounded-full bg-[#F72B00] text-white text-xs font-bold flex items-center justify-center" id="ssi-cart-counter">3</span>
+<span class="text-[10px] text-[#FF6900] font-mono hidden md:inline">&lt;!--# ssi cart_count --&gt;</span>
+</div>
+</div>
+</div>
+<!-- Product Card Row with Dynamic Stock & Nonce Hole -->
+<div class="p-5 rounded-lg bg-[#110F0E] border border-[#332F2C] grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
+<div class="md:col-span-8 space-y-2">
+<p class="text-xl font-bold text-[#F7F3F2]">AirSpeed Pro Performance Sneakers</p>
+<p class="text-xs text-[#A9A6A5]">
+                  Full 480KB HTML payload including images, product specifications, customer reviews, and recommended related products.
+                </p>
+<div class="flex items-center gap-3 pt-2">
+<!-- Dynamic Hole: Stock Status -->
+<div class="ssi-hole-box px-3 py-1 text-xs font-mono text-[#FF6900]">
+<span id="ssi-stock-counter">7 units remaining</span>
+<span class="text-[10px] text-[#A9A6A5] hidden sm:inline">&lt;!--# ssi stock --&gt;</span>
+</div>
+<!-- Dynamic Hole: User Nonce -->
+<div class="ssi-hole-box px-3 py-1 text-xs font-mono text-[#FF6900] hidden sm:inline-block">
+<span>CSRF Nonce: 8f9a2b</span>
+</div>
+</div>
+</div>
+<div class="md:col-span-4 text-right space-y-2">
+<div class="text-3xl font-bold font-mono text-[#F7F3F2]">$189.00</div>
+<div class="text-xs text-[#00D084] font-mono">In Stock • Express Courier</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Timeline & Technical Breakdown -->
+<div class="grid grid-cols-1 md:grid-cols-12 gap-6 items-center p-5 rounded-xl bg-[#110F0E] border border-[#332F2C]">
+<div class="md:col-span-4">
+<span class="text-[11px] text-[#9E9A98] uppercase font-mono">Response TTFB</span>
+<div class="text-2xl font-bold font-mono text-[#00D084] mt-0.5" id="ssi-ttfb-val">5 ms TTFB</div>
+</div>
+<div class="md:col-span-8">
+<div class="text-xs text-[#A9A6A5] mb-2">Request Execution Timeline Breakdown:</div>
+<div class="w-full flex rounded overflow-hidden" id="ssi-timeline-bar">
+<div class="h-3 bg-[#00D084] rounded-l" style="width: 40%" title="Angie RAM Shell: 2ms"></div>
+<div class="h-3 bg-[#F72B00] rounded-r" style="width: 60%" title="Micro-PHP Hole-Punch: 3ms"></div>
+</div>
+<div class="text-xs text-[#A9A6A5] mt-3 leading-relaxed" id="ssi-explanation-text">
+<span class="text-[#00D084] font-bold">The LeanStack Advantage:</span> Angie streams 98% of the page (480KB) directly from memory in 2ms. Only the tiny vermilion cutouts execute a 2KB micro-PHP script (<code class="text-[#F7F3F2]">leanstack-holepunch.php</code>) reading session tokens from Valkey in 3ms. Total TTFB: <strong>5ms</strong> with 95% PHP worker savings!
+            </div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- SECTION 3: SERVER DENSITY MULTIPLIER & CLOUD HOSTING ROI CALCULATOR -->
+<section class="py-24 bg-[#110F0E] border-b border-[#332F2C]" id="roi-calculator">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-vermilion mb-3">Hosting Economics &amp; Cloud Bill Multiplier</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Calculate Your Annual Hosting Savings
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Bloated control panels force agencies to spin up new servers every 10–15 client sites. See how many WooCommerce stores you can consolidate onto a single LeanStack host.
+        </p>
+</div>
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C]">
+<!-- Hardware RAM Selector -->
+<div class="flex flex-wrap items-center justify-between gap-4 pb-8 border-b border-[#332F2C] mb-8">
+<div>
+<span class="text-xs uppercase font-mono tracking-wider text-[#A9A6A5]">Select Target VPS Hardware Instance:</span>
+<p class="text-lg font-semibold text-[#F7F3F2] mt-0.5">Physical Cloud Server Specification</p>
+</div>
+<div class="flex items-center gap-2">
+<button class="px-4 py-2 rounded-xl bg-[#282422] text-xs font-semibold text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-roi-ram="4">4 GB RAM</button>
+<button class="px-4 py-2 rounded-xl bg-[#F72B00] text-xs font-semibold text-[#F7F3F2] transition" data-roi-ram="8">8 GB RAM</button>
+<button class="px-4 py-2 rounded-xl bg-[#282422] text-xs font-semibold text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-roi-ram="16">16 GB RAM</button>
+<button class="px-4 py-2 rounded-xl bg-[#282422] text-xs font-semibold text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-roi-ram="32">32 GB RAM</button>
+</div>
+</div>
+<!-- Output Cards Grid -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+<div class="p-6 rounded-xl bg-[#161413] border border-[#332F2C]">
+<span class="text-xs font-mono uppercase tracking-wider text-[#9E9A98]">Traditional Panels (cPanel / CyberPanel)</span>
+<div class="text-3xl sm:text-4xl font-bold font-mono text-[#A9A6A5] mt-2" id="roi-trad-sites">18 Sites</div>
+<p class="text-xs text-[#9E9A98] mt-2 leading-relaxed">
+              Max capacity before 1.8GB panel idle bloat exhausts memory and triggers constant swap thrashing.
+            </p>
+</div>
+<div class="p-6 rounded-xl bg-[#161413] border-2 border-[#F72B00] shadow-xl">
+<div class="flex items-center justify-between">
+<span class="text-xs font-mono uppercase tracking-wider text-[#F72B00]">LeanStack Engine</span>
+<span class="badge-pill badge-vermilion py-0.5 px-2" id="roi-density-multiplier">3.6x</span>
+</div>
+<div class="text-3xl sm:text-4xl font-bold font-mono text-[#00D084] mt-2" id="roi-lean-sites">65 Sites</div>
+<p class="text-xs text-[#A9A6A5] mt-2 leading-relaxed">
+              Sub-15MB control plane leaves 99.8% of RAM free for WordPress, Valkey, and MariaDB buffer pools.
+            </p>
+</div>
+<div class="p-6 rounded-xl bg-[#161413] border border-[#00D084]/40">
+<span class="text-xs font-mono uppercase tracking-wider text-[#00D084]">Annual Cloud Savings</span>
+<div class="text-3xl sm:text-4xl font-bold font-mono text-[#00D084] mt-2" id="roi-annual-savings">$2,400 / yr</div>
+<p class="text-xs text-[#A9A6A5] mt-2 leading-relaxed">
+              Calculated based on consolidating 4 separate $60/mo VPS instances and eliminating $45/mo panel licensing.
+            </p>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- SECTION 4: ENTERPRISE SELF-HEALING GUARDRAILS & FAULT TOLERANCE -->
+<section class="py-24 bg-[#161413] border-b border-[#332F2C]" id="fault-tolerance">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-amber mb-3">Enterprise Autonomous Resilience</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Self-Healing Guardrails &amp; Zero-Panic Reliability
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Hosting failure is usually caused by bad tenant configs, unconstrained in-memory caches, or thundering cron jobs. LeanStack automates fault containment at every layer.
+        </p>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#F72B00]/15 text-[#F72B00] flex items-center justify-center font-bold text-lg mb-4">🛡</div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">Inotify Config Rollback</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            If a client writes a broken rewrite rule into their custom Nginx slot, <code class="text-[#F7F3F2] font-mono">ls-gatekeeper</code> and <code class="text-[#F7F3F2] font-mono">ls-nginx-linter</code> catch the error before reloading Angie. Bad syntax never hits production.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Zero configuration crashes</div>
+</div>
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#FF6900]/15 text-[#FF6900] flex items-center justify-center font-bold text-lg mb-4">🔒</div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">Valkey 10% RAM Guard</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Object caches without hard caps can explode under viral traffic and trigger kernel OOM kills. LeanStack caps Valkey strictly at 10% host RAM with <code class="text-[#F7F3F2] font-mono">allkeys-lru</code> eviction.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Guaranteed OOM immunity</div>
+</div>
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#00D084]/15 text-[#00D084] flex items-center justify-center font-bold text-lg mb-4">⏱</div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">Anti-Thundering Mutex</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Background cron queue (<code class="text-[#F7F3F2] font-mono">ls-cron-queue</code>) uses atomic file mutexes (<code class="text-[#F7F3F2] font-mono">flock</code>) and hard timeouts, stopping overlapping WP-CLI cron jobs from melting CPU.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Zero cron stampedes</div>
+</div>
+<div class="editorial-card rounded-2xl p-7 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#7A7674]/20 text-[#F7F3F2] flex items-center justify-center font-bold text-lg mb-4">💾</div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">NVMe O_DIRECT Crash Safety</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            MariaDB InnoDB flushes directly via <code class="text-[#F7F3F2] font-mono">O_DIRECT</code>, bypassing the OS page cache entirely. Eliminates double-buffering and guarantees ACID transaction durability on hard reboot.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Zero double-buffering</div>
+</div>
+</div>
+</div>
+</section>
+<!-- FEATURES HUB: ARCHITECTURAL DEEP-DIVES -->
+<div class="scroll-mt-20" id="features">
+<!-- DYNAMIC PER-SITE NGINX CONFIGS & INOTIFY GATEKEEPER -->
+<section class="py-24 bg-[#110F0E] border-b border-[#332F2C]" id="tenant-config">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-vermilion mb-3">Zero-Downtime Autonomous Reload</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+            Dynamic Per-Site Nginx Configs without Manual Restarts
+          </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+            Every tenant has dedicated custom configuration slots. The inotify gatekeeper validates syntax and applies changes gracefully in milliseconds without dropping connections.
+          </p>
+</div>
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C] grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+<!-- Left: Slot Selectors & Explanation -->
+<div class="lg:col-span-5 space-y-6">
+<div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">Dedicated Configuration Slots</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed">
+                Tenants manage custom rules in <code class="text-[#F7F3F2]">/home/&lt;user&gt;/nginx/</code> without root access. Select a slot to inspect its execution lifecycle:
+              </p>
+</div>
+<div class="space-y-2">
+<button class="w-full text-left p-3.5 rounded-xl bg-[#F72B00] text-[#F7F3F2] font-semibold text-xs transition border border-transparent" data-nginx-slot="early">
+                1. custom-early.conf (WebP/AVIF Media Rewrites)
+              </button>
+<button class="w-full text-left p-3.5 rounded-xl bg-[#1E1B19] text-[#A9A6A5] hover:text-[#F7F3F2] text-xs transition border border-[#332F2C]" data-nginx-slot="rules">
+                2. custom-rules.conf (301 Redirects &amp; Proxies)
+              </button>
+<button class="w-full text-left p-3.5 rounded-xl bg-[#1E1B19] text-[#A9A6A5] hover:text-[#F7F3F2] text-xs transition border border-[#332F2C]" data-nginx-slot="headers">
+                3. security-headers.conf (CSP &amp; Wasm Support)
+              </button>
+</div>
+<div class="p-4 rounded-xl bg-[#110F0E] border border-[#332F2C]">
+<div class="text-xs font-mono text-[#00D084] mb-1" id="nginx-slot-file">/home/wp_shop/nginx/custom-early.conf</div>
+<div class="text-xs text-[#A9A6A5] leading-relaxed" id="nginx-slot-desc">
+                Evaluated before static asset caching. Ideal for image processors (WebP/AVIF rewrites) and maintenance locks.
+              </div>
+</div>
+<div>
+<button class="btn-vermilion text-xs py-2.5 px-4 w-full" id="nginx-simulate-reload-btn">
+<span>Simulate Tenant Edit &amp; Graceful Reload</span>
+<span class="font-bold">→</span>
+</button>
+</div>
+</div>
+<!-- Right: Code Display & Gatekeeper Log -->
+<div class="lg:col-span-7 space-y-4">
+<div class="terminal-window rounded-xl p-5 font-mono text-xs">
+<div class="text-[#9E9A98] mb-2">// Slot Directives</div>
+<pre class="text-[#F7F3F2] overflow-x-auto leading-relaxed" id="nginx-slot-code"># WebP / AVIF Rewrites for Next-Gen Media
+location ~* ^/wp-content/uploads/(.+)\.(png|jpe?g)$ {
+    add_header Vary Accept;
+    try_files $uri$webp_suffix $uri$avif_suffix $uri =404;
+}</pre>
+</div>
+<div class="terminal-window rounded-xl p-5 font-mono text-xs">
+<div class="text-[#9E9A98] mb-2">// ls-gatekeeper Daemon Log Stream</div>
+<pre class="text-[#00D084] whitespace-pre-wrap leading-relaxed" id="nginx-gatekeeper-log">[GATEKEEPER] Monitoring /home/*/nginx/ via Linux inotify. Click simulate to trigger live reload.</pre>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- SHARED INFRASTRUCTURE MULTI-TENANT ISOLATION -->
+<section class="py-24 bg-[#161413] border-b border-[#332F2C]" id="isolation">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-emerald mb-3">Multi-Tenant Zero-Trust</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+            Cryptographic Isolation in Shared Infrastructure
+          </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+            Shared servers usually suffer from noisy neighbors and OPcache cache-clearing attacks. See how LeanStack scopes invalidation strictly per-tenant ABSPATH.
+          </p>
+</div>
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C] grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+<div class="lg:col-span-5 space-y-4">
+<p class="text-xl font-bold text-[#F7F3F2]">Scoped OPcache &amp; Cryptographic APCu</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed">
+              Global <code class="text-[#F7F3F2]">opcache_reset()</code> is blocked in PHP disable_functions. When Site Alpha purges its cache, <code class="text-[#F7F3F2]">leanstack-bridge.php</code> invalidates only files belonging to its ABSPATH. Site Beta remains 100% warm.
+            </p>
+<div class="p-4 rounded-xl bg-[#110F0E] border border-[#332F2C] space-y-3">
+<div class="flex items-center justify-between text-xs">
+<span class="text-[#A9A6A5]">Site Alpha (E-Commerce)</span>
+<span class="text-[#00D084] font-mono" id="isolation-alpha-status">100% Warm In RAM</span>
+</div>
+<div class="flex items-center justify-between text-xs">
+<span class="text-[#A9A6A5]">Site Beta (Corporate Blog)</span>
+<span class="text-[#00D084] font-mono" id="isolation-beta-status">100% Warm In RAM</span>
+</div>
+</div>
+<div>
+<button class="btn-vermilion text-xs py-2.5 px-4 w-full" id="isolation-test-purge-btn">
+<span>Trigger Site Alpha OPcache Purge</span>
+<span class="font-bold">→</span>
+</button>
+</div>
+</div>
+<div class="lg:col-span-7 terminal-window rounded-xl p-5 font-mono text-xs">
+<div class="text-[#9E9A98] mb-2">// Multi-Tenant Kernel &amp; Runtime Audit</div>
+<pre class="text-[#00D084] whitespace-pre-wrap leading-relaxed" id="isolation-log-output">[READY] Click trigger above to test OPcache isolation and cryptographic key scoping.</pre>
+</div>
+</div>
+</div>
+</section>
+<!-- WORDPRESS ENGINE HARDENING & IN-HOUSE CRON QUEUE -->
+<section class="py-24 bg-[#110F0E] border-b border-[#332F2C]" id="wordpress-hardening">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-amber mb-3">Hardened WordPress Runtime</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+            In-House Cron Queue &amp; Physical RSS Memory Telemetry
+          </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+            Visitor-triggered wp-cron is permanently eliminated. Uploads directories are locked down, and physical memory is measured straight from Linux /proc/[pid]/status.
+          </p>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+<div class="editorial-card rounded-xl p-8 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#F72B00]/15 text-[#F72B00] flex items-center justify-center font-bold text-lg mb-4">⏱</div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">Anti-Thundering Cron Queue</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+              Visitor-triggered <code class="text-[#F7F3F2]">wp-cron.php</code> is disabled globally (<code class="text-[#F7F3F2]">DISABLE_WP_CRON = true</code>). A systemd timer dispatches serialized WP-CLI jobs with atomic flock mutexes, stopping overlapping cron storms.
+            </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ 0ms visitor wait latency</div>
+</div>
+<div class="editorial-card rounded-xl p-8 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#FF6900]/15 text-[#FF6900] flex items-center justify-center font-bold text-lg mb-4">🔒</div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">POSIX Sandboxing &amp; Uploads Lock</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+              Every site runs under its own Linux POSIX user with strict <code class="text-[#F7F3F2]">open_basedir</code>. <code class="text-[#F7F3F2]">wp-config.php</code> is locked with <code class="text-[#F7F3F2]">chmod 600</code>. PHP execution in <code class="text-[#F7F3F2]">/wp-content/uploads/</code> is hard blocked with <code class="text-[#F7F3F2]">deny all; return 403;</code>.
+            </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Complete upload exploit immunity</div>
+</div>
+<div class="editorial-card rounded-xl p-8 border border-[#332F2C]">
+<div class="w-10 h-10 rounded-xl bg-[#00D084]/15 text-[#00D084] flex items-center justify-center font-bold text-lg mb-4">📊</div>
+<p class="text-xl font-bold text-[#F7F3F2] mb-2">Real-Time In-Dashboard Telemetry</p>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+              Inside WordPress Admin (<code class="text-[#F7F3F2]">Tools &gt; LeanStack Cache</code>), operators inspect real-time FastCGI disk size, OPcache hit rates, APCu key counts, and physical RSS process memory read directly from <code class="text-[#F7F3F2]">/proc/[pid]/status</code>.
+            </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Zero mystery load</div>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- SECTION 5: MODERN DEVELOPER EXPERIENCE & PRODUCTION CLI WORKFLOW -->
+<section class="py-24 bg-[#161413] border-b border-[#332F2C]" id="developer-experience">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-vermilion mb-3">Operator CLI Experience</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Production Automation via lsctl CLI
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Manage hundreds of high-density WordPress installations with a single command. Pure event-driven automation with zero persistent background daemons.
+        </p>
+</div>
+<div class="editorial-card rounded-2xl p-6 sm:p-10 border border-[#332F2C]">
+<!-- Workflow Tab Switcher -->
+<div class="flex items-center justify-between border-b border-[#332F2C] pb-4 mb-6 flex-wrap gap-3">
+<span class="text-xs font-mono uppercase tracking-wider text-[#A9A6A5]">CLI Command Suite:</span>
+<div class="flex items-center gap-2">
+<button class="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#F72B00] text-[#F7F3F2] transition" data-workflow-tab="create">wp:create</button>
+<button class="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#1E1B19] text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-workflow-tab="nginx">tenant:nginx</button>
+<button class="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#1E1B19] text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-workflow-tab="doctor">lsctl doctor</button>
+<button class="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#1E1B19] text-[#A9A6A5] hover:text-[#F7F3F2] transition" data-workflow-tab="upgrade">lsctl update</button>
+</div>
+</div>
+<!-- Terminal Window Display -->
+<div class="terminal-window rounded-xl p-6 font-mono text-xs">
+<div class="flex items-center justify-between pb-3 border-b border-[#332F2C] mb-4">
+<div class="flex items-center gap-2">
+<span class="w-3 h-3 rounded-full bg-[#F72B00]"></span>
+<span class="w-3 h-3 rounded-full bg-[#FF6900]"></span>
+<span class="w-3 h-3 rounded-full bg-[#00D084]"></span>
+<span class="text-[#9E9A98] text-[11px] ml-2">root@vps-node-01:~</span>
+</div>
+<span class="text-[#9E9A98] text-[11px]">bash 5.2</span>
+</div>
+<pre class="text-[#00D084] overflow-x-auto whitespace-pre-wrap leading-relaxed" id="workflow-terminal-text"># Provision isolated agency site in 3 seconds
+sudo lsctl wp:create \
+  --domain=shop.example.com \
+  --profile=agency_woocommerce \
+  --php=8.5 \
+  --ssl=letsencrypt
+
+[INFO] Creating POSIX user wp_shop (UID 1042)...
+[INFO] Sizing FastCGI cache zone: CACHE_shop (512MB RAM cap)...
+[INFO] Generating Let's Encrypt certificate with automated ACME renewal...
+[INFO] Deploying LeanStack Performance MU-plugins (bridge, holepunch, apcu)...
+✔ Site deployed in 2.8s: https://shop.example.com</pre>
+</div>
+</div>
+</div>
+</section>
+<!-- GROUPED INDUSTRY STANDARDS & FOUNDATIONAL SUITE -->
+<section class="py-20 bg-[#110F0E] border-b border-[#332F2C]">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-12">
+<span class="badge-pill badge-subtle mb-3">Foundational Architecture</span>
+<h2 class="text-2xl sm:text-3xl font-serif text-[#F7F3F2] tracking-tight">
+          Production Infrastructure Standards Built In
+        </h2>
+<p class="text-xs sm:text-sm text-[#A9A6A5] mt-2 max-w-xl mx-auto">
+          Every standard requirement for high-density production WordPress, pre-configured out of the box.
+        </p>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs font-mono">
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#F72B00] font-bold mb-1">Angie HTTP/3 QUIC</div>
+<div class="text-[#A9A6A5]">UDP 443 0-RTT transport with connection migration.</div>
+</div>
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#FF6900] font-bold mb-1">Post-Quantum TLS</div>
+<div class="text-[#A9A6A5]">X25519MLKEM768 key exchange for future-proof security.</div>
+</div>
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#00D084] font-bold mb-1">C-Engine ACME SSL</div>
+<div class="text-[#A9A6A5]">Automated Let's Encrypt certificates with background renewal.</div>
+</div>
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#F7F3F2] font-bold mb-1">Multi-PHP Runtime</div>
+<div class="text-[#A9A6A5]">PHP 8.1, 8.2, 8.3, 8.4, 8.5 with zero-downtime switching.</div>
+</div>
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#F72B00] font-bold mb-1">Jeff Starr 8G WAF</div>
+<div class="text-[#A9A6A5]">URI, query-string and agent exploit inspection.</div>
+</div>
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#FF6900] font-bold mb-1">CrowdSec IPS</div>
+<div class="text-[#A9A6A5]">Real-time stream parsing with kernel nftables blocking.</div>
+</div>
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#00D084] font-bold mb-1">WebAssembly CSP</div>
+<div class="text-[#A9A6A5]">Pre-configured worker-src blob: for wasm-vips image editing.</div>
+</div>
+<div class="p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+<div class="text-[#F7F3F2] font-bold mb-1">Atomic Rollbacks</div>
+<div class="text-[#A9A6A5]">Pre-flight configuration snapshot with instant zero-downtime rollback.</div>
+</div>
+</div>
+</div>
+</section>
+<!-- SECTION: RADICAL TRANSPARENCY (WHAT'S BEST, WHAT'S GOOD, WHAT'S LAGGING) -->
+<section class="py-24 bg-[#110F0E] border-b border-[#332F2C]" id="transparency">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-subtle mb-3">Honest Engineering Audit</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">
+          Radical Transparency: The Unvarnished Technical Audit
+        </h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          We build infrastructure for serious Linux systems engineers and WordPress agencies. No marketing fluff, no false claims. An honest breakdown of where LeanStack leads, and where we still lag.
+        </p>
+</div>
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-8 items-stretch">
+<!-- Column 1: What's Best -->
+<div class="editorial-card rounded-2xl p-7 sm:p-8 border-t-4 border-t-[#00D084] flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between mb-4">
+<span class="text-xs uppercase font-mono tracking-wider text-[#00D084] font-semibold">Where Nothing Else Competes</span>
+<span class="badge-pill badge-emerald">World-Class</span>
+</div>
+<h3 class="text-2xl font-serif text-[#F7F3F2] mb-4">What’s Best in LeanStack</h3>
+<ul class="space-y-4 text-xs text-[#A9A6A5] leading-relaxed">
+<li class="flex items-start gap-2.5">
+<span class="text-[#00D084] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">&lt;15MB Idle Control Plane:</strong> Zero persistent background Node.js, Python, or Java bloat. While cPanel consumes 1.8GB and CloudPanel burns 1.4GB idling, LeanStack dedicates 99.8% of host RAM to WordPress and database caches.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#00D084] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">4,812 QPS Silicon L2 Alignment:</strong> MariaDB buffers pinned strictly at 256KB to fit CPU L2 cache registers. Eliminates slow DRAM bus stalls and removes InnoDB gap locks via <code class="text-[#F7F3F2]">READ-COMMITTED</code>.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#00D084] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">Universal SSI Dynamic Hole-Punching:</strong> Built directly into Angie at wire speed. Dynamic cart counts, nonces, and prices update in 1.4ms without dropping the cached 480KB HTML shell.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#00D084] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">Anti-Thundering In-House Cron Queue:</strong> Global <code class="text-[#F7F3F2]">DISABLE_WP_CRON</code> lockout with atomic systemd flock mutexes. Zero visitor lag and zero cron storm race conditions.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#00D084] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">Inotify Zero-Restart Config Gatekeeper:</strong> Tenants edit isolated custom rules in <code class="text-[#F7F3F2]">~/nginx/</code> without sudo. Syntax errors are caught by linter and reloaded gracefully in 14ms with zero dropped connections.
+                </div>
+</li>
+</ul>
+</div>
+<div class="mt-6 pt-4 border-t border-[#332F2C] text-[11px] font-mono text-[#00D084]">
+            Unmatched single-server density &amp; efficiency
+          </div>
+</div>
+<!-- Column 2: What's Good -->
+<div class="editorial-card rounded-2xl p-7 sm:p-8 border-t-4 border-t-[#FF6900] flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between mb-4">
+<span class="text-xs uppercase font-mono tracking-wider text-[#FF6900] font-semibold">Production Standards</span>
+<span class="badge-pill badge-amber">Rock Solid</span>
+</div>
+<h3 class="text-2xl font-serif text-[#F7F3F2] mb-4">What’s Good &amp; Proven</h3>
+<ul class="space-y-4 text-xs text-[#A9A6A5] leading-relaxed">
+<li class="flex items-start gap-2.5">
+<span class="text-[#FF6900] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">Modern Web Transport:</strong> Angie HTTP/3 QUIC 0-RTT over UDP 443, Post-Quantum hybrid X25519MLKEM768 TLS, Brotli compression, Jeff Starr 8G WAF, and CrowdSec IPS with nftables bouncer.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#FF6900] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">POSIX Multi-Tenant Sandboxing:</strong> Dedicated Linux POSIX user per site, strict <code class="text-[#F7F3F2]">open_basedir</code>, <code class="text-[#F7F3F2]">wp-config.php</code> locked to 0600, and hard PHP execution lockout in uploads directories.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#FF6900] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">Isolated Memory Tiers:</strong> Valkey Unix socket capped at 10% RAM with volatile-lru eviction. APCu micro-caching deploys via cryptographic tenant namespacing with zero Redis Object Cache Pro conflicts.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#FF6900] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">Autonomous Fleet Upgrades:</strong> <code class="text-[#F7F3F2]">sudo lsctl update</code> executes pre-flight syntax checks, atomic database snapshots, git forward-migrations, and tenant reconciliation with zero downtime.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#FF6900] font-bold text-sm">✔</span>
+<div>
+<strong class="text-[#F7F3F2]">Multi-Version PHP Engine:</strong> Side-by-side PHP 8.1 through 8.5 with isolated pool sockets and instant profile switching.
+                </div>
+</li>
+</ul>
+</div>
+<div class="mt-6 pt-4 border-t border-[#332F2C] text-[11px] font-mono text-[#FF6900]">
+            Enterprise hardening out of the box
+          </div>
+</div>
+<!-- Column 3: Where We Are Lagging -->
+<div class="editorial-card rounded-2xl p-7 sm:p-8 border-t-4 border-t-[#F72B00] flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between mb-4">
+<span class="text-xs uppercase font-mono tracking-wider text-[#F72B00] font-semibold">Honest Limitations</span>
+<span class="badge-pill badge-vermilion">Where We Lag</span>
+</div>
+<h3 class="text-2xl font-serif text-[#F7F3F2] mb-4">What’s Lagging &amp; Lacking</h3>
+<ul class="space-y-4 text-xs text-[#A9A6A5] leading-relaxed">
+<li class="flex items-start gap-2.5">
+<span class="text-[#F72B00] font-bold text-sm">✖</span>
+<div>
+<strong class="text-[#F7F3F2]">No Browser Web GUI (CLI-Only):</strong> LeanStack is decoupled and CLI/API-driven (<code class="text-[#F7F3F2]">lsctl</code>). If your clients require a point-and-click browser panel with phpMyAdmin buttons or drag-and-drop file managers, LeanStack is NOT for you today (a standalone micro-GUI is scheduled for Phase 4).
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#F72B00] font-bold text-sm">✖</span>
+<div>
+<strong class="text-[#F7F3F2]">Single-Node Focus (No Clustering):</strong> LeanStack is engineered for extreme density on single bare-metal or cloud instances. We do not provide automated multi-node Redis clusters, Galera database clustering, or cross-region failover out of the box.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#F72B00] font-bold text-sm">✖</span>
+<div>
+<strong class="text-[#F7F3F2]">No Apache or .htaccess Support:</strong> Strictly opinionated on Angie HTTP/3 + MariaDB. If you run legacy plugins requiring Apache runtime rewrites or LiteSpeed modules, they must be converted to Angie config or run elsewhere.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#F72B00] font-bold text-sm">✖</span>
+<div>
+<strong class="text-[#F7F3F2]">Hardware &amp; OS Scope:</strong> Strictly certified on <strong>Ubuntu 22.04, 24.04 &amp; 26.04 (x86_64)</strong>. We have not validated ARM64 (aarch64) or Debian yet, so we do not claim certification on them.
+                </div>
+</li>
+<li class="flex items-start gap-2.5">
+<span class="text-[#F72B00] font-bold text-sm">✖</span>
+<div>
+<strong class="text-[#F7F3F2]">Manual DNS Outside Cloudflare:</strong> Automated DNS synchronization is built for Cloudflare API v4. AWS Route 53, Namecheap, or custom BIND nameservers require manual record configuration.
+                </div>
+</li>
+</ul>
+</div>
+<div class="mt-6 pt-4 border-t border-[#332F2C] text-[11px] font-mono text-[#F72B00]">
+            Transparent trade-offs for extreme density
+          </div>
+</div>
+</div>
+</div>
+</section>
+<!-- FORWARD-LOOKING ROADMAP -->
+<section class="py-24 bg-[#161413] border-b border-[#332F2C]" id="roadmap">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8">
+<div class="text-center mb-16">
+<span class="badge-pill badge-vermilion mb-3">Architectural Evolution</span>
+<h2 class="text-3xl sm:text-5xl font-serif text-[#F7F3F2] tracking-tight">Public Release &amp; Engineering Roadmap</h2>
+<p class="text-sm sm:text-base text-[#A9A6A5] mt-3 max-w-2xl mx-auto">
+          Our forward-looking milestones incorporating next-generation eBPF runtime sandboxing, shared immutable codebases, and edge synthetic shielding.
+        </p>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+<!-- Phase 1 -->
+<div class="editorial-card rounded-2xl p-8 border-l-4 border-l-[#00D084]">
+<div class="flex items-center justify-between gap-4 mb-3">
+<h3 class="text-xl font-bold text-[#F7F3F2]">Phase 1: High-Density Core Engine</h3>
+<span class="badge-pill badge-emerald">Completed</span>
+</div>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Sub-15MB idle control plane, <code class="text-[#F7F3F2] font-mono">lsctl</code> CLI, hardware-aware auto-tuner, MariaDB 4,812 QPS L2-cache tuning, Angie HTTP/3 QUIC &amp; PQC, per-tenant FastCGI microcaching, universal SSI hole-punching, in-house <code class="text-[#F7F3F2] font-mono">ls-cron-queue</code>, and safe multi-tenant OPcache/APCu caching.
+          </p>
+<div class="text-[11px] font-mono text-[#00D084]">✔ Shipped &amp; verified across Ubuntu 22.04, 24.04 &amp; 26.04 (x86_64)</div>
+</div>
+<!-- Phase 2 -->
+<div class="editorial-card rounded-2xl p-8 border-l-4 border-l-[#F72B00]">
+<div class="flex items-center justify-between gap-4 mb-3">
+<h3 class="text-xl font-bold text-[#F7F3F2]">Phase 2: Zero-Worker Edge &amp; Public Release</h3>
+<span class="badge-pill badge-vermilion">Current • Q4 2026</span>
+</div>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+<strong>Improved Zero-Worker Micro-Caching in Angie</strong> (<code class="text-[#F7F3F2] font-mono">fastcgi_cache</code> with dynamic bypass), <strong>Edge-Level Synthetic Admin Shielding</strong>, official public documentation portal, and preparation of the public GitHub open-source release.
+          </p>
+<div class="text-[11px] font-mono text-[#F72B00]">⚡ In Active Staging &amp; Edge Testing</div>
+</div>
+<!-- Phase 3 -->
+<div class="editorial-card rounded-2xl p-8 border-l-4 border-l-[#FF6900]">
+<div class="flex items-center justify-between gap-4 mb-3">
+<h3 class="text-xl font-bold text-[#F7F3F2]">Phase 3: eBPF Sandboxing &amp; Shared Codebases</h3>
+<span class="badge-pill badge-amber">Q1 2027</span>
+</div>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+<strong>Dynamic eBPF-Based Syscall Jailing</strong> (runtime sandboxing at the Linux kernel boundary), <strong>Transition to Shared Read-Only Codebases</strong> (symlinked core &amp; common plugins to drop memory footprint further by 60%), and <strong>Ephemeral Worker Isolation via systemd-run / Cgroups v2</strong>.
+          </p>
+<div class="text-[11px] font-mono text-[#FFA04D]">Planned Architecture Initiative</div>
+</div>
+<!-- Phase 4 -->
+<div class="editorial-card rounded-2xl p-8 border-l-4 border-l-[#332F2C]">
+<div class="flex items-center justify-between gap-4 mb-3">
+<h3 class="text-xl font-bold text-[#F7F3F2]">Phase 4: Multi-Node Edge Mesh &amp; Micro-GUI</h3>
+<span class="badge-pill badge-subtle">Q2 2027</span>
+</div>
+<p class="text-xs text-[#A9A6A5] leading-relaxed mb-4">
+            Optional ultra-lightweight Go/Rust micro-daemon (&lt;25MB RAM) for static single-page administration, multi-server edge mesh replication, automated DNS failover across any cloud, and centralized backup vault.
+          </p>
+<div class="text-[11px] font-mono text-[#9E9A98]">Future Horizon Vision</div>
+</div>
+</div>
+</div>
+</section>
+<!-- SELF-HOSTING & PUBLIC REPOSITORY TRANSPARENCY -->
+<section class="py-20 bg-[#110F0E] border-b border-[#332F2C]">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8 text-center">
+<span class="badge-pill badge-subtle mb-3">Open Source Transparency</span>
+<h2 class="text-2xl sm:text-4xl font-serif text-[#F7F3F2] tracking-tight mb-4">
+        Deploy Anywhere. Zero Cloud Lock-In.
+      </h2>
+<p class="text-sm text-[#A9A6A5] max-w-2xl mx-auto mb-8 leading-relaxed">
+        LeanStack runs on raw Ubuntu bare-metal or cloud instances (Hetzner, OVH, DigitalOcean, Vultr, AWS, Linode). The public open-source Git repository will be released in Q4 2026. For immediate server deployment, use the official verified install script.
+      </p>
+<div class="inline-flex items-center gap-4 flex-wrap justify-center">
+<a class="btn-vermilion text-xs py-2.5 px-6" href="#quickstart">
+<span>Run Installer Script</span>
+<span class="font-bold">→</span>
+</a>
+<a class="btn-editorial-outline text-xs py-2.5 px-6" href="docs.html">
+          Read Operations Manual
+        </a>
+</div>
+</div>
+</section>
+</main>
+<!-- FOOTER -->
+<footer class="py-16 bg-[#110F0E] border-t border-[#332F2C] text-xs text-[#9E9A98]" role="contentinfo">
+<div class="max-w-editorial mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
+<div class="grid grid-cols-1 md:grid-cols-4 gap-8">
+<!-- Col 1: Brand & Bio -->
+<div class="space-y-3">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-gradient-to-br from-[#FF6900] to-[#F72B00] flex items-center justify-center font-bold text-white text-xs">LS</div>
+<span class="text-[#F7F3F2] font-bold text-sm">LeanStack Engine</span>
+</div>
+<p class="text-xs text-[#9E9A98] leading-relaxed">
+            Silicon-aligned, high-density WordPress control plane. Host 3x more sites on half the RAM at 4,812 QPS.
+          </p>
+<div class="text-[11px] text-[#9E9A98]">
+            Engineered by <a class="text-[#F7F3F2] hover:text-[#F72B00] underline underline-offset-4" href="https://kuntalghosh.dev" rel="noopener noreferrer" target="_blank">Kuntal Ghosh ↗</a>
+</div>
+</div>
+<!-- Col 2: Navigation & Sections -->
+<div class="space-y-2">
+<span class="text-xs font-semibold text-[#F7F3F2] uppercase tracking-wider block mb-3">Platform Navigation</span>
+<ul class="space-y-2 text-xs">
+<li><a aria-label="Footer Link: Architecture Deep-Dive" class="hover:text-[#F7F3F2] transition" href="features.html">Architecture Deep-Dive</a></li>
+<li><a aria-label="Footer Link: Performance Benchmarks" class="hover:text-[#F7F3F2] transition" href="#benchmarks">Verified Benchmarks</a></li>
+<li><a aria-label="Footer Link: Feature Catalog" class="hover:text-[#F7F3F2] transition" href="#features">Core Capabilities</a></li>
+<li><a aria-label="Footer Link: Radical Transparency Technical Audit" class="hover:text-[#F7F3F2] transition" href="#transparency">Independent Audit</a></li>
+<li><a aria-label="Footer Link: Engineering Release Roadmap" class="hover:text-[#F7F3F2] transition" href="#roadmap">Release Roadmap</a></li>
+<li><a aria-label="Footer Link: Operations Documentation Manual" class="hover:text-[#F7F3F2] transition" href="docs.html">Operations Manual</a></li>
+</ul>
+</div>
+<!-- Col 3: Upstream & Ecosystem (External Links) -->
+<div class="space-y-2">
+<span class="text-xs font-semibold text-[#F7F3F2] uppercase tracking-wider block mb-3">Ecosystem &amp; Upstream</span>
+<ul class="space-y-2 text-xs">
+<li><a class="hover:text-[#F7F3F2] transition flex items-center gap-1.5" href="https://angie.software/en/" rel="noopener noreferrer" target="_blank"><span>Angie Web Server</span><span class="text-[10px] text-[#9E9A98]">↗</span></a></li>
+<li><a class="hover:text-[#F7F3F2] transition flex items-center gap-1.5" href="https://mariadb.org/" rel="noopener noreferrer" target="_blank"><span>MariaDB Foundation</span><span class="text-[10px] text-[#9E9A98]">↗</span></a></li>
+<li><a class="hover:text-[#F7F3F2] transition flex items-center gap-1.5" href="https://valkey.io/" rel="noopener noreferrer" target="_blank"><span>Valkey In-Memory Cache</span><span class="text-[10px] text-[#9E9A98]">↗</span></a></li>
+<li><a class="hover:text-[#F7F3F2] transition flex items-center gap-1.5" href="https://ubuntu.com/" rel="noopener noreferrer" target="_blank"><span>Ubuntu Linux LTS</span><span class="text-[10px] text-[#9E9A98]">↗</span></a></li>
+<li><a class="hover:text-[#F7F3F2] transition flex items-center gap-1.5" href="https://www.cloudflare.com/learning/performance/what-is-http3/" rel="noopener noreferrer" target="_blank"><span>Cloudflare HTTP/3 &amp; QUIC</span><span class="text-[10px] text-[#9E9A98]">↗</span></a></li>
+</ul>
+</div>
+<!-- Col 4: Open Source & Tools -->
+<div class="space-y-2">
+<span class="text-xs font-semibold text-[#F7F3F2] uppercase tracking-wider block mb-3">Open Source &amp; Tools</span>
+<ul class="space-y-2 text-xs">
+<li><a class="text-[#F72B00] hover:text-[#FF6900] transition flex items-center gap-1.5 font-semibold" href="https://github.com/okio/leanstack" rel="noopener noreferrer" target="_blank"><span>GitHub Repository</span><span class="text-[10px]">↗</span></a></li>
+<li><a class="hover:text-[#F7F3F2] transition" href="install.sh">Raw install.sh Script</a></li>
+<li><a class="hover:text-[#F7F3F2] transition" href="update.sh">Raw update.sh Script</a></li>
+<li><a class="hover:text-[#F7F3F2] transition" href="sitemap.xml">XML Sitemap</a></li>
+<li><a class="text-[#9E9A98] hover:text-[#00D084] transition flex items-center gap-1.5" href="analytics.html"><span>🔒 Analytics</span></a></li>
+</ul>
+</div>
+</div>
+<div class="pt-8 border-t border-[#332F2C]/60 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px]">
+<span>© 2026 LeanStack. Designed with silicon-aligned precision for high-density WordPress workloads.</span>
+<div class="flex items-center gap-4">
+<a class="hover:text-[#F7F3F2] transition" href="https://github.com/okio/leanstack/blob/main/LICENSE" rel="noopener noreferrer" target="_blank">MIT License</a>
+<span>•</span>
+<a class="hover:text-[#F7F3F2] transition" href="docs.html#troubleshooting">System Diagnostics</a>
+</div>
+</div>
+</div>
+</footer>
+<!-- Scripts -->
+<script src="assets/js/analytics.js"></script>
+<script src="assets/js/main.js"></script>
+</body>
+</html>

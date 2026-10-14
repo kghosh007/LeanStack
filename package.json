@@ -1,0 +1,21 @@
+{
+  "name": "leanstack",
+  "version": "1.0.0",
+  "description": "> **Ultra-Lightweight \u2022 High-Density \u2022 Autonomous WordPress Control Plane**   > *Engineered for Ubuntu 22.04 LTS & 24.04 LTS (x86_64 & aarch64)*",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "build:css": "tailwindcss -i ./site/src/input.css -o ./site/assets/css/styles.min.css --minify",
+    "watch:css": "tailwindcss -i ./site/src/input.css -o ./site/assets/css/styles.min.css --watch",
+    "build": "npm run build:css"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "tailwindcss": "^3.4.19"
+  }
+}

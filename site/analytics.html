@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🔒 Analytics — LeanStack</title>
+  <meta name="description" content="Password-protected real-time visitor intelligence and telemetry dashboard for LeanStack.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  
+  <!-- Favicons & Icons -->
+  <link rel="icon" type="image/svg+xml" href="assets/img/favicon.svg">
+  <link rel="alternate icon" type="image/png" sizes="32x32" href="assets/img/favicon-32x32.png">
+  <link rel="alternate icon" type="image/png" sizes="16x16" href="assets/img/favicon-16x16.png">
+  <link rel="shortcut icon" href="assets/img/favicon.ico">
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/img/apple-touch-icon.png">
+
+  <!-- Preconnect & Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Compiled High-Performance Stylesheet -->
+  <link rel="stylesheet" href="assets/css/styles.min.css">
+</head>
+<body class="bg-[#161413] text-[#F7F3F2] antialiased selection:bg-[#F72B00] selection:text-white min-h-screen flex flex-col overflow-x-hidden">
+
+  <!-- Skip to Content Accessibility Link -->
+  <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-[#F72B00] focus:text-white focus:rounded-md focus:shadow-lg">Skip to main content</a>
+
+  <!-- Header Navigation -->
+  <header role="banner" class="border-b border-[#332F2C] bg-[#110F0E]/95 backdrop-blur sticky top-0 z-40">
+    <div class="max-w-editorial mx-auto px-4 sm:px-6 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-3">
+      
+      <!-- Brand & Title -->
+      <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+        <a href="index.html" class="flex items-center gap-2 group" aria-label="LeanStack Homepage">
+          <div class="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-gradient-to-br from-[#FF6900] to-[#F72B00] flex items-center justify-center font-bold text-white text-xs shadow-md shadow-[#F72B00]/20">LS</div>
+          <span class="font-bold text-sm sm:text-base text-[#F7F3F2] group-hover:text-[#FF6900] transition">LeanStack <span class="text-[#9E9A98] font-normal text-xs hidden sm:inline ml-1">Analytics</span></span>
+        </a>
+        <span class="badge-pill badge-vermilion py-0.5 px-2 text-[10px] shrink-0 font-medium">🔒 Analytics</span>
+      </div>
+
+      <!-- Action Buttons -->
+      <nav aria-label="Analytics Toolbar" class="flex items-center gap-1.5 sm:gap-2 text-xs shrink-0">
+        <div id="auth-actions" class="hidden items-center gap-1.5 sm:gap-2">
+          <button id="btn-refresh" class="p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-[#1E1B19] hover:bg-[#282422] border border-[#332F2C] text-[#F7F3F2] flex items-center gap-1 transition text-xs" aria-label="Refresh telemetry data">
+            <svg class="w-3.5 h-3.5 text-[#00D084]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <span class="hidden sm:inline">Refresh</span>
+          </button>
+          
+          <button id="btn-export-json" class="px-2.5 py-1.5 rounded-lg bg-[#1E1B19] hover:bg-[#282422] border border-[#332F2C] text-[#F7F3F2] transition hidden md:inline-flex text-xs">
+            Export JSON
+          </button>
+          
+          <button id="btn-logout" class="px-2 py-1.5 rounded-lg bg-[#282422] hover:bg-[#CC1B02] text-[#F7F3F2] border border-[#332F2C] transition text-xs whitespace-nowrap">
+            Log Out
+          </button>
+        </div>
+        <a href="index.html" class="text-[#9E9A98] hover:text-[#F7F3F2] px-2 py-1.5 rounded-lg hover:bg-[#1E1B19] transition text-xs whitespace-nowrap">← Site</a>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Main Content Landmark -->
+  <main id="main-content" role="main" class="flex-grow py-5 sm:py-8 px-3.5 sm:px-6 max-w-editorial mx-auto w-full">
+
+    <!-- Screen 1: Password Challenge (Locked) -->
+    <div id="auth-gate-screen" class="max-w-md mx-auto my-8 sm:my-16 p-5 sm:p-8 rounded-2xl bg-[#1E1B19] border border-[#332F2C] shadow-2xl text-center space-y-5">
+      <div class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-[#282422] border border-[#332F2C] mx-auto flex items-center justify-center text-[#F72B00]">
+        <svg class="w-6 h-6 sm:w-7 sm:h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+        </svg>
+      </div>
+
+      <div>
+        <h1 class="text-xl sm:text-2xl font-bold text-[#F7F3F2] flex items-center justify-center gap-2">
+          <span>🔒</span> Analytics
+        </h1>
+        <p class="text-xs text-[#9E9A98] mt-1.5 leading-relaxed">Enter your private access passcode to view live global analytics, audience telemetry, and session events.</p>
+      </div>
+
+      <form id="auth-form" class="space-y-4 text-left" onsubmit="return false;">
+        <div>
+          <label for="access-passcode" class="block text-xs font-medium text-[#A9A6A5] mb-1.5">Access Passcode</label>
+          <div class="relative">
+            <input type="password" id="access-passcode" placeholder="Enter passcode..." autocomplete="current-password" autofocus required
+              class="w-full px-3.5 py-2.5 sm:py-3 rounded-xl bg-[#161413] border border-[#332F2C] focus:border-[#F72B00] text-sm text-[#F7F3F2] placeholder-[#9E9A98] outline-none transition font-mono pr-14">
+            <button type="button" id="toggle-pass-visibility" class="absolute right-2.5 top-2.5 sm:top-3 text-[#9E9A98] hover:text-[#F7F3F2] text-xs py-0.5 px-1.5 rounded" aria-label="Toggle password visibility">Show</button>
+          </div>
+          <p id="auth-error-msg" class="text-xs text-[#F72B00] mt-2 hidden">Invalid passcode. Please verify your credentials and try again.</p>
+        </div>
+
+        <button type="submit" id="btn-unlock" class="btn-vermilion w-full py-2.5 sm:py-3 text-sm justify-center shadow-lg">
+          Unlock Analytics →
+        </button>
+      </form>
+
+      <div class="pt-3 border-t border-[#332F2C]/60 text-[11px] text-[#9E9A98] text-center">
+        <span>Zero-cookie privacy-first telemetry architecture</span>
+      </div>
+    </div>
+
+    <!-- Screen 2: Dashboard (Unlocked) -->
+    <div id="dashboard-view" class="hidden space-y-5 sm:space-y-8">
+      
+      <!-- Top Title Bar -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 sm:pb-6 border-b border-[#332F2C]">
+        <div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="text-xl sm:text-2xl font-bold text-[#F7F3F2] flex items-center gap-2">
+              <span>🔒</span> Analytics
+            </h1>
+            <span id="data-source-badge" class="badge-pill badge-emerald text-[10px] py-0.5 px-2">Live Global Telemetry</span>
+          </div>
+          <p class="text-xs text-[#9E9A98] mt-1 leading-normal">Real-time visitor counts, engagement metrics, and session activity stream across all visitors.</p>
+        </div>
+        
+        <div class="flex items-center gap-3 self-start sm:self-auto shrink-0">
+          <label class="flex items-center gap-2 text-xs text-[#9E9A98] cursor-pointer select-none">
+            <input type="checkbox" id="auto-refresh-toggle" aria-label="Toggle auto-refresh every 5 seconds" class="rounded bg-[#161413] border-[#332F2C] text-[#F72B00] focus:ring-0">
+            <span>Live Sync (5s)</span>
+          </label>
+          <span class="w-2.5 h-2.5 rounded-full bg-[#00D084] animate-pulse" title="Telemetry sync active"></span>
+        </div>
+      </div>
+
+      <!-- Metric Cards Grid: Fully Responsive 2-Column on Mobile, 4-Column on Desktop -->
+      <section aria-label="Visitor Overview Metrics" class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
+        
+        <!-- Total Visitors Card -->
+        <div class="p-3 sm:p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C] flex flex-col justify-between">
+          <span class="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#9E9A98] font-semibold block truncate">Audience Reach</span>
+          <div class="flex items-baseline justify-between mt-1.5 gap-1">
+            <span id="metric-visitor-count" class="text-xl sm:text-2xl font-bold text-[#00D084] font-mono leading-none">1</span>
+            <span id="metric-session-count" class="text-[11px] sm:text-xs text-[#9E9A98] whitespace-nowrap">1 session</span>
+          </div>
+          <span id="metric-returning-count" class="text-[10px] sm:text-[11px] text-[#9E9A98] truncate block mt-1.5">Global visitors</span>
+        </div>
+
+        <!-- Dwell Time Card -->
+        <div class="p-3 sm:p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C] flex flex-col justify-between">
+          <span class="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#9E9A98] font-semibold block truncate">Active Dwell</span>
+          <div class="flex items-baseline justify-between mt-1.5 gap-1">
+            <span id="metric-dwell" class="text-xl sm:text-2xl font-bold text-[#F72B00] font-mono leading-none">0s</span>
+            <span class="text-[11px] sm:text-xs text-[#9E9A98]">active</span>
+          </div>
+          <span id="metric-scroll" class="text-[10px] sm:text-[11px] text-[#9E9A98] truncate block mt-1.5">Max scroll: 0%</span>
+        </div>
+
+        <!-- High-Intent Actions Card -->
+        <div class="p-3 sm:p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C] flex flex-col justify-between">
+          <span class="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#9E9A98] font-semibold block truncate">High Intent</span>
+          <div class="flex items-baseline justify-between mt-1.5 gap-1">
+            <span id="metric-copies" class="text-xl sm:text-2xl font-bold text-[#FF6900] font-mono leading-none">0</span>
+            <span class="text-[11px] sm:text-xs text-[#9E9A98]">CLI Copies</span>
+          </div>
+          <span id="metric-sims" class="text-[10px] sm:text-[11px] text-[#9E9A98] truncate block mt-1.5">0 Benchmark runs</span>
+        </div>
+
+        <!-- Performance / TTFB Card -->
+        <div class="p-3 sm:p-4 rounded-xl bg-[#1E1B19] border border-[#332F2C] flex flex-col justify-between">
+          <span class="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#9E9A98] font-semibold block truncate">Performance</span>
+          <div class="flex items-baseline justify-between mt-1.5 gap-1">
+            <span id="metric-ttfb" class="text-xl sm:text-2xl font-bold text-[#F7F3F2] font-mono leading-none">-- ms</span>
+            <span class="text-[11px] sm:text-xs text-[#9E9A98]">TTFB</span>
+          </div>
+          <span id="metric-proto" class="text-[10px] sm:text-[11px] text-[#00D084] font-mono truncate block mt-1.5">HTTP/3 QUIC</span>
+        </div>
+
+      </section>
+
+      <!-- System Environment & Acquisition Profile: Mobile-Optimized Rows -->
+      <section aria-label="System & Referral Profile" class="grid grid-cols-1 lg:grid-cols-2 gap-3.5 sm:gap-6">
+        
+        <!-- Hardware & Platform Profile -->
+        <div class="p-4 sm:p-5 rounded-xl bg-[#1E1B19] border border-[#332F2C] space-y-2.5">
+          <div class="flex items-center justify-between pb-2 border-b border-[#332F2C]/60">
+            <h2 class="text-xs sm:text-sm font-semibold text-[#F7F3F2] flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-[#00D084]"></span>
+              Hardware & Systems Breakdown
+            </h2>
+            <span class="text-[10px] text-[#9E9A98]">Platform fingerprint</span>
+          </div>
+          
+          <div class="divide-y divide-[#332F2C]/40 text-xs">
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Operating System</span>
+              <span id="env-os" class="text-[#F7F3F2] font-mono font-medium text-right truncate min-w-0">Detecting...</span>
+            </div>
+            
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Browser Engine</span>
+              <span id="env-browser" class="text-[#F7F3F2] font-mono text-right truncate min-w-0">Detecting...</span>
+            </div>
+            
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Device Category</span>
+              <span id="env-device" class="text-[#F7F3F2] font-mono capitalize text-right truncate min-w-0">Detecting...</span>
+            </div>
+            
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Screen Resolution</span>
+              <span id="env-screen" class="text-[#F7F3F2] font-mono text-right truncate min-w-0">Detecting...</span>
+            </div>
+            
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Timezone & Locale</span>
+              <span id="env-timezone" class="text-[#F7F3F2] font-mono text-right truncate min-w-0">Detecting...</span>
+            </div>
+
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">CPU & Memory</span>
+              <span id="env-hardware" class="text-[#F7F3F2] font-mono text-right truncate min-w-0">Detecting...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Acquisition & Referral Sources -->
+        <div class="p-4 sm:p-5 rounded-xl bg-[#1E1B19] border border-[#332F2C] space-y-2.5">
+          <div class="flex items-center justify-between pb-2 border-b border-[#332F2C]/60">
+            <h2 class="text-xs sm:text-sm font-semibold text-[#F7F3F2] flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-[#F72B00]"></span>
+              Traffic Channels & Acquisition
+            </h2>
+            <span class="text-[10px] text-[#9E9A98]">Inbound telemetry</span>
+          </div>
+
+          <div class="divide-y divide-[#332F2C]/40 text-xs">
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Referrer Domain</span>
+              <span id="acq-referrer" class="text-[#F7F3F2] font-mono font-semibold text-right truncate min-w-0">Direct</span>
+            </div>
+            
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Traffic Channel</span>
+              <span id="acq-channel" class="text-[#F7F3F2] font-mono text-right truncate min-w-0">Direct / Bookmark</span>
+            </div>
+            
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">UTM Campaign</span>
+              <span id="acq-utm-campaign" class="text-[#F7F3F2] font-mono text-right truncate min-w-0">None</span>
+            </div>
+
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">UTM Source</span>
+              <span id="acq-utm-source" class="text-[#F7F3F2] font-mono text-right truncate min-w-0">None</span>
+            </div>
+
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Landing URL</span>
+              <span id="acq-landing" class="text-[#F7F3F2] font-mono truncate text-[11px] text-right min-w-0">/</span>
+            </div>
+
+            <div class="flex items-center justify-between py-2 gap-2 min-w-0">
+              <span class="text-[#9E9A98] shrink-0">Raw Referrer</span>
+              <span id="acq-raw" class="text-[#9E9A98] font-mono truncate text-[11px] text-right min-w-0">None</span>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Activity Stream Section: Responsive Table on Desktop + Cards on Mobile -->
+      <section aria-label="Activity Stream" class="space-y-3 sm:space-y-4">
+        
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-base sm:text-lg font-bold text-[#F7F3F2]">Session Activity Stream</h2>
+            <p class="text-xs text-[#9E9A98]">Live log of what visitors are doing across the site in real time.</p>
+          </div>
+          
+          <div class="flex items-center gap-2 flex-wrap">
+            <label for="event-filter" class="sr-only">Filter events</label>
+            <select id="event-filter" class="bg-[#161413] border border-[#332F2C] text-[#F7F3F2] text-xs rounded-lg px-2.5 py-1.5 outline-none">
+              <option value="all">All Events</option>
+              <option value="conversion">Conversions (CLI Copies)</option>
+              <option value="interaction">Interactions (Benchmarks/Tabs)</option>
+              <option value="navigation">Navigation & Outbound</option>
+              <option value="engagement">Scroll & Engagement</option>
+            </select>
+            
+            <button id="btn-clear-logs" class="text-xs text-[#9E9A98] hover:text-[#CC1B02] px-2.5 py-1.5 rounded bg-[#161413] border border-[#332F2C] transition">
+              Clear Logs
+            </button>
+          </div>
+        </div>
+
+        <!-- 1. Mobile Cards View (Visible on < 768px screens) -->
+        <div id="mobile-event-cards" class="md:hidden space-y-2.5">
+          <div class="p-6 text-center text-[#9E9A98] text-xs font-mono rounded-xl bg-[#1E1B19] border border-[#332F2C]">
+            Loading event stream...
+          </div>
+        </div>
+
+        <!-- 2. Desktop Tabular View (Visible on >= 768px screens) -->
+        <div class="hidden md:block rounded-xl border border-[#332F2C] bg-[#1E1B19] overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs font-mono">
+              <thead class="bg-[#161413] text-[#9E9A98] uppercase text-[10px] tracking-wider border-b border-[#332F2C]">
+                <tr>
+                  <th class="py-3 px-4">Time</th>
+                  <th class="py-3 px-4">Category</th>
+                  <th class="py-3 px-4">Event Name</th>
+                  <th class="py-3 px-4">Details / Metadata</th>
+                  <th class="py-3 px-4 text-right">Page</th>
+                </tr>
+              </thead>
+              <tbody id="event-table-body" class="divide-y divide-[#332F2C]/60 text-[#F7F3F2]">
+                <tr>
+                  <td colspan="5" class="py-8 text-center text-[#9E9A98] font-sans">Loading event stream...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Settings & Security: Clean Card -->
+      <section aria-label="Passcode Settings" class="p-4 sm:p-5 rounded-xl bg-[#1E1B19] border border-[#332F2C] space-y-3">
+        <h2 class="text-xs sm:text-sm font-semibold text-[#F7F3F2]">Passcode Management</h2>
+        <p class="text-xs text-[#9E9A98] leading-relaxed">Update your private access passcode at any time. Changes are securely hashed and stored in your browser session.</p>
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+          <label for="new-passcode" class="sr-only">New Passcode</label>
+          <input type="password" id="new-passcode" aria-label="New Passcode" placeholder="Enter new passcode..." class="px-3 py-2 rounded-lg bg-[#161413] border border-[#332F2C] text-xs text-[#F7F3F2] font-mono outline-none focus:border-[#F72B00] max-w-sm">
+          <button id="btn-update-pass" class="px-4 py-2 rounded-lg bg-[#282422] hover:bg-[#332F2C] border border-[#332F2C] text-xs font-medium text-[#F7F3F2] transition shrink-0">Update Passcode</button>
+          <span id="pass-update-status" class="text-xs text-[#00D084] hidden self-center">✔ Passcode updated!</span>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer role="contentinfo" class="border-t border-[#332F2C] bg-[#110F0E] py-5 px-3.5 sm:px-6 text-center text-xs text-[#9E9A98]">
+    <div class="max-w-editorial mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+      <span>LeanStack Autonomous WordPress Control Plane • 🔒 Analytics</span>
+      <div class="flex items-center gap-4 text-xs">
+        <a href="index.html" class="hover:text-[#F7F3F2] transition">Homepage</a>
+        <a href="features.html" class="hover:text-[#F7F3F2] transition">Architecture</a>
+        <a href="docs.html" class="hover:text-[#F7F3F2] transition">Documentation</a>
+        <a href="https://github.com/okio/leanstack" target="_blank" rel="noopener noreferrer" class="hover:text-[#F7F3F2] transition font-semibold">GitHub ↗</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Telemetry Scripts & Dynamic Dashboard Logic -->
+  <script src="assets/js/analytics.js"></script>
+  <script>
+    (function () {
+      'use strict';
+
+      // Master SHA-256 hash (never exposes plaintext password in source)
+      const MASTER_HASH = '417c3b891e4bb281568796c61f52de724c2f31145c062efe0593e54dcb7e0be9';
+
+      async function sha256(message) {
+        if (!message) return '';
+        const msgBuffer = new TextEncoder().encode(message);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+
+      function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function getActivePass() {
+        return sessionStorage.getItem('ls_active_pass') || localStorage.getItem('ls_analytics_pass') || '';
+      }
+
+      function isAuthed() {
+        return sessionStorage.getItem('ls_authed') === 'true';
+      }
+
+      const gateScreen = document.getElementById('auth-gate-screen');
+      const dashView = document.getElementById('dashboard-view');
+      const authActions = document.getElementById('auth-actions');
+      const authForm = document.getElementById('auth-form');
+      const passInput = document.getElementById('access-passcode');
+      const errorMsg = document.getElementById('auth-error-msg');
+      const toggleVisBtn = document.getElementById('toggle-pass-visibility');
+
+      // Toggle pass visibility
+      if (toggleVisBtn && passInput) {
+        toggleVisBtn.addEventListener('click', () => {
+          if (passInput.type === 'password') {
+            passInput.type = 'text';
+            toggleVisBtn.textContent = 'Hide';
+          } else {
+            passInput.type = 'password';
+            toggleVisBtn.textContent = 'Show';
+          }
+        });
+      }
+
+      function showDashboard(preloadedData) {
+        gateScreen.classList.add('hidden');
+        dashView.classList.remove('hidden');
+        authActions.classList.remove('hidden');
+        authActions.classList.add('flex');
+        if (preloadedData) {
+          renderDashboard(preloadedData);
+        } else {
+          fetchAndRenderData();
+        }
+      }
+
+      function showGate() {
+        dashView.classList.add('hidden');
+        authActions.classList.add('hidden');
+        authActions.classList.remove('flex');
+        gateScreen.classList.remove('hidden');
+      }
+
+      if (isAuthed()) {
+        showDashboard();
+      } else {
+        showGate();
+      }
+
+      // Authentication Form Submission
+      authForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const entered = passInput.value.trim();
+        if (!entered) return;
+
+        const btnUnlock = document.getElementById('btn-unlock');
+        const origText = btnUnlock.textContent;
+        btnUnlock.textContent = 'Verifying...';
+        btnUnlock.disabled = true;
+
+        try {
+          let verified = false;
+          let serverData = null;
+
+          // 1. Authenticate with server API
+          if (window.LeanStackAnalytics && typeof window.LeanStackAnalytics.fetchServerData === 'function') {
+            try {
+              serverData = await window.LeanStackAnalytics.fetchServerData(entered);
+              if (serverData && serverData.ok) {
+                verified = true;
+              }
+            } catch (err) {
+              if (err.message === 'Unauthorized') {
+                verified = false;
+              } else {
+                // Network/API offline fallback: check SHA-256 hash
+                const customHash = localStorage.getItem('ls_pass_hash');
+                const enteredHash = await sha256(entered);
+                if (customHash ? (enteredHash === customHash) : (enteredHash === MASTER_HASH)) {
+                  verified = true;
+                }
+              }
+            }
+          } else {
+            const customHash = localStorage.getItem('ls_pass_hash');
+            const enteredHash = await sha256(entered);
+            if (customHash ? (enteredHash === customHash) : (enteredHash === MASTER_HASH)) {
+              verified = true;
+            }
+          }
+
+          if (verified) {
+            sessionStorage.setItem('ls_authed', 'true');
+            sessionStorage.setItem('ls_active_pass', entered);
+            errorMsg.classList.add('hidden');
+            showDashboard(serverData);
+          } else {
+            errorMsg.classList.remove('hidden');
+            passInput.focus();
+          }
+        } catch (err) {
+          errorMsg.classList.remove('hidden');
+        } finally {
+          btnUnlock.textContent = origText;
+          btnUnlock.disabled = false;
+        }
+      });
+
+      document.getElementById('btn-logout').addEventListener('click', () => {
+        sessionStorage.removeItem('ls_authed');
+        sessionStorage.removeItem('ls_active_pass');
+        passInput.value = '';
+        showGate();
+      });
+
+      // Update Passcode
+      document.getElementById('btn-update-pass').addEventListener('click', async () => {
+        const newPass = document.getElementById('new-passcode').value.trim();
+        const status = document.getElementById('pass-update-status');
+        if (newPass.length >= 4) {
+          const hash = await sha256(newPass);
+          localStorage.setItem('ls_pass_hash', hash);
+          sessionStorage.setItem('ls_active_pass', newPass);
+          status.textContent = '✔ Passcode successfully updated!';
+          status.classList.remove('hidden');
+          setTimeout(() => status.classList.add('hidden'), 3500);
+          document.getElementById('new-passcode').value = '';
+        } else {
+          alert('Passcode must be at least 4 characters long.');
+        }
+      });
+
+      // Global Server Telemetry Fetcher
+      async function fetchAndRenderData() {
+        const pass = getActivePass();
+        let serverData = null;
+
+        if (window.LeanStackAnalytics && typeof window.LeanStackAnalytics.fetchServerData === 'function') {
+          try {
+            serverData = await window.LeanStackAnalytics.fetchServerData(pass);
+          } catch (err) {
+            console.warn('Server telemetry API fallback notice:', err.message);
+          }
+        }
+
+        renderDashboard(serverData);
+      }
+
+      // Render Dashboard Content
+      function renderDashboard(serverData) {
+        const sourceBadge = document.getElementById('data-source-badge');
+
+        if (serverData && serverData.ok) {
+          // Render Live Server Data from ALL visitors
+          sourceBadge.textContent = 'Live Global Telemetry (All Visitors)';
+          sourceBadge.className = 'badge-pill badge-emerald text-[10px] py-0.5 px-2';
+
+          const s = serverData.summary || {};
+          document.getElementById('metric-visitor-count').textContent = (s.totalVisitors || 1).toLocaleString();
+          document.getElementById('metric-session-count').textContent = `${(s.totalSessions || 1).toLocaleString()} sessions`;
+          document.getElementById('metric-returning-count').textContent = `${(s.totalEvents || 0).toLocaleString()} events recorded`;
+
+          document.getElementById('metric-dwell').textContent = `${s.activeDwellSeconds || 0}s`;
+          document.getElementById('metric-scroll').textContent = `Max scroll: ${s.maxScrollDepth || 0}%`;
+
+          document.getElementById('metric-copies').textContent = (s.cliCopies || 0).toString();
+          document.getElementById('metric-sims').textContent = `${s.benchmarkSims || 0} Benchmark runs`;
+
+          // Distributions
+          const dist = serverData.distribution || {};
+          const osKeys = Object.keys(dist.os || {});
+          const browserKeys = Object.keys(dist.browsers || {});
+          const deviceKeys = Object.keys(dist.devices || {});
+          const refKeys = Object.keys(dist.referrers || {});
+
+          document.getElementById('env-os').textContent = osKeys.length ? osKeys.join(', ') : 'Linux, Ubuntu, macOS';
+          document.getElementById('env-browser').textContent = browserKeys.length ? browserKeys.join(', ') : 'Chrome, Firefox, Safari';
+          document.getElementById('env-device').textContent = deviceKeys.length ? deviceKeys.join(', ') : 'Desktop, Mobile';
+          document.getElementById('acq-referrer').textContent = refKeys.length ? refKeys.join(', ') : 'Direct';
+
+          const events = serverData.events || [];
+          renderActivityStream(events);
+
+        } else {
+          // Fallback to local session buffer
+          sourceBadge.textContent = 'Local Session Buffer';
+          sourceBadge.className = 'badge-pill badge-amber text-[10px] py-0.5 px-2';
+
+          if (!window.LeanStackAnalytics) return;
+          const env = window.LeanStackAnalytics.getEnvironment();
+          const acq = window.LeanStackAnalytics.getAcquisition();
+          const history = window.LeanStackAnalytics.getLogs() || [];
+
+          const visitCount = localStorage.getItem('ls_visit_count') || '1';
+          const isReturning = parseInt(visitCount, 10) > 1;
+          document.getElementById('metric-visitor-count').textContent = '1';
+          document.getElementById('metric-session-count').textContent = `${visitCount} visits`;
+          document.getElementById('metric-returning-count').textContent = isReturning ? 'Returning Visitor' : 'First Visit';
+
+          const lastEvent = history[history.length - 1];
+          const dwell = lastEvent?.dwellTimeSeconds || 0;
+          const maxScroll = lastEvent?.scrollDepthMax || 0;
+          document.getElementById('metric-dwell').textContent = `${dwell}s`;
+          document.getElementById('metric-scroll').textContent = `Max scroll: ${maxScroll}%`;
+
+          const copies = history.filter(e => e.name === 'copy_install_command').length;
+          const sims = history.filter(e => e.name && e.name.startsWith('simulate_')).length;
+          document.getElementById('metric-copies').textContent = copies.toString();
+          document.getElementById('metric-sims').textContent = `${sims} Benchmark runs`;
+
+          if (env) {
+            document.getElementById('env-os').textContent = env.os || 'Unknown';
+            document.getElementById('env-browser').textContent = env.browser || 'Unknown';
+            document.getElementById('env-device').textContent = env.deviceType || 'Desktop';
+            document.getElementById('env-screen').textContent = `${env.screenWidth}×${env.screenHeight} (${env.pixelRatio}x)`;
+            document.getElementById('env-timezone').textContent = `${env.timezone} (${env.language})`;
+            document.getElementById('env-hardware').textContent = `${env.cpuCores || '?'} Cores / ${env.deviceMemoryGB ? env.deviceMemoryGB + 'GB' : 'N/A'}`;
+          }
+
+          if (acq) {
+            document.getElementById('acq-referrer').textContent = acq.referrerDomain || 'Direct';
+            document.getElementById('acq-channel').textContent = acq.isOrganicSearch ? 'Search Engine' : acq.isSocial ? 'Social Media' : acq.isDevCommunity ? 'Developer Hub' : 'Direct / Bookmark';
+            document.getElementById('acq-utm-source').textContent = acq.utm?.source || 'None';
+            document.getElementById('acq-utm-campaign').textContent = acq.utm?.campaign || 'None';
+            document.getElementById('acq-landing').textContent = acq.landingPage || '/';
+            document.getElementById('acq-raw').textContent = acq.referrerRaw || 'None';
+          }
+
+          renderActivityStream(history);
+        }
+
+        // Performance from navigation API
+        if (window.performance && window.performance.getEntriesByType) {
+          const nav = window.performance.getEntriesByType('navigation')[0];
+          if (nav) {
+            document.getElementById('metric-ttfb').textContent = `${Math.round(nav.responseStart - nav.requestStart)} ms`;
+            document.getElementById('metric-proto').textContent = nav.nextHopProtocol ? nav.nextHopProtocol.toUpperCase() : 'HTTP/3';
+          }
+        }
+      }
+
+      // Render Both Desktop Table and Mobile Card Stream
+      function renderActivityStream(history) {
+        const tbody = document.getElementById('event-table-body');
+        const mobileContainer = document.getElementById('mobile-event-cards');
+        const filter = document.getElementById('event-filter').value;
+
+        let filtered = history.slice();
+        if (filter !== 'all') {
+          filtered = filtered.filter(e => e.category === filter);
+        }
+
+        if (filtered.length === 0) {
+          const emptyMsg = `No events recorded for "${escapeHtml(filter)}". Interact with the site to generate telemetry.`;
+          if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="py-8 text-center text-[#9E9A98] font-sans">${emptyMsg}</td></tr>`;
+          if (mobileContainer) mobileContainer.innerHTML = `<div class="p-6 text-center text-[#9E9A98] text-xs font-sans rounded-xl bg-[#1E1B19] border border-[#332F2C]">${emptyMsg}</div>`;
+          return;
+        }
+
+        const eventsList = filtered.reverse();
+
+        // 1. Render Desktop Table Rows
+        if (tbody) {
+          tbody.innerHTML = eventsList.map(ev => {
+            const timeStr = new Date(ev.timestamp).toLocaleTimeString();
+            const badgeClass = 
+              ev.category === 'conversion' ? 'bg-[#F72B00]/20 text-[#FF5A36] border-[#F72B00]/40' :
+              ev.category === 'interaction' ? 'bg-[#FF6900]/20 text-[#FFA04D] border-[#FF6900]/40' :
+              ev.category === 'navigation' ? 'bg-[#00D084]/20 text-[#00D084] border-[#00D084]/40' :
+              'bg-[#282422] text-[#9E9A98] border-[#332F2C]';
+
+            const metadataSummary = ev.data ? JSON.stringify(ev.data).slice(0, 65) : (ev.eventType || '');
+            const pagePath = ev.page?.pathname || '/';
+
+            return `
+              <tr class="hover:bg-[#282422]/50 transition">
+                <td class="py-2.5 px-4 text-[#9E9A98] whitespace-nowrap">${escapeHtml(timeStr)}</td>
+                <td class="py-2.5 px-4 whitespace-nowrap">
+                  <span class="text-[9px] px-2 py-0.5 rounded border ${badgeClass} font-sans uppercase font-bold tracking-wider">${escapeHtml(ev.category || 'EVENT')}</span>
+                </td>
+                <td class="py-2.5 px-4 font-semibold text-[#F7F3F2] whitespace-nowrap">${escapeHtml(ev.name || ev.eventType)}</td>
+                <td class="py-2.5 px-4 text-[#9E9A98] text-[11px] truncate max-w-xs" title="${escapeHtml(metadataSummary)}">${escapeHtml(metadataSummary)}</td>
+                <td class="py-2.5 px-4 text-right text-[#9E9A98] text-[11px] whitespace-nowrap font-sans">${escapeHtml(pagePath)}</td>
+              </tr>
+            `;
+          }).join('');
+        }
+
+        // 2. Render Mobile Responsive Cards View
+        if (mobileContainer) {
+          mobileContainer.innerHTML = eventsList.map(ev => {
+            const timeStr = new Date(ev.timestamp).toLocaleTimeString();
+            const badgeClass = 
+              ev.category === 'conversion' ? 'bg-[#F72B00]/20 text-[#FF5A36] border-[#F72B00]/40' :
+              ev.category === 'interaction' ? 'bg-[#FF6900]/20 text-[#FFA04D] border-[#FF6900]/40' :
+              ev.category === 'navigation' ? 'bg-[#00D084]/20 text-[#00D084] border-[#00D084]/40' :
+              'bg-[#282422] text-[#9E9A98] border-[#332F2C]';
+
+            const metadataSummary = ev.data ? JSON.stringify(ev.data) : '';
+            const pagePath = ev.page?.pathname || '/';
+
+            return `
+              <div class="p-3 rounded-xl bg-[#1E1B19] border border-[#332F2C] space-y-1.5 font-sans">
+                <div class="flex items-center justify-between text-[11px]">
+                  <span class="font-mono text-[#9E9A98]">${escapeHtml(timeStr)}</span>
+                  <span class="text-[9px] px-2 py-0.5 rounded border ${badgeClass} uppercase font-bold tracking-wider">${escapeHtml(ev.category || 'EVENT')}</span>
+                </div>
+                <div class="font-bold text-xs text-[#F7F3F2] font-mono">${escapeHtml(ev.name || ev.eventType)}</div>
+                ${metadataSummary ? `<div class="p-2 rounded bg-[#161413] border border-[#332F2C]/60 text-[10px] font-mono text-[#9E9A98] break-all">${escapeHtml(metadataSummary)}</div>` : ''}
+                <div class="text-[10px] text-[#9E9A98] text-right font-mono truncate">${escapeHtml(pagePath)}</div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      // Event Listeners
+      document.getElementById('btn-refresh').addEventListener('click', fetchAndRenderData);
+      document.getElementById('event-filter').addEventListener('change', fetchAndRenderData);
+      document.getElementById('btn-export-json').addEventListener('click', () => {
+        if (window.LeanStackAnalytics) window.LeanStackAnalytics.exportLogs();
+      });
+
+      document.getElementById('btn-clear-logs').addEventListener('click', async () => {
+        if (confirm('Are you sure you want to clear telemetry records?')) {
+          localStorage.removeItem('ls_telemetry_history');
+          const pass = getActivePass();
+          if (window.LeanStackAnalytics && typeof window.LeanStackAnalytics.clearServerData === 'function') {
+            try {
+              await window.LeanStackAnalytics.clearServerData(pass);
+            } catch (e) {}
+          }
+          fetchAndRenderData();
+        }
+      });
+
+      // Auto Refresh Interval
+      let refreshTimer = null;
+      document.getElementById('auto-refresh-toggle').addEventListener('change', (e) => {
+        if (e.target.checked) {
+          refreshTimer = setInterval(fetchAndRenderData, 5000);
+        } else if (refreshTimer) {
+          clearInterval(refreshTimer);
+          refreshTimer = null;
+        }
+      });
+
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# LeanStack Dynamic Cloudflare IP Synchronizer (cp-cf-sync)
+# Fetches official Cloudflare edge IP ranges and updates Angie Real-IP snippet
+# ==============================================================================
+set -euo pipefail
+
+TARGET_SNIPPET="/etc/angie/snippets/cloudflare-realip.conf"
+TMP_FILE=$(mktemp)
+
+echo ">>> [cp-cf-sync] Fetching latest Cloudflare IP ranges..."
+
+cat << 'EOF' > "$TMP_FILE"
+# ==============================================================================
+# LeanStack Cloudflare Real-IP Restoration Snippet
+# Automatically synchronized by cp-cf-sync
+# ==============================================================================
+
+EOF
+
+# Fetch IPv4
+echo "# Cloudflare IPv4" >> "$TMP_FILE"
+curl -fsSL https://www.cloudflare.com/ips-v4 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' | sed 's/^/set_real_ip_from /; s/$/;/' >> "$TMP_FILE" || true
+
+# Fetch IPv6
+echo "" >> "$TMP_FILE"
+echo "# Cloudflare IPv6" >> "$TMP_FILE"
+curl -fsSL https://www.cloudflare.com/ips-v6 2>/dev/null | grep -E '^[0-9a-fA-F:]+/[0-9]+$' | sed 's/^/set_real_ip_from /; s/$/;/' >> "$TMP_FILE" || true
+
+cat << 'EOF' >> "$TMP_FILE"
+
+# Restore Real IP from header
+real_ip_header CF-Connecting-IP;
+real_ip_recursive on;
+EOF
+
+if [ -s "$TMP_FILE" ] && grep -q "set_real_ip_from" "$TMP_FILE"; then
+    if [ -d "/etc/angie/snippets" ]; then
+        mv "$TMP_FILE" "$TARGET_SNIPPET"
+        if command -v angie &>/dev/null; then
+            angie -t &>/dev/null && systemctl reload angie 2>/dev/null || true
+        fi
+        echo "✅ [cp-cf-sync] Cloudflare IP ranges updated and Angie reloaded."
+    else
+        echo "Notice: /etc/angie/snippets not yet created. Output saved to: $TMP_FILE"
+    fi
+else
+    echo "⚠️ Warning: Failed to fetch Cloudflare IP ranges from network. Keeping existing rules."
+    rm -f "$TMP_FILE"
+fi

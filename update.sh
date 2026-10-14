@@ -7,13 +7,18 @@
 set -euo pipefail
 
 INSTALL_DIR="/opt/leanstack"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+fi
 
-# Detect installation root whether run from root or from site/
-if [ -f "${SCRIPT_DIR}/core/bin/lsctl" ] || [ -f "${SCRIPT_DIR}/core/bin/cpctl" ]; then
+# Detect installation root whether run from root, site/, or piped
+if [ -n "${SCRIPT_DIR}" ] && ([ -f "${SCRIPT_DIR}/core/bin/lsctl" ] || [ -f "${SCRIPT_DIR}/core/bin/cpctl" ]); then
     INSTALL_DIR="$SCRIPT_DIR"
-elif [ -f "${SCRIPT_DIR}/../core/bin/lsctl" ] || [ -f "${SCRIPT_DIR}/../core/bin/cpctl" ]; then
+elif [ -n "${SCRIPT_DIR}" ] && ([ -f "${SCRIPT_DIR}/../core/bin/lsctl" ] || [ -f "${SCRIPT_DIR}/../core/bin/cpctl" ]); then
     INSTALL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+elif [ -d "/opt/leanstack/core" ]; then
+    INSTALL_DIR="/opt/leanstack"
 fi
 
 DRY_RUN=0

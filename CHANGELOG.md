@@ -53,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expanded operating system support matrix to officially include Ubuntu 26.04 LTS alongside 22.04 LTS and 24.04 LTS.
 
 ### Fixed
+- Fixed pipe execution crash (`BASH_SOURCE[0]: unbound variable` and `cd: null directory`) when running `install.sh` or `update.sh` via `curl | sudo bash` under `set -u`.
+- Added interactive `/dev/tty` redirection so Python TUI can read terminal keystrokes when bootstrapped through a pipe.
 - Fixed MariaDB query serialization bottleneck by switching default `transaction_isolation` to `READ-COMMITTED` and right-sizing buffers to fit within CPU L2 cache.
 - Corrected typographical error (`vermillion` → `vermilion`).
 - Resolved missing charset encoding header and meta tags across site templates.

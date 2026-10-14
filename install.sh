@@ -11,20 +11,23 @@ set -euo pipefail
 LEANSTACK_VERSION="1.2.0"
 DEFAULT_REPO_URL="${LEANSTACK_REPO_URL:-https://github.com/kghosh007/LeanStack.git}"
 
-# Auto-detect local development clone vs default production target
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "${SCRIPT_DIR}/installer/tui.py" ]; then
+# Auto-detect local development clone vs default production target (pipe-safe)
+INSTALL_DIR="/opt/leanstack"
+SCRIPT_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+fi
+
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/installer/tui.py" ]; then
     INSTALL_DIR="$SCRIPT_DIR"
-elif [ -f "${SCRIPT_DIR}/../installer/tui.py" ]; then
+elif [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/../installer/tui.py" ]; then
     INSTALL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 elif [ -d "/opt/leanstack/installer" ]; then
-    INSTALL_DIR="/opt/leanstack"
-else
     INSTALL_DIR="/opt/leanstack"
 fi
 
 # Load centralized version if repository clone exists
-if [ -f "${INSTALL_DIR}/core/version.json" ]; then
+if [ -f "${INSTALL_DIR}/core/version.json" ] && command -v python3 >/dev/null 2>&1; then
     LEANSTACK_VERSION="$(python3 -c "import json; print(json.load(open('${INSTALL_DIR}/core/version.json')).get('version', '1.2.0'))" 2>/dev/null || echo "1.2.0")"
 fi
 
@@ -102,10 +105,20 @@ if [ "$DRY_RUN" -eq 0 ]; then
             if [ ! -f "${INSTALL_DIR}/installer/tui.py" ]; then
                 echo -e "${RED}❌ Unable to download LeanStack payload.${NC}"
                 echo -e "If using a private repository, please ensure an SSH deploy key or PAT is active, or run:"
-                echo -e "  git clone <your-repo> ${INSTALL_DIR}"
+                echo -e "  git clone ${DEFAULT_REPO_URL} ${INSTALL_DIR}"
                 echo -e "  cd ${INSTALL_DIR} && sudo ./install.sh"
                 exit 1
             fi
+        fi
+    fi
+else
+    # In dry-run via pipe on a system where /opt/leanstack does not exist yet
+    if [ ! -f "${INSTALL_DIR}/installer/tui.py" ]; then
+        TMP_PAYLOAD="/tmp/leanstack_dryrun_$$"
+        echo -e "${CYAN}⬇️ Fetching LeanStack payload for dry-run simulation...${NC}"
+        git clone --depth 1 "$DEFAULT_REPO_URL" "$TMP_PAYLOAD" 2>/dev/null || true
+        if [ -f "${TMP_PAYLOAD}/installer/tui.py" ]; then
+            INSTALL_DIR="$TMP_PAYLOAD"
         fi
     fi
 fi
@@ -113,7 +126,11 @@ fi
 # 5. Launch Interactive Antigravity-Style TUI Engine
 if [ -f "${INSTALL_DIR}/installer/tui.py" ]; then
     echo -e "${GREEN}🚀 Initializing LeanStack Hardware Prober & Installer TUI...${NC}\n"
-    exec python3 "${INSTALL_DIR}/installer/tui.py" "$@"
+    if [ ! -t 0 ] && [ -c /dev/tty ]; then
+        exec python3 "${INSTALL_DIR}/installer/tui.py" "$@" </dev/tty
+    else
+        exec python3 "${INSTALL_DIR}/installer/tui.py" "$@"
+    fi
 else
     echo -e "${RED}❌ Fatal: Installer entrypoint (${INSTALL_DIR}/installer/tui.py) not found.${NC}" >&2
     exit 1

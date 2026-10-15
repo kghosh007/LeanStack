@@ -37,6 +37,7 @@ EOF
 if [ -s "$TMP_FILE" ] && grep -q "set_real_ip_from" "$TMP_FILE"; then
     if [ -d "/etc/angie/snippets" ]; then
         mv "$TMP_FILE" "$TARGET_SNIPPET"
+        chmod 644 "$TARGET_SNIPPET"
         if command -v angie &>/dev/null; then
             angie -t &>/dev/null && systemctl reload angie 2>/dev/null || true
         fi

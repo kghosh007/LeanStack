@@ -1530,7 +1530,7 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
                         if [ -n "$wpc_perm" ] && [ "$wpc_perm" != "600" ]; then
                             echo "  [WARN] Site ${dom} wp-config.php permissions are insecure (${wpc_perm}, expected: 0600) (run: sudo lsctl sync-tenants)"
                         fi
-                        if ! grep -q "DISALLOW_FILE_EDIT" "$wpc" 2>/dev/null || grep -E -q "define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0)\s*\)" "$wpc" 2>/dev/null; then
+                        if ! grep -E -q "^[[:space:]]*define[[:space:]]*\([[:space:]]*['\"]DISALLOW_FILE_EDIT['\"][[:space:]]*,[[:space:]]*(true|1)[[:space:]]*\)" "$wpc" 2>/dev/null; then
                             echo "  [WARN] Site ${dom} missing DISALLOW_FILE_EDIT in wp-config.php (run: sudo lsctl sync-tenants)"
                         fi
                     fi

@@ -594,6 +594,18 @@ class TestProfilesAndTemplates(unittest.TestCase):
             self.assertIn("missing DISALLOW_FILE_EDIT in wp-config.php", res_dropin_ok.stdout)
             self.assertIn("wp-config.php permissions are insecure", res_dropin_ok.stdout)
 
+            # Test DISALLOW_FILE_EDIT explicitly set to false, 0, or commented out
+            for bad_def in [
+                "define('DISALLOW_FILE_EDIT', false);",
+                "define('DISALLOW_FILE_EDIT', 0);",
+                "// define('DISALLOW_FILE_EDIT', true);",
+                "# define('DISALLOW_FILE_EDIT', true);",
+            ]:
+                with open(wp_config, "w") as f:
+                    f.write(f"<?php\ndefine('WP_REDIS_PASSWORD', 'secret');\ndefine('WP_REDIS_USERNAME', 'tenant_user');\n{bad_def}\n")
+                res_sec_bad = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+                self.assertIn("missing DISALLOW_FILE_EDIT in wp-config.php", res_sec_bad.stdout)
+
             os.chmod(wp_config, 0o600)
             with open(wp_config, "a") as f:
                 f.write("\ndefine('DISALLOW_FILE_EDIT', true);\n")

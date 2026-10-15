@@ -122,16 +122,16 @@ server {
         return 403;
     }
 
-    # 4. Block Hidden Files & Dotfiles (.git, .env, .htaccess)
-    location ~ /\.(?!well-known) {
+    # 4. Mask & Block Sensitive Files with 404
+    location ~* (?:wp-config\.php.*|wp-config-sample\.php|\.user\.ini|readme\.html|readme\.txt|license\.txt|licence\.txt|composer\.(?:json|lock)|package(?:-lock)?\.json|\.(?:bak|sql|log|env|orig|save|swp|swo|dist|old|temp|tmp)(?:~)?)$ {
         deny all;
         access_log off;
         log_not_found off;
-        return 403;
+        return 404;
     }
 
-    # 5. Mask & Block Sensitive Files with 404
-    location ~* (?:wp-config\.php|wp-config-sample\.php|\.user\.ini|readme\.html|readme\.txt|license\.txt|licence\.txt|composer\.(?:json|lock)|package(?:-lock)?\.json|\.(?:bak|sql|log|env|orig|save|swp|swo|dist))$ {
+    # 5. Block Hidden Files & Dotfiles (.git, .env, .htaccess)
+    location ~ /\.(?!well-known) {
         deny all;
         access_log off;
         log_not_found off;

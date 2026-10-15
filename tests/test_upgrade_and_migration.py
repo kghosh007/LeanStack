@@ -120,11 +120,21 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         conn.commit()
         conn.close()
 
+        mock_home = os.path.dirname(site_root)
+        os.makedirs(os.path.join(mock_home, "tmp"), exist_ok=True)
+        os.makedirs(os.path.join(mock_home, "logs"), exist_ok=True)
+        os.chmod(mock_home, 0o777)
+        os.chmod(os.path.join(mock_home, "tmp"), 0o777)
+        os.chmod(os.path.join(mock_home, "logs"), 0o777)
+
         # 2. Run sync_tenants
         synced = self.upgrader.sync_tenants()
         self.assertEqual(synced, 1)
         import stat
         self.assertEqual(stat.S_IMODE(os.stat(site_root).st_mode), 0o750)
+        self.assertEqual(stat.S_IMODE(os.stat(mock_home).st_mode), 0o750)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(mock_home, "tmp")).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(mock_home, "logs")).st_mode), 0o750)
 
         # 3. Assert all 4 MU-plugins exist in the tenant's mu-plugins directory
         expected_plugins = [
@@ -225,6 +235,22 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
             wpc_edit2 = f.read()
         self.assertIn("define( 'DISALLOW_FILE_EDIT', true )", wpc_edit2)
         self.assertNotIn("false", wpc_edit2)
+
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\n# define( 'DISALLOW_FILE_EDIT', false );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            wpc_edit3 = f.read()
+        self.assertIn("define( 'DISALLOW_FILE_EDIT', true );", wpc_edit3)
+        self.assertNotIn("# define", wpc_edit3)
+
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\ndefine( 'DISALLOW_FILE_EDIT', 'false' );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            wpc_edit4 = f.read()
+        self.assertIn("define( 'DISALLOW_FILE_EDIT', true )", wpc_edit4)
+        self.assertNotIn("'false'", wpc_edit4)
 
     def test_cli_upgrade_dry_run_and_json(self):
         """Verify cp-upgrade CLI flags --dry-run and --json."""

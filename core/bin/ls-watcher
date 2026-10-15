@@ -316,6 +316,7 @@ heal_tenant_permissions() {
                 if [ -f "$wpc" ]; then
                     local wp_mode wp_user wp_group
                     wp_mode=$(stat -c '%a' "$wpc" 2>/dev/null || true)
+                    [ -n "$wp_mode" ] && wp_mode="${wp_mode: -3}"
                     wp_user=$(stat -c '%U' "$wpc" 2>/dev/null || true)
                     wp_group=$(stat -c '%G' "$wpc" 2>/dev/null || true)
                     if [ "$wp_user" != "$tenant" ] || [ "$wp_group" != "$tenant" ]; then

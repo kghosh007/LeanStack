@@ -613,54 +613,62 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
 
                 # 3c. Reconcile Tenant Filesystem Permissions & POSIX Sandboxing
                 home_dir = f"/home/{user}"
+                if not os.path.isdir(home_dir) and site_path:
+                    parent_candidate = os.path.dirname(site_path)
+                    if os.path.isdir(os.path.join(parent_candidate, "tmp")) or os.path.isdir(os.path.join(parent_candidate, "logs")):
+                        home_dir = parent_candidate
+
+                u_uid, u_gid, w_gid = None, None, None
+                try:
+                    import pwd, grp
+                    u_info = pwd.getpwnam(user)
+                    u_uid, u_gid = u_info.pw_uid, u_info.pw_gid
+                    w_info = grp.getgrnam("www-data")
+                    w_gid = w_info.gr_gid
+                except Exception:
+                    pass
+
                 if os.path.isdir(home_dir):
+                    if u_uid is not None and w_gid is not None:
+                        try:
+                            os.chown(home_dir, u_uid, w_gid)
+                        except Exception:
+                            pass
                     try:
-                        import pwd, grp
-                        u_info = pwd.getpwnam(user)
-                        w_info = grp.getgrnam("www-data")
-                        try:
-                            os.chown(home_dir, u_info.pw_uid, w_info.gr_gid)
-                        except Exception:
-                            pass
-                        try:
-                            os.chmod(home_dir, 0o750)
-                        except Exception:
-                            pass
-
-                        if os.path.isdir(site_path):
-                            try:
-                                os.chown(site_path, u_info.pw_uid, w_info.gr_gid)
-                            except Exception:
-                                pass
-                            try:
-                                os.chmod(site_path, 0o750)
-                            except Exception:
-                                pass
-
-                        tmp_dir = os.path.join(home_dir, "tmp")
-                        if os.path.isdir(tmp_dir):
-                            try:
-                                os.chown(tmp_dir, u_info.pw_uid, u_info.pw_gid)
-                            except Exception:
-                                pass
-                            try:
-                                os.chmod(tmp_dir, 0o700)
-                            except Exception:
-                                pass
-
-                        logs_dir = os.path.join(home_dir, "logs")
-                        if os.path.isdir(logs_dir):
-                            try:
-                                os.chown(logs_dir, u_info.pw_uid, w_info.gr_gid)
-                            except Exception:
-                                pass
-                            try:
-                                os.chmod(logs_dir, 0o750)
-                            except Exception:
-                                pass
+                        os.chmod(home_dir, 0o750)
                     except Exception:
                         pass
-                elif os.path.isdir(site_path):
+
+                    tmp_dir = os.path.join(home_dir, "tmp")
+                    if os.path.isdir(tmp_dir):
+                        if u_uid is not None and u_gid is not None:
+                            try:
+                                os.chown(tmp_dir, u_uid, u_gid)
+                            except Exception:
+                                pass
+                        try:
+                            os.chmod(tmp_dir, 0o700)
+                        except Exception:
+                            pass
+
+                    logs_dir = os.path.join(home_dir, "logs")
+                    if os.path.isdir(logs_dir):
+                        if u_uid is not None and w_gid is not None:
+                            try:
+                                os.chown(logs_dir, u_uid, w_gid)
+                            except Exception:
+                                pass
+                        try:
+                            os.chmod(logs_dir, 0o750)
+                        except Exception:
+                            pass
+
+                if os.path.isdir(site_path):
+                    if u_uid is not None and w_gid is not None:
+                        try:
+                            os.chown(site_path, u_uid, w_gid)
+                        except Exception:
+                            pass
                     try:
                         os.chmod(site_path, 0o750)
                     except Exception:
@@ -774,14 +782,14 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                                 modified = True
 
                         # 4c. Ensure DISALLOW_FILE_EDIT is enabled
-                        if re.search(r"//\s*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]", wpc):
-                            wpc = re.sub(r"//\s*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"][^\n]*\n", "define( 'DISALLOW_FILE_EDIT', true );\n", wpc, count=1)
+                        if re.search(r"(?://|#)\s*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]", wpc):
+                            wpc = re.sub(r"(?://|#)\s*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"][^\n]*(?:\n|$)", "define( 'DISALLOW_FILE_EDIT', true );\n", wpc, count=1)
                             modified = True
                         elif re.search(r"/\*+[\s*]*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"].*?\*/", wpc, re.DOTALL):
                             wpc = re.sub(r"/\*+[\s*]*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"].*?\*/", "define( 'DISALLOW_FILE_EDIT', true );", wpc, count=1)
                             modified = True
-                        elif re.search(r"define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0)\s*\)", wpc, re.IGNORECASE):
-                            wpc = re.sub(r"define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0)\s*\)", "define( 'DISALLOW_FILE_EDIT', true )", wpc, count=1, flags=re.IGNORECASE)
+                        elif re.search(r"define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0|'false'|\"false\")\s*\)", wpc, re.IGNORECASE):
+                            wpc = re.sub(r"define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0|'false'|\"false\")\s*\)", "define( 'DISALLOW_FILE_EDIT', true )", wpc, count=1, flags=re.IGNORECASE)
                             modified = True
                         elif "DISALLOW_FILE_EDIT" not in wpc:
                             if re.search(r"define\s*\(\s*['\"]DISABLE_WP_CRON['\"]", wpc):
@@ -817,17 +825,19 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                                 f_wpc.write(wpc)
                             self.log(f"Reconciled WP_REDIS_USERNAME, WP_CACHE & DISALLOW_FILE_EDIT in {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
 
-                        # Enforce mode 0600 and tenant ownership on wp-config.php
-                        try:
-                            import pwd
-                            u_info = pwd.getpwnam(user)
-                            os.chown(wp_config, u_info.pw_uid, u_info.pw_gid)
-                        except Exception:
-                            pass
-                        try:
-                            os.chmod(wp_config, 0o600)
-                        except Exception:
-                            pass
+                        # Enforce mode 0600 and tenant ownership on wp-config.php across candidate paths
+                        for wpc_target in {wp_config, os.path.join(site_path, "wp-config.php"), os.path.join(os.path.dirname(site_path), "wp-config.php")}:
+                            if os.path.isfile(wpc_target):
+                                try:
+                                    import pwd
+                                    u_info = pwd.getpwnam(user)
+                                    os.chown(wpc_target, u_info.pw_uid, u_info.pw_gid)
+                                except Exception:
+                                    pass
+                                try:
+                                    os.chmod(wpc_target, 0o600)
+                                except Exception:
+                                    pass
                     except Exception as e:
                         self.log(f"Warning: Reconciling wp-config.php for {domain}: {e}", Colors.YELLOW, prefix="  ⚠️")
 

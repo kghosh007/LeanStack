@@ -78,8 +78,20 @@ EOF
 # Install CrowdSec & Firewall Bouncer
 if ! command -v cscli &>/dev/null; then
     curl -s https://install.crowdsec.net | bash >/dev/null 2>&1 || true
-    apt-get install -y -qq crowdsec crowdsec-firewall-bouncer-nftables 2>/dev/null || \
-    apt-get install -y -qq crowdsec crowdsec-firewall-bouncer-iptables 2>/dev/null || true
+    apt-get install -y -qq crowdsec
+    apt-get install -y -qq crowdsec-firewall-bouncer-nftables 2>/dev/null || \
+    apt-get install -y -qq crowdsec-firewall-bouncer-iptables 2>/dev/null || true
+fi
+
+# Ensure firewall bouncer has an active API key registered with CrowdSec LAPI
+if [ -f /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml ] && command -v cscli &>/dev/null; then
+    if ! grep -qE 'api_key:\s+[a-zA-Z0-9]+' /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml 2>/dev/null; then
+        BOUNCER_KEY=$(cscli bouncers add firewall-bouncer -o raw 2>/dev/null || true)
+        if [ -n "$BOUNCER_KEY" ]; then
+            sed -i "s/^api_key:.*/api_key: ${BOUNCER_KEY}/" /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml 2>/dev/null || true
+            systemctl restart crowdsec-firewall-bouncer 2>/dev/null || true
+        fi
+    fi
 fi
 
 # Install CrowdSec WordPress Brute-Force & Attack Scenarios

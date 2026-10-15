@@ -90,6 +90,7 @@ if [ "$DRY_RUN" -eq 0 ] && [ "$EUID" -eq 0 ]; then
     # Pre-flight: Remove broken/stale third-party repo lists that choke apt-get update
     echo -e "${CYAN}🧹 Pre-flight: Sanitizing repository sources & clearing APT locks...${NC}"
     rm -f /etc/apt/sources.list.d/*angie*.list /etc/apt/sources.list.d/*angie*.sources /etc/apt/trusted.gpg.d/*angie*.gpg
+    rm -f /etc/apt/sources.list.d/*ondrej-ubuntu-php*.list /etc/apt/sources.list.d/*ondrej-ubuntu-php*.sources
     find /etc/apt/sources.list.d/ -type f -empty -delete 2>/dev/null || true
     dpkg --configure -a 2>/dev/null || true
 

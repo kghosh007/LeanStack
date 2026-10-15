@@ -109,6 +109,17 @@ touch /etc/valkey/users.acl
 chown valkey:valkey /etc/valkey/valkey.conf /etc/valkey/users.acl
 chmod 640 /etc/valkey/valkey.conf /etc/valkey/users.acl
 
+# If packaged valkey is used, link paths
+if [ -f /usr/bin/valkey-server ] && [ ! -f /usr/local/bin/valkey-server ]; then
+    ln -sf /usr/bin/valkey-server /usr/local/bin/valkey-server
+    ln -sf /usr/bin/valkey-cli /usr/local/bin/valkey-cli
+fi
+
+# Stop existing services and remove unit symlinks to prevent 'linked unit file' conflicts
+systemctl stop valkey valkey-server 2>/dev/null || true
+systemctl disable valkey valkey-server 2>/dev/null || true
+rm -f /etc/systemd/system/valkey.service /etc/systemd/system/valkey-server.service
+
 # Deploy Systemd Unit
 cat << 'EOF' > /etc/systemd/system/valkey.service
 [Unit]
@@ -132,13 +143,9 @@ RuntimeDirectoryMode=0770
 WantedBy=multi-user.target
 EOF
 
-# If packaged valkey is used, link paths
-if [ -f /usr/bin/valkey-server ] && [ ! -f /usr/local/bin/valkey-server ]; then
-    ln -sf /usr/bin/valkey-server /usr/local/bin/valkey-server
-    ln -sf /usr/bin/valkey-cli /usr/local/bin/valkey-cli
-fi
-
 systemctl daemon-reload
-systemctl enable --now valkey.service || true
+systemctl unmask valkey 2>/dev/null || true
+systemctl enable valkey.service 2>/dev/null || true
+systemctl restart valkey.service 2>/dev/null || true
 
 echo "✅ [Phase 2] Valkey In-Memory Cache Configured & Running via Unix Socket!"

@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expanded operating system support matrix to officially include Ubuntu 26.04 LTS alongside 22.04 LTS and 24.04 LTS.
 
 ### Fixed
+- **Distribution-Aware PHP Engine**: `scripts/phase5_php.sh` now probes Launchpad PPA availability against the host distribution codename (`$VERSION_CODENAME`) before adding `ppa:ondrej/php`. On Ubuntu 26.04 (Resolute), it automatically leverages official distribution repositories delivering native PHP 8.5 packages and removes broken PPA files.
+- **Valkey Unit Link Conflict Resolution**: Cleans pre-existing package symlinks in `scripts/phase2_valkey.sh` prior to unit installation, preventing systemd `Refusing to operate on linked unit file` errors.
+- **CrowdSec LAPI Bouncer Synchronization**: Staged CrowdSec daemon setup prior to firewall bouncer installation in `scripts/phase4_angie_waf.sh`, guaranteeing valid LAPI API key registration.
 - Added pre-flight APT sanitization in `install.sh` prior to dependency checks to purge broken third-party and legacy Angie `.list` and `.sources` files, preventing fatal `apt-get update` errors on systems recovering from previous failed runs.
 - Fixed Angie web server repository configuration and package installation failure by strictly adhering to the official Debian/Ubuntu procedure (direct binary OpenPGP signing key download without corrupted dearmor pass, `/etc/os-release` dynamically resolved repository path `${ID}/${VERSION_ID} ${VERSION_CODENAME}`, modular dynamic Brotli module loading, and conflicting port 80/443 service eviction).
 - Fixed pipe execution crash (`BASH_SOURCE[0]: unbound variable` and `cd: null directory`) when running `install.sh` or `update.sh` via `curl | sudo bash` under `set -u`.

@@ -83,13 +83,32 @@ if [ -f /etc/os-release ]; then
     fi
 fi
 
-# 3. Prerequisites Installation
+# 3. Prerequisites Installation & Pre-Flight APT Sanitization
 if [ "$DRY_RUN" -eq 0 ] && [ "$EUID" -eq 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
-    echo -e "${CYAN}📦 Inspecting minimal prerequisites (python3, curl, git, sqlite3)...${NC}"
-    apt-get update -qq
-    apt-get install -y -qq python3 python3-minimal curl ca-certificates git sqlite3 >/dev/null
-    echo -e "${GREEN}✔ Base prerequisites confirmed.${NC}"
+
+    # Pre-flight: Remove broken/stale third-party repo lists that choke apt-get update
+    echo -e "${CYAN}🧹 Pre-flight: Sanitizing repository sources & clearing APT locks...${NC}"
+    rm -f /etc/apt/sources.list.d/*angie*.list /etc/apt/sources.list.d/*angie*.sources /etc/apt/trusted.gpg.d/*angie*.gpg
+    find /etc/apt/sources.list.d/ -type f -empty -delete 2>/dev/null || true
+    dpkg --configure -a 2>/dev/null || true
+
+    # Audit core prerequisites
+    MISSING_PKGS=()
+    for pkg in python3 python3-minimal curl ca-certificates git sqlite3; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            MISSING_PKGS+=("$pkg")
+        fi
+    done
+
+    if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
+        echo -e "${CYAN}📦 Installing missing bootstrap prerequisites (${MISSING_PKGS[*]})...${NC}"
+        apt-get update -qq -o Acquire::Retries=3 2>/dev/null || true
+        apt-get install -y -qq "${MISSING_PKGS[@]}" >/dev/null 2>&1 || apt-get install -y "${MISSING_PKGS[@]}"
+        echo -e "${GREEN}✔ Base prerequisites confirmed.${NC}"
+    else
+        echo -e "${GREEN}✔ Base prerequisites confirmed (python3, curl, git, sqlite3).${NC}"
+    fi
 fi
 
 # 4. Fetch or Update Repository Payload

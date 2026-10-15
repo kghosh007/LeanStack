@@ -47,12 +47,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Repository Health & Community Standards**:
   - Added [LICENSE](LICENSE) (MIT License), [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and structured GitHub issue form templates (`.github/ISSUE_TEMPLATE/`).
 
+### Added
+- **Pre-Flight System Environment Audit & Package Sanitization**: Visual 4-step wizard detecting pre-installed conflicting web servers (Angie, Nginx, Apache2), database engines (MariaDB, MySQL), cache tiers (Valkey, Redis), and PHP runtimes. Interactively or autonomously purges conflicting packages and stale repository lists (`/etc/apt/sources.list.d/*`) to guarantee a clean provisioning foundation.
+- **Semi-Verbose Real-Time Process Streaming & Logging**: Real-time streaming of script execution milestones (`↳ sub-action`) inside the TUI progress spinner, paired with full persistent logging to `/var/log/leanstack-install.log`.
+
 ### Changed
 - Standardized CLI syntax around `lsctl` (with `cpctl` maintained as a backward-compatible alias).
 - Updated repository remote endpoints from `okio/leanstack` to `kghosh007/LeanStack`.
 - Expanded operating system support matrix to officially include Ubuntu 26.04 LTS alongside 22.04 LTS and 24.04 LTS.
 
 ### Fixed
+- Added pre-flight APT sanitization in `install.sh` prior to dependency checks to purge broken third-party and legacy Angie `.list` and `.sources` files, preventing fatal `apt-get update` errors on systems recovering from previous failed runs.
 - Fixed Angie web server repository configuration and package installation failure by strictly adhering to the official Debian/Ubuntu procedure (direct binary OpenPGP signing key download without corrupted dearmor pass, `/etc/os-release` dynamically resolved repository path `${ID}/${VERSION_ID} ${VERSION_CODENAME}`, modular dynamic Brotli module loading, and conflicting port 80/443 service eviction).
 - Fixed pipe execution crash (`BASH_SOURCE[0]: unbound variable` and `cd: null directory`) when running `install.sh` or `update.sh` via `curl | sudo bash` under `set -u`.
 - Added interactive `/dev/tty` redirection so Python TUI can read terminal keystrokes when bootstrapped through a pipe.

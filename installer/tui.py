@@ -13,7 +13,8 @@ import argparse
 import subprocess
 import shutil
 import json
-from typing import Dict, Any
+import glob
+from typing import Dict, Any, List, Optional
 
 from telemetry import (
     Style, render_banner, render_card, interactive_select,
@@ -28,12 +29,172 @@ class LeanStackInstaller:
         self.selected_php = php_ver
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    def audit_environment(self) -> Dict[str, Any]:
+        """Detects pre-installed conflicting packages, stale repository lists, and invalid keys."""
+        categories = {
+            "Web Tier": ["angie", "angie-module-brotli", "nginx", "nginx-common", "nginx-core", "nginx-full", "apache2", "apache2-bin", "apache2-data"],
+            "Database Tier": ["mariadb-server", "mariadb-client", "mariadb-common", "mysql-server", "mysql-client", "mysql-common"],
+            "Cache Tier": ["valkey", "valkey-server", "valkey-tools", "redis", "redis-server", "redis-tools"],
+            "PHP Runtimes": ["php-fpm", "php8.1-fpm", "php8.2-fpm", "php8.3-fpm", "php8.4-fpm", "php8.5-fpm"]
+        }
+        all_pkgs = [p for cat in categories.values() for p in cat]
+        installed_map = {}
+        try:
+            res = subprocess.run(
+                ["dpkg-query", "-W", "-f=${binary:Package} ${Status}\n"] + all_pkgs,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            for line in res.stdout.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 4 and parts[1] == "install" and parts[2] == "ok" and parts[3] == "installed":
+                    pkg_name = parts[0].split(":")[0]
+                    for cat, pkgs in categories.items():
+                        if pkg_name in pkgs:
+                            installed_map.setdefault(cat, []).append(pkg_name)
+        except Exception:
+            pass
+
+        # Detect stale or corrupted repository files
+        stale_repos = []
+        for pat in [
+            "/etc/apt/sources.list.d/*angie*.list",
+            "/etc/apt/sources.list.d/*angie*.sources",
+            "/etc/apt/sources.list.d/*mariadb*.list",
+            "/etc/apt/sources.list.d/*valkey*.list",
+            "/etc/apt/sources.list.d/*redis*.list",
+            "/etc/apt/sources.list.d/*ondrej*.list"
+        ]:
+            stale_repos.extend(glob.glob(pat))
+
+        # Check for empty files or files containing angie.software
+        for f in glob.glob("/etc/apt/sources.list.d/*"):
+            if os.path.isfile(f) and f not in stale_repos:
+                try:
+                    if os.path.getsize(f) == 0:
+                        stale_repos.append(f)
+                    else:
+                        with open(f, "r", errors="ignore") as fp:
+                            if "angie.software" in fp.read():
+                                stale_repos.append(f)
+                except Exception:
+                    pass
+        stale_repos = sorted(list(set(stale_repos)))
+
+        # Detect stale GPG keys
+        stale_keys = glob.glob("/etc/apt/trusted.gpg.d/*angie*.gpg")
+
+        total_installed = sum(len(v) for v in installed_map.values())
+        has_conflicts = (total_installed > 0) or (len(stale_repos) > 0) or (len(stale_keys) > 0)
+
+        return {
+            "has_conflicts": has_conflicts,
+            "installed_map": installed_map,
+            "stale_repos": stale_repos,
+            "stale_keys": stale_keys,
+            "total_packages": total_installed
+        }
+
+    def render_audit_card(self, audit: Dict[str, Any]):
+        if not audit["has_conflicts"]:
+            lines = [
+                f"{Style.BOLD}{Style.BRIGHT_GREEN}✔ Host environment is clean and verified!{Style.RESET}",
+                "",
+                "  No conflicting web servers (Angie/Nginx/Apache2), database engines,",
+                "  or corrupted package repositories detected. Ready for LeanStack deployment."
+            ]
+            print(render_card("PRE-FLIGHT SYSTEM SANITIZATION AUDIT", lines, width=76, color=Style.BRIGHT_GREEN))
+            return
+
+        lines = [
+            f"{Style.BOLD}{Style.BRIGHT_YELLOW}⚠️  Pre-existing or conflicting system components detected on host:{Style.RESET}",
+            ""
+        ]
+        for cat, pkgs in audit["installed_map"].items():
+            if pkgs:
+                unique_pkgs = sorted(list(set(pkgs)))
+                lines.append(f"  • {Style.BOLD}{cat:<16}{Style.RESET} {', '.join(unique_pkgs)}")
+
+        if audit["stale_repos"]:
+            lines.append(f"  • {Style.BOLD}{'Repositories':<16}{Style.RESET} {len(audit['stale_repos'])} stale/broken source list(s)")
+            for r in audit["stale_repos"][:2]:
+                lines.append(f"    {Style.DIM}- {os.path.basename(r)}{Style.RESET}")
+            if len(audit["stale_repos"]) > 2:
+                lines.append(f"    {Style.DIM}... and {len(audit['stale_repos']) - 2} more{Style.RESET}")
+
+        lines.extend([
+            "",
+            f"{Style.BOLD}{Style.BRIGHT_CYAN}🧹 Automated Remediation Strategy:{Style.RESET}",
+            "  1. Gracefully stop & disable conflicting background services",
+            "  2. Purge pre-installed package artifacts to prevent dependency drift",
+            "  3. Remove stale repository lists & invalid cryptographic keyrings",
+            "  4. Reset and synchronize APT package indices for pristine provisioning"
+        ])
+        print(render_card("PRE-FLIGHT SYSTEM & PACKAGE AUDIT", lines, width=76, color=Style.YELLOW))
+
+    def sanitize_environment(self, audit: Dict[str, Any]):
+        print(f"\n{Style.BOLD}{Style.BRIGHT_CYAN}>>> Executing Pre-Flight System Sanitization...{Style.RESET}")
+        spinner = ProgressSpinner("Sanitizing host environment...")
+
+        if self.dry_run:
+            spinner.step(extra="[Simulation] Stopping conflicting services...")
+            time.sleep(0.1)
+            spinner.step(extra="[Simulation] Purging stale repository sources...")
+            time.sleep(0.1)
+            spinner.step(extra="[Simulation] Purging pre-installed packages...")
+            time.sleep(0.1)
+            spinner.success("Host environment verified (dry-run simulation).")
+            return
+
+        # 1. Stop and disable conflicting services
+        services = ["apache2", "nginx", "angie", "mariadb", "mysql", "valkey", "valkey-server", "redis-server", "redis"]
+        for s in services:
+            spinner.step(extra=f"Stopping service {s}...")
+            subprocess.run(["systemctl", "stop", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["systemctl", "disable", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # 2. Delete stale repo lists & keys FIRST
+        spinner.step(extra="Removing stale repository lists & keyrings...")
+        for f in audit["stale_repos"]:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        for k in audit["stale_keys"]:
+            try:
+                os.remove(k)
+            except Exception:
+                pass
+        for f in glob.glob("/etc/apt/sources.list.d/*"):
+            try:
+                if os.path.isfile(f) and os.path.getsize(f) == 0:
+                    os.remove(f)
+            except Exception:
+                pass
+
+        # 3. Purge conflicting packages
+        all_pkgs = []
+        for pkgs in audit["installed_map"].values():
+            all_pkgs.extend(pkgs)
+        if all_pkgs:
+            spinner.step(extra=f"Purging {len(all_pkgs)} conflicting packages...")
+            env = os.environ.copy()
+            env["DEBIAN_FRONTEND"] = "noninteractive"
+            subprocess.run(["apt-get", "purge", "-y", "-qq"] + all_pkgs, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+            subprocess.run(["apt-get", "autoremove", "-y", "-qq", "--purge"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+
+        # 4. Clean APT and refresh cache
+        spinner.step(extra="Updating clean package repository index...")
+        subprocess.run(["apt-get", "clean"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        spinner.success("Host environment successfully sanitized and verified clean.")
+
     def run(self):
         clear_screen()
         print(render_banner())
 
-        # Step 1: Hardware Probing
-        print(f"{Style.BOLD}{Style.BRIGHT_CYAN}>>> Step 1/3: Probing Host Hardware & Calculating Optimal Tuning Profiles...{Style.RESET}")
+        # Step 1: Hardware Probing & Auto-Tuning
+        print(f"{Style.BOLD}{Style.BRIGHT_CYAN}>>> Step 1/4: Probing Host Hardware & Calculating Optimal Tuning Profiles...{Style.RESET}")
         time.sleep(0.3)
         probe = HardwareProbe()
         hw = probe.probe_all()
@@ -43,9 +204,29 @@ class LeanStackInstaller:
         print(format_summary_card(profile_data))
         print("")
 
-        # Step 2: System Configuration (unless non-interactive)
+        # Step 2: System Audit & Sanitization
+        print(f"{Style.BOLD}{Style.BRIGHT_CYAN}>>> Step 2/4: Host Environment Audit & Package Sanitization...{Style.RESET}\n")
+        time.sleep(0.2)
+        audit = self.audit_environment()
+        self.render_audit_card(audit)
+        print("")
+
+        if audit["has_conflicts"]:
+            if self.non_interactive:
+                self.sanitize_environment(audit)
+            else:
+                purge = interactive_confirm(
+                    "Purge pre-installed conflicting packages & stale repo lists for a pristine install?",
+                    default=True
+                )
+                if purge:
+                    self.sanitize_environment(audit)
+                else:
+                    print(f"{Style.YELLOW}⚠️ Proceeding without purging pre-existing packages.{Style.RESET}")
+
+        # Step 3: Core System Configuration (unless non-interactive)
         if not self.non_interactive:
-            print(f"{Style.BOLD}{Style.BRIGHT_CYAN}>>> Step 2/3: Core System Configuration{Style.RESET}\n")
+            print(f"\n{Style.BOLD}{Style.BRIGHT_CYAN}>>> Step 3/4: Core System Configuration{Style.RESET}\n")
             
             php_options = [
                 ("8.5", "PHP 8.5 (Latest Stable — Peak performance & modern JIT compiler)"),
@@ -64,8 +245,8 @@ class LeanStackInstaller:
                 print(f"\n{Style.YELLOW}Installation aborted by user.{Style.RESET}")
                 sys.exit(0)
 
-        # Step 3: Execution Pipeline
-        print(f"\n{Style.BOLD}{Style.BRIGHT_CYAN}>>> Step 3/3: Executing LeanStack Provisioning Pipeline...{Style.RESET}\n")
+        # Step 4: Execution Pipeline
+        print(f"\n{Style.BOLD}{Style.BRIGHT_CYAN}>>> Step 4/4: Executing LeanStack Provisioning Pipeline...{Style.RESET}\n")
         self.execute_pipeline(profile_data)
 
     def execute_pipeline(self, tuning_data: Dict[str, Any]):
@@ -106,35 +287,35 @@ class LeanStackInstaller:
         if self.dry_run:
             time.sleep(0.4)
             return
-        self._run_bash_script(script)
+        self._run_bash_script(script, spinner)
 
     def _run_phase2(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
         script = os.path.join(self.base_dir, "scripts", "phase2_valkey.sh")
         if self.dry_run:
             time.sleep(0.4)
             return
-        self._run_bash_script(script)
+        self._run_bash_script(script, spinner)
 
     def _run_phase3(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
         script = os.path.join(self.base_dir, "scripts", "phase3_mariadb.sh")
         if self.dry_run:
             time.sleep(0.4)
             return
-        self._run_bash_script(script)
+        self._run_bash_script(script, spinner)
 
     def _run_phase4(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
         script = os.path.join(self.base_dir, "scripts", "phase4_angie_waf.sh")
         if self.dry_run:
             time.sleep(0.4)
             return
-        self._run_bash_script(script)
+        self._run_bash_script(script, spinner)
 
     def _run_phase5(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
         script = os.path.join(self.base_dir, "scripts", "phase5_php.sh")
         if self.dry_run:
             time.sleep(0.4)
             return
-        self._run_bash_script(script)
+        self._run_bash_script(script, spinner)
 
     def _run_phase6(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
         if self.dry_run:
@@ -207,12 +388,66 @@ class LeanStackInstaller:
         subprocess.run(["systemctl", "daemon-reload"], check=True)
         subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "cp-cf-sync.timer", "cp-gatekeeper.service"], check=False)
 
-    def _run_bash_script(self, script_path: str):
+    def _run_bash_script(self, script_path: str, spinner: ProgressSpinner):
         if not os.path.exists(script_path):
             raise FileNotFoundError(f"Missing script: {script_path}")
-        res = subprocess.run(["bash", script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if res.returncode != 0:
-            raise RuntimeError(f"Script failed with exit code {res.returncode}: {res.stderr[:200]}")
+
+        log_path = "/var/log/leanstack-install.log"
+        try:
+            log_file = open(log_path, "a", encoding="utf-8")
+        except Exception:
+            log_path = "/tmp/leanstack-install.log"
+            log_file = open(log_path, "a", encoding="utf-8")
+
+        script_name = os.path.basename(script_path)
+        log_file.write(f"\n======================================================\n")
+        log_file.write(f"[LeanStack] Starting {script_name} at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        log_file.write(f"======================================================\n")
+        log_file.flush()
+
+        env = os.environ.copy()
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+
+        proc = subprocess.Popen(
+            ["bash", script_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env
+        )
+
+        recent_lines = []
+        if proc.stdout:
+            for line in proc.stdout:
+                log_file.write(line)
+                log_file.flush()
+                clean = line.strip()
+                if not clean:
+                    continue
+                recent_lines.append(clean)
+                if len(recent_lines) > 25:
+                    recent_lines.pop(0)
+
+                # Show sub-step in the spinner if it's an informative line
+                if clean.startswith(">>>"):
+                    sub_msg = clean.lstrip(">").strip()
+                    if sub_msg.startswith("[Phase"):
+                        sub_msg = sub_msg.split("]", 1)[-1].strip()
+                    spinner.step(extra=f"↳ {sub_msg}")
+                elif any(clean.startswith(p) for p in ("📦", "⚙️", "✔", "Building", "Compiling", "Installing", "Configuring")):
+                    spinner.step(extra=f"↳ {clean}")
+
+        proc.wait()
+        log_file.close()
+
+        if proc.returncode != 0:
+            tail = "\n".join(recent_lines[-12:]) if recent_lines else "No output captured."
+            raise RuntimeError(
+                f"{script_name} failed with exit code {proc.returncode}.\n"
+                f"  Log file: {log_path}\n"
+                f"  Last output:\n{tail}"
+            )
 
     def render_completion_card(self):
         title = "LEANSTACK DEPLOYMENT COMPLETE"

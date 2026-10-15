@@ -15,6 +15,7 @@ export DEBIAN_FRONTEND=noninteractive
 # 1. Install Angie from Official Repository (Official Debian/Ubuntu Method)
 if ! command -v angie &>/dev/null; then
     echo ">>> [Phase 4] Configuring official Angie repository..."
+    rm -f /etc/apt/sources.list.d/*angie*.list /etc/apt/sources.list.d/*angie*.sources /etc/apt/trusted.gpg.d/*angie*.gpg
     apt-get update -qq
     apt-get install -y -qq ca-certificates curl
 
@@ -26,6 +27,7 @@ if ! command -v angie &>/dev/null; then
     echo "deb https://download.en.angie.software/angie/$(. /etc/os-release && echo "$ID/$VERSION_ID $VERSION_CODENAME") main" \
         | tee /etc/apt/sources.list.d/angie.list > /dev/null
 
+    echo ">>> [Phase 4] Updating package index & installing Angie..."
     apt-get update -qq
     apt-get install -y -qq angie angie-module-brotli 2>/dev/null || apt-get install -y -qq angie
 fi

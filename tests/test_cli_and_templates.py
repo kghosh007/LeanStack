@@ -58,6 +58,11 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("location = /wp-login.php", content)
         # Check Sensitive file masking
         self.assertIn("readme\\.html", content)
+        self.assertIn("wp-config\\.php", content)
+        self.assertIn("\\.user\\.ini", content)
+        self.assertIn("composer\\.", content)
+        self.assertIn("package", content)
+        self.assertIn("swp", content)
         # Check Tenant custom slots and security headers
         self.assertIn("custom-early.conf", content)
         self.assertIn("custom-rules.conf", content)

@@ -131,7 +131,7 @@ server {
     }
 
     # 5. Mask & Block Sensitive Files with 404
-    location ~* (wp-config\.php|wp-config-sample\.php|readme\.html|readme\.txt|license\.txt|licence\.txt|\.bak|\.sql|\.log|\.env)$ {
+    location ~* (?:wp-config\.php|wp-config-sample\.php|\.user\.ini|readme\.html|readme\.txt|license\.txt|licence\.txt|composer\.(?:json|lock)|package(?:-lock)?\.json|\.(?:bak|sql|log|env|orig|save|swp|swo|dist))$ {
         deny all;
         access_log off;
         log_not_found off;

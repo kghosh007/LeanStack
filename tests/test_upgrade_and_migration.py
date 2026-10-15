@@ -123,6 +123,8 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         # 2. Run sync_tenants
         synced = self.upgrader.sync_tenants()
         self.assertEqual(synced, 1)
+        import stat
+        self.assertEqual(stat.S_IMODE(os.stat(site_root).st_mode), 0o750)
 
         # 3. Assert all 4 MU-plugins exist in the tenant's mu-plugins directory
         expected_plugins = [

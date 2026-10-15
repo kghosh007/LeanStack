@@ -1518,6 +1518,38 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
             done ) || true
         fi
 
+        echo ">>> WordPress & Tenant Security Audits:"
+        if [ -f "$DB_FILE" ]; then
+            ( (db_query "SELECT domain, site_path FROM sites;" 2>/dev/null || true) | while IFS='|' read -r dom sp; do
+                if [ -n "$sp" ]; then
+                    wpc="${sp}/wp-config.php"
+                    [ ! -f "$wpc" ] && [ -f "$(dirname "$sp")/wp-config.php" ] && wpc="$(dirname "$sp")/wp-config.php"
+                    if [ -f "$wpc" ]; then
+                        wpc_perm=$(stat -c '%a' "$wpc" 2>/dev/null || stat -f '%Op' "$wpc" 2>/dev/null || true)
+                        [ -n "$wpc_perm" ] && wpc_perm="${wpc_perm: -3}"
+                        if [ -n "$wpc_perm" ] && [ "$wpc_perm" != "600" ]; then
+                            echo "  [WARN] Site ${dom} wp-config.php permissions are insecure (${wpc_perm}, expected: 0600) (run: sudo lsctl sync-tenants)"
+                        fi
+                        if ! grep -q "DISALLOW_FILE_EDIT" "$wpc" 2>/dev/null || grep -E -q "define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0)\s*\)" "$wpc" 2>/dev/null; then
+                            echo "  [WARN] Site ${dom} missing DISALLOW_FILE_EDIT in wp-config.php (run: sudo lsctl sync-tenants)"
+                        fi
+                    fi
+                    if [ -d "$sp" ]; then
+                        sp_perm=$(stat -c '%a' "$sp" 2>/dev/null || stat -f '%Op' "$sp" 2>/dev/null || true)
+                        [ -n "$sp_perm" ] && sp_perm="${sp_perm: -3}"
+                        if [ -n "$sp_perm" ]; then
+                            last_digit="${sp_perm: -1}"
+                            case "$last_digit" in
+                                2|3|6|7)
+                                    echo "  [WARN] Site ${dom} web root ${sp} is world-writable (${sp_perm}) (run: sudo lsctl sync-tenants)"
+                                    ;;
+                            esac
+                        fi
+                    fi
+                fi
+            done ) || true
+        fi
+
         echo ">>> Storage & Memory Health:"
         df -h / | awk 'NR==2 {print "  Disk / Usage: "$3" used / "$2" total ("$5" full)"}'
         free -m | awk 'NR==2 {print "  Memory Usage: "$3"MB used / "$2"MB total"}'

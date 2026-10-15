@@ -611,6 +611,61 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         except Exception as e:
                             self.log(f"Notice: Pool update for {user}: {e}", Colors.DIM, prefix="  ℹ")
 
+                # 3c. Reconcile Tenant Filesystem Permissions & POSIX Sandboxing
+                home_dir = f"/home/{user}"
+                if os.path.isdir(home_dir):
+                    try:
+                        import pwd, grp
+                        u_info = pwd.getpwnam(user)
+                        w_info = grp.getgrnam("www-data")
+                        try:
+                            os.chown(home_dir, u_info.pw_uid, w_info.gr_gid)
+                        except Exception:
+                            pass
+                        try:
+                            os.chmod(home_dir, 0o750)
+                        except Exception:
+                            pass
+
+                        if os.path.isdir(site_path):
+                            try:
+                                os.chown(site_path, u_info.pw_uid, w_info.gr_gid)
+                            except Exception:
+                                pass
+                            try:
+                                os.chmod(site_path, 0o750)
+                            except Exception:
+                                pass
+
+                        tmp_dir = os.path.join(home_dir, "tmp")
+                        if os.path.isdir(tmp_dir):
+                            try:
+                                os.chown(tmp_dir, u_info.pw_uid, u_info.pw_gid)
+                            except Exception:
+                                pass
+                            try:
+                                os.chmod(tmp_dir, 0o700)
+                            except Exception:
+                                pass
+
+                        logs_dir = os.path.join(home_dir, "logs")
+                        if os.path.isdir(logs_dir):
+                            try:
+                                os.chown(logs_dir, u_info.pw_uid, w_info.gr_gid)
+                            except Exception:
+                                pass
+                            try:
+                                os.chmod(logs_dir, 0o750)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                elif os.path.isdir(site_path):
+                    try:
+                        os.chmod(site_path, 0o750)
+                    except Exception:
+                        pass
+
                 # 4. Reconcile Valkey Cache Credentials in wp-config.php
                 wp_config = os.path.join(site_path, "wp-config.php")
                 if not os.path.isfile(wp_config):

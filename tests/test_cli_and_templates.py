@@ -590,6 +590,24 @@ class TestProfilesAndTemplates(unittest.TestCase):
             res_dropin_ok = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
             self.assertNotIn("missing object-cache.php drop-in", res_dropin_ok.stdout)
 
+            # 5. Verify security checks for wp-config permissions, DISALLOW_FILE_EDIT, and world-writable web root
+            self.assertIn("missing DISALLOW_FILE_EDIT in wp-config.php", res_dropin_ok.stdout)
+            self.assertIn("wp-config.php permissions are insecure", res_dropin_ok.stdout)
+
+            os.chmod(wp_config, 0o600)
+            with open(wp_config, "a") as f:
+                f.write("\ndefine('DISALLOW_FILE_EDIT', true);\n")
+            res_sec_ok = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertNotIn("missing DISALLOW_FILE_EDIT in wp-config.php", res_sec_ok.stdout)
+            self.assertNotIn("wp-config.php permissions are insecure", res_sec_ok.stdout)
+
+            os.chmod(site_dir, 0o777)
+            res_ww = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertIn("is world-writable", res_ww.stdout)
+            os.chmod(site_dir, 0o750)
+            res_ww_ok = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertNotIn("is world-writable", res_ww_ok.stdout)
+
     def test_cron_status_command(self):
         """Verify lsctl cron:status supports --json and reports timer and lock status."""
         import subprocess

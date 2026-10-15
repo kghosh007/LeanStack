@@ -32,6 +32,7 @@ if ( isset( $_SERVER['HTTP_CF_VISITOR'] ) ) {
 {{CACHE_CONSTANTS}}
 define( 'WP_REDIS_SCHEME', 'unix' );
 define( 'WP_REDIS_PATH',   '/run/valkey/valkey.sock' );
+define( 'WP_REDIS_USERNAME', '{{USER_NAME}}' );
 define( 'WP_REDIS_USER',   '{{USER_NAME}}' );
 define( 'WP_REDIS_PASSWORD', '{{VALKEY_PASSWORD}}' );
 define( 'WP_REDIS_DATABASE', {{VALKEY_DATABASE}} );

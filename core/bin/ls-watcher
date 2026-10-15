@@ -344,6 +344,18 @@ cleanup_disk_and_inodes() {
     fi
 }
 
+# 10. Background Cron Queue Resilience
+check_cron_queue() {
+    if command -v systemctl &>/dev/null; then
+        if [ -f "/etc/systemd/system/cp-cron.timer" ] || [ -f "/etc/systemd/system/ls-cron.timer" ] || systemctl list-unit-files cp-cron.timer &>/dev/null || systemctl list-unit-files ls-cron.timer &>/dev/null; then
+            if ! systemctl is-active --quiet cp-cron.timer 2>/dev/null && ! systemctl is-active --quiet ls-cron.timer 2>/dev/null; then
+                log "[WARN] Background cron timer is inactive. Starting cp-cron.timer..."
+                systemctl enable --now cp-cron.timer 2>/dev/null || systemctl start cp-cron.timer 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
 main() {
     check_angie
     check_mariadb
@@ -351,6 +363,7 @@ main() {
     check_php_fpm_pools
     heal_tenant_permissions
     cleanup_disk_and_inodes
+    check_cron_queue
 }
 
 main "$@"

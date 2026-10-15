@@ -101,8 +101,10 @@ timeout 0
 tcp-keepalive 0
 EOF
 
-# Initialize empty ACL file if not present
-touch /etc/valkey/users.acl
+# Initialize ACL file with default user if not present
+if [ ! -f /etc/valkey/users.acl ] || [ ! -s /etc/valkey/users.acl ]; then
+    echo "user default on nopass ~* &* +@all" > /etc/valkey/users.acl
+fi
 chown valkey:valkey /etc/valkey/valkey.conf /etc/valkey/users.acl
 chmod 640 /etc/valkey/valkey.conf /etc/valkey/users.acl
 

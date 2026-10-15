@@ -52,6 +52,7 @@ htmlcov/
 *.sqlite
 *.sqlite3
 sites.db
+*.rdb
 site/data/*.sqlite
 site/data/*.sqlite*
 site/data/*.json

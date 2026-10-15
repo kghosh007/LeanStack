@@ -1,10 +1,11 @@
 [Unit]
-Description=Trigger LeanStack Centralized WP-Cron Queue Every 5 Minutes
+Description=Trigger LeanStack Centralized WP-Cron Queue Every Minute
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=5min
+OnBootSec=1min
+OnUnitActiveSec=1min
 Persistent=true
 
 [Install]
 WantedBy=timers.target
+Alias=ls-cron.timer

@@ -15,6 +15,7 @@ class LeanStackBridge {
     private static $instance = null;
     private $nginx_dir = null;
     private $status_file = null;
+    private $cron_status_file = null;
 
     public static function get_instance() {
         if ( null === self::$instance ) {
@@ -38,6 +39,13 @@ class LeanStackBridge {
         add_action( 'admin_post_leanstack_save_cf_credentials', array( $this, 'handle_save_cf_credentials' ) );
         add_action( 'admin_post_leanstack_purge_cf', array( $this, 'handle_purge_cloudflare' ) );
 
+        // Anti-Thundering Background Cron Queue Handlers
+        add_action( 'admin_post_leanstack_run_cron_now', array( $this, 'handle_run_cron_now' ) );
+        add_filter( 'site_status_tests', array( $this, 'register_site_health_cron_test' ) );
+        add_action( 'wp_dashboard_setup', array( $this, 'register_dashboard_widgets' ) );
+        add_action( 'admin_bar_menu', array( $this, 'register_admin_bar_node' ), 100 );
+        add_action( 'admin_notices', array( $this, 'render_cron_admin_notices' ) );
+
         // Automated Invalidation Triggers on Post/Page Updates
         add_action( 'save_post', array( $this, 'on_post_change' ), 10, 2 );
         add_action( 'deleted_post', array( $this, 'on_post_change' ), 10, 2 );
@@ -60,6 +68,11 @@ class LeanStackBridge {
             }
         }
         $this->status_file = $this->nginx_dir . '/.status.json';
+        if ( file_exists( $candidate_nginx . '/.cron_status.json' ) ) {
+            $this->cron_status_file = $candidate_nginx . '/.cron_status.json';
+        } else {
+            $this->cron_status_file = $this->nginx_dir . '/.cron_status.json';
+        }
     }
 
     public function register_admin_menus() {
@@ -88,6 +101,15 @@ class LeanStackBridge {
             'manage_options',
             'leanstack-cache',
             array( $this, 'render_cache_page' )
+        );
+
+        // 4. Tools > Background Cron Queue
+        add_management_page(
+            __( 'Background Cron Queue', 'leanstack' ),
+            __( 'Cron Queue', 'leanstack' ),
+            'manage_options',
+            'leanstack-cron',
+            array( $this, 'render_cron_page' )
         );
     }
 
@@ -834,6 +856,247 @@ class LeanStackBridge {
         exit;
     }
 
+    public function get_cron_status() {
+        $meta = array(
+            'last_run' => null,
+            'status' => 'active',
+            'ran_via' => 'systemd_timer',
+            'events_processed' => 0,
+        );
+        if ( $this->cron_status_file && file_exists( $this->cron_status_file ) ) {
+            $raw = @file_get_contents( $this->cron_status_file );
+            $json = json_decode( $raw, true );
+            if ( is_array( $json ) ) {
+                $meta = array_merge( $meta, $json );
+            }
+        }
+        return $meta;
+    }
+
+    public function handle_run_cron_now() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_run_cron_action', 'leanstack_nonce' );
+
+        $cron_array = _get_cron_array();
+        $executed = 0;
+        $now = time();
+
+        if ( ! empty( $cron_array ) ) {
+            foreach ( $cron_array as $timestamp => $hooks ) {
+                if ( $timestamp <= $now ) {
+                    foreach ( $hooks as $hook => $keys ) {
+                        foreach ( $keys as $k => $data ) {
+                            $schedule = isset( $data['schedule'] ) ? $data['schedule'] : false;
+                            $args = isset( $data['args'] ) ? $data['args'] : array();
+                            if ( $schedule ) {
+                                wp_reschedule_event( $timestamp, $schedule, $hook, $args );
+                            }
+                            wp_unschedule_event( $timestamp, $hook, $args );
+                            do_action_ref_array( $hook, $args );
+                            $executed++;
+                        }
+                    }
+                }
+            }
+        }
+
+        if ( $this->cron_status_file ) {
+            $status_data = array(
+                'last_run' => gmdate( 'Y-m-d\TH:i:s\Z' ),
+                'status' => 'completed',
+                'ran_via' => 'wp_dashboard',
+                'events_processed' => $executed,
+            );
+            @file_put_contents( $this->cron_status_file, json_encode( $status_data ) );
+        }
+
+        // Also mirror to candidate nginx dir if distinct
+        $doc_root = rtrim( ABSPATH, '/' );
+        $alt_cron_file = dirname( $doc_root ) . '/nginx/.cron_status.json';
+        if ( $alt_cron_file !== $this->cron_status_file && is_dir( dirname( $alt_cron_file ) ) ) {
+            @file_put_contents( $alt_cron_file, json_encode( $status_data ) );
+        }
+
+        $referer = wp_get_referer();
+        if ( $referer && false !== strpos( $referer, 'wp-admin' ) ) {
+            wp_safe_redirect( add_query_arg( array( 'cron_dispatched' => $executed ), $referer ) );
+        } else {
+            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cron', 'cron_dispatched' => $executed ), admin_url( 'tools.php' ) ) );
+        }
+        exit;
+    }
+
+    public function render_cron_admin_notices() {
+        if ( isset( $_GET['cron_dispatched'] ) ) {
+            ?>
+            <div class="notice notice-success is-dismissible">
+                <p><?php printf( esc_html__( 'LeanStack Background Cron Queue executed successfully (%d scheduled event(s) processed).', 'leanstack' ), (int) $_GET['cron_dispatched'] ); ?></p>
+            </div>
+            <?php
+        }
+    }
+
+    public function register_dashboard_widgets() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+        wp_add_dashboard_widget(
+            'leanstack_cron_dashboard_widget',
+            __( '⏱ LeanStack Background Cron Manager', 'leanstack' ),
+            array( $this, 'render_dashboard_cron_widget' )
+        );
+    }
+
+    public function render_dashboard_cron_widget() {
+        $cron_meta = $this->get_cron_status();
+        $cron_array = _get_cron_array();
+        $now = time();
+        $due_count = 0;
+        $total_events = 0;
+        if ( ! empty( $cron_array ) ) {
+            foreach ( $cron_array as $timestamp => $hooks ) {
+                foreach ( $hooks as $hook => $keys ) {
+                    $total_events += count( $keys );
+                    if ( $timestamp <= $now ) {
+                        $due_count += count( $keys );
+                    }
+                }
+            }
+        }
+        $last_run_text = __( 'Active (awaiting next 60s trigger)', 'leanstack' );
+        if ( ! empty( $cron_meta['last_run'] ) ) {
+            $last_time = strtotime( $cron_meta['last_run'] );
+            $last_run_text = sprintf( __( '%s ago (%s)', 'leanstack' ), human_time_diff( $last_time ), gmdate( 'H:i:s \U\T\C', $last_time ) );
+        }
+        ?>
+        <div class="leanstack-cron-widget">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid #f0f0f1;">
+                <div>
+                    <span class="dashicons dashicons-yes-alt" style="color: #00a32a; vertical-align: middle;"></span>
+                    <strong style="color: #00a32a; font-size: 14px;"><?php _e( 'Server-Managed Queue Active', 'leanstack' ); ?></strong>
+                </div>
+                <span class="badge" style="background: #e7f5ea; color: #007017; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;">
+                    <?php _e( 'systemd: 60s timer', 'leanstack' ); ?>
+                </span>
+            </div>
+            <p style="margin: 6px 0; color: #50575e; font-size: 13px;">
+                <strong><?php _e( 'Execution Engine:', 'leanstack' ); ?></strong> <code>ls-cron-queue &amp; cp-cron.timer</code>
+            </p>
+            <p style="margin: 6px 0; color: #50575e; font-size: 13px;">
+                <strong><?php _e( 'Queue Cadence:', 'leanstack' ); ?></strong> <?php _e( 'Every 60s (serialized workers, 0ms visitor latency)', 'leanstack' ); ?>
+            </p>
+            <p style="margin: 6px 0; color: #50575e; font-size: 13px;">
+                <strong><?php _e( 'Last Queue Dispatch:', 'leanstack' ); ?></strong> <?php echo esc_html( $last_run_text ); ?>
+            </p>
+            <p style="margin: 6px 0; color: #50575e; font-size: 13px;">
+                <strong><?php _e( 'Scheduled Tasks:', 'leanstack' ); ?></strong> 
+                <?php printf( __( '<strong>%d</strong> scheduled', 'leanstack' ), $total_events ); ?>
+                <?php if ( $due_count > 0 ) : ?>
+                    <span style="color: #d63638; font-weight: bold;">(<?php printf( __( '%d due now', 'leanstack' ), $due_count ); ?>)</span>
+                <?php else : ?>
+                    <span style="color: #00a32a;">(<?php _e( 'All current', 'leanstack' ); ?>)</span>
+                <?php endif; ?>
+            </p>
+            <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #f0f0f1; display: flex; justify-content: space-between; align-items: center;">
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 0;">
+                    <?php wp_nonce_field( 'leanstack_run_cron_action', 'leanstack_nonce' ); ?>
+                    <input type="hidden" name="action" value="leanstack_run_cron_now">
+                    <button type="submit" class="button button-secondary button-small">
+                        <span class="dashicons dashicons-update" style="vertical-align: text-bottom; font-size: 14px;"></span> <?php _e( 'Dispatch Due Crons Now', 'leanstack' ); ?>
+                    </button>
+                </form>
+                <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cron' ) ); ?>" class="button button-link" style="font-size: 12px;">
+                    <?php _e( 'Inspect Cron Queue →', 'leanstack' ); ?>
+                </a>
+            </div>
+        </div>
+        <?php
+    }
+
+    public function register_admin_bar_node( $wp_admin_bar ) {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+        $cron_array = _get_cron_array();
+        $now = time();
+        $due = 0;
+        if ( ! empty( $cron_array ) ) {
+            foreach ( $cron_array as $ts => $hooks ) {
+                if ( $ts <= $now ) {
+                    $due += count( $hooks );
+                }
+            }
+        }
+        $icon = '<span class="ab-icon dashicons dashicons-clock" style="top: 2px;"></span>';
+        $title = $icon . ' ' . ( $due > 0 ? sprintf( __( 'Cron: %d Due', 'leanstack' ), $due ) : __( 'Cron: Active', 'leanstack' ) );
+        $wp_admin_bar->add_node( array(
+            'id'    => 'leanstack_cron_status',
+            'title' => $title,
+            'href'  => admin_url( 'tools.php?page=leanstack-cron' ),
+            'meta'  => array(
+                'title' => __( 'LeanStack Background Cron Queue Status', 'leanstack' ),
+            ),
+        ) );
+    }
+
+    public function render_cron_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'LeanStack Centralized WP-Cron Queue Manager', 'leanstack' ); ?></h1>
+            <p><?php _e( 'Server-level anti-thundering task queue powered by Linux systemd, zero visitor overhead, and live queue inspector.', 'leanstack' ); ?></p>
+            <?php $this->render_status_banner(); ?>
+            <p>
+                <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cache' ) ); ?>" class="button button-secondary">
+                    <span class="dashicons dashicons-performance" style="vertical-align: text-bottom;"></span> <?php _e( 'Open LeanStack Cache Center', 'leanstack' ); ?>
+                </a>
+            </p>
+            <?php $this->render_cron_tab_content(); ?>
+        </div>
+        <?php
+    }
+
+    public function register_site_health_cron_test( $tests ) {
+        if ( isset( $tests['async']['wp_cron'] ) ) {
+            unset( $tests['async']['wp_cron'] );
+        }
+        if ( isset( $tests['direct']['wp_cron'] ) ) {
+            unset( $tests['direct']['wp_cron'] );
+        }
+        $tests['direct']['leanstack_cron_queue'] = array(
+            'label' => __( 'LeanStack Background Cron Queue', 'leanstack' ),
+            'test'  => array( $this, 'site_health_test_cron_queue' ),
+        );
+        return $tests;
+    }
+
+    public function site_health_test_cron_queue() {
+        $cron_meta = $this->get_cron_status();
+
+        return array(
+            'label'       => __( 'Scheduled tasks are managed by LeanStack Anti-Thundering Queue', 'leanstack' ),
+            'status'      => 'good',
+            'badge'       => array(
+                'label' => __( 'Performance', 'leanstack' ),
+                'color' => 'blue',
+            ),
+            'description' => sprintf(
+                '<p>%s</p>',
+                __( 'WordPress stock visitor-spawned crons are intentionally disabled (DISABLE_WP_CRON = true) to prevent visitor page load latency. The LeanStack systemd background queue manages scheduled tasks with strict concurrency bounds.', 'leanstack' )
+            ),
+            'actions'     => sprintf(
+                '<p><a href="%s" class="button button-secondary">%s</a></p>',
+                esc_url( admin_url( 'tools.php?page=leanstack-cron' ) ),
+                __( 'Inspect Cron Queue & Schedules', 'leanstack' )
+            ),
+            'test'        => 'leanstack_cron_queue',
+        );
+    }
+
     public function get_analytics() {
         $data = array(
             'fastcgi' => array(
@@ -1053,6 +1316,9 @@ class LeanStackBridge {
             <?php if ( isset( $_GET['purged_cf'] ) ) : ?>
                 <div class="notice notice-success is-dismissible"><p><?php _e( 'Cloudflare Edge CDN cache purge request dispatched.', 'leanstack' ); ?></p></div>
             <?php endif; ?>
+            <?php if ( isset( $_GET['cron_dispatched'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php printf( __( 'LeanStack Background Cron Queue executed successfully (%d scheduled events processed).', 'leanstack' ), (int) $_GET['cron_dispatched'] ); ?></p></div>
+            <?php endif; ?>
 
             <h2 class="nav-tab-wrapper">
                 <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cache&tab=analytics' ) ); ?>" class="nav-tab <?php echo 'analytics' === $active_tab ? 'nav-tab-active' : ''; ?>">
@@ -1066,6 +1332,9 @@ class LeanStackBridge {
                 </a>
                 <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cache&tab=cloudflare' ) ); ?>" class="nav-tab <?php echo 'cloudflare' === $active_tab ? 'nav-tab-active' : ''; ?>">
                     <span class="dashicons dashicons-cloud" style="vertical-align: text-bottom;"></span> <?php _e( 'Cloudflare Edge CDN', 'leanstack' ); ?>
+                </a>
+                <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cache&tab=cron' ) ); ?>" class="nav-tab <?php echo 'cron' === $active_tab ? 'nav-tab-active' : ''; ?>">
+                    <span class="dashicons dashicons-clock" style="vertical-align: text-bottom;"></span> <?php _e( 'Background Cron Queue', 'leanstack' ); ?>
                 </a>
             </h2>
 
@@ -1105,6 +1374,53 @@ class LeanStackBridge {
                         <p style="color: #646970; margin: 0;"><?php printf( __( 'Workers: <strong>%d</strong> | Load: <strong>%s</strong>', 'leanstack' ), $analytics['system']['process_count'], $analytics['system']['load_avg'] ); ?></p>
                         <hr style="margin: 15px 0; border: 0; border-top: 1px solid #f0f0f1;">
                         <small style="color: #646970;"><?php printf( __( 'Server Uptime: %s', 'leanstack' ), $analytics['system']['uptime'] ); ?></small>
+                    </div>
+
+                    <!-- 5. Background Cron Queue -->
+                    <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <h3 style="margin-top: 0; color: #1d2327;"><span class="dashicons dashicons-clock" style="color: #00a32a;"></span> <?php _e( 'Background Cron Queue', 'leanstack' ); ?></h3>
+                        <p style="font-size: 28px; font-weight: bold; margin: 10px 0; color: #00a32a;"><?php _e( 'Active', 'leanstack' ); ?> <span style="font-size: 14px; font-weight: normal; color: #646970;">(Queue Managed)</span></p>
+                        <p style="color: #646970; margin: 0;"><?php printf( __( 'Mode: <strong>Systemd Timer (60s)</strong> | Events: <strong>%d</strong> scheduled', 'leanstack' ), count( (array) _get_cron_array() ) ); ?></p>
+                        <hr style="margin: 15px 0; border: 0; border-top: 1px solid #f0f0f1;">
+                        <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cron' ) ); ?>" style="text-decoration: none; color: #2271b1; font-weight: 500;"><span class="dashicons dashicons-arrow-right-alt" style="vertical-align: middle;"></span> <?php _e( 'Manage Cron Queue &amp; Events', 'leanstack' ); ?></a>
+                    </div>
+
+                    <!-- 6. Valkey Object Cache -->
+                    <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <h3 style="margin-top: 0; color: #1d2327;"><span class="dashicons dashicons-database-view" style="color: #2271b1;"></span> <?php _e( 'Valkey Object Cache', 'leanstack' ); ?></h3>
+                        <?php
+                        $valkey_connected = false;
+                        $dropin_active = file_exists( WP_CONTENT_DIR . '/object-cache.php' );
+                        if ( class_exists( 'Redis' ) && defined( 'WP_REDIS_PATH' ) ) {
+                            try {
+                                $r = new Redis();
+                                if ( @$r->connect( WP_REDIS_PATH ) ) {
+                                    if ( defined( 'WP_REDIS_USERNAME' ) && defined( 'WP_REDIS_PASSWORD' ) ) {
+                                        $valkey_connected = @$r->auth( array( WP_REDIS_USERNAME, WP_REDIS_PASSWORD ) );
+                                    } elseif ( defined( 'WP_REDIS_PASSWORD' ) ) {
+                                        $valkey_connected = @$r->auth( WP_REDIS_PASSWORD );
+                                    } else {
+                                        $valkey_connected = true;
+                                    }
+                                    @$r->close();
+                                }
+                            } catch ( Exception $e ) {
+                                $valkey_connected = false;
+                            }
+                        }
+                        ?>
+                        <?php if ( $valkey_connected && $dropin_active ) : ?>
+                            <p style="font-size: 28px; font-weight: bold; margin: 10px 0; color: #00a32a;"><?php _e( 'Connected', 'leanstack' ); ?> <span style="font-size: 14px; font-weight: normal; color: #646970;">(DB <?php echo defined( 'WP_REDIS_DATABASE' ) ? (int) WP_REDIS_DATABASE : 0; ?>)</span></p>
+                            <p style="color: #646970; margin: 0;"><?php printf( __( 'ACL User: <strong>%s</strong> | Unix Socket Active', 'leanstack' ), defined( 'WP_REDIS_USERNAME' ) ? esc_html( WP_REDIS_USERNAME ) : 'default' ); ?></p>
+                        <?php elseif ( $valkey_connected ) : ?>
+                            <p style="font-size: 28px; font-weight: bold; margin: 10px 0; color: #dba617;"><?php _e( 'Socket Ready', 'leanstack' ); ?> <span style="font-size: 14px; font-weight: normal; color: #646970;">(Drop-in Missing)</span></p>
+                            <p style="color: #646970; margin: 0;"><?php _e( 'Valkey ACL authenticated. Enable drop-in via Redis settings.', 'leanstack' ); ?></p>
+                        <?php else : ?>
+                            <p style="font-size: 28px; font-weight: bold; margin: 10px 0; color: #d63638;"><?php _e( 'Offline / Unlinked', 'leanstack' ); ?></p>
+                            <p style="color: #646970; margin: 0;"><?php _e( 'Check /run/valkey/valkey.sock and ACL credentials.', 'leanstack' ); ?></p>
+                        <?php endif; ?>
+                        <hr style="margin: 15px 0; border: 0; border-top: 1px solid #f0f0f1;">
+                        <small style="color: #8c8f94; word-break: break-all;"><?php echo defined( 'WP_REDIS_PATH' ) ? esc_html( WP_REDIS_PATH ) : '/run/valkey/valkey.sock'; ?></small>
                     </div>
                 </div>
 
@@ -1246,7 +1562,164 @@ class LeanStackBridge {
                         </p>
                     </form>
                 </div>
+
+            <?php elseif ( 'cron' === $active_tab ) : ?>
+                <?php $this->render_cron_tab_content(); ?>
             <?php endif; ?>
+        </div>
+        <?php
+    }
+
+    public function render_cron_tab_content() {
+        $cron_meta = $this->get_cron_status();
+        $cron_array = _get_cron_array();
+        $now = time();
+        $due_count = 0;
+        $events_list = array();
+
+        if ( ! empty( $cron_array ) ) {
+            foreach ( $cron_array as $timestamp => $hooks ) {
+                foreach ( $hooks as $hook => $keys ) {
+                    foreach ( $keys as $k => $data ) {
+                        $is_due = ( $timestamp <= $now );
+                        if ( $is_due ) {
+                            $due_count++;
+                        }
+                        $events_list[] = array(
+                            'timestamp' => $timestamp,
+                            'hook'      => $hook,
+                            'schedule'  => isset( $data['schedule'] ) && $data['schedule'] ? $data['schedule'] : __( 'Non-repeating', 'leanstack' ),
+                            'args'      => isset( $data['args'] ) ? $data['args'] : array(),
+                            'is_due'    => $is_due,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Sort upcoming events by timestamp ascending
+        usort( $events_list, function( $a, $b ) {
+            return $a['timestamp'] - $b['timestamp'];
+        } );
+        ?>
+        <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; margin-top: 20px; border-radius: 4px;">
+            <h3><span class="dashicons dashicons-clock" style="color: #2271b1;"></span> <?php _e( 'LeanStack Centralized Anti-Thundering WP-Cron Manager', 'leanstack' ); ?></h3>
+            <p class="description">
+                <?php _e( 'LeanStack executes WordPress scheduled tasks through a dedicated server-level systemd queue runner (<code>ls-cron-queue</code> / <code>cp-cron.timer</code>) with strict concurrency limits and PHP isolation.', 'leanstack' ); ?>
+            </p>
+
+            <div style="background: #f0f6fc; border-left: 4px solid #72aee6; padding: 12px 16px; margin: 16px 0; border-radius: 2px;">
+                <h4 style="margin: 0 0 6px 0; color: #1d2327;"><span class="dashicons dashicons-info" style="color: #2271b1; vertical-align: middle;"></span> <?php _e( 'Why Visitor WP-Cron is Disabled (DISABLE_WP_CRON = true)', 'leanstack' ); ?></h4>
+                <p style="margin: 0; color: #2c3338; font-size: 13px; line-height: 1.5;">
+                    <?php _e( 'Default WordPress triggers crons in the background of page visits, causing high TTFB, thread starvation, and thundering herd spikes during traffic surges. LeanStack offloads this completely to Linux systemd, running crons reliably every 60 seconds with 0ms visitor latency.', 'leanstack' ); ?>
+                </p>
+            </div>
+
+            <table class="widefat striped" style="margin-top: 15px;">
+                <thead>
+                    <tr>
+                        <th><?php _e( 'Parameter', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Configured Value', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Operational Status', 'leanstack' ); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong><?php _e( 'Queue Execution Engine', 'leanstack' ); ?></strong></td>
+                        <td><code>systemd: cp-cron.timer &amp; ls-cron-queue</code></td>
+                        <td><span class="dashicons dashicons-yes" style="color: #00a32a;"></span> <strong style="color: #00a32a;"><?php _e( 'Active &amp; Server-Managed', 'leanstack' ); ?></strong></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php _e( 'Queue Cadence / Interval', 'leanstack' ); ?></strong></td>
+                        <td><?php _e( 'Every 60 seconds (Serialized max 4 parallel workers)', 'leanstack' ); ?></td>
+                        <td><span class="dashicons dashicons-performance" style="color: #2271b1;"></span> <?php _e( 'Anti-Thundering Mutex Lock Active', 'leanstack' ); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php _e( 'DISABLE_WP_CRON Setting', 'leanstack' ); ?></strong></td>
+                        <td><code>define( 'DISABLE_WP_CRON', true );</code></td>
+                        <td><span class="dashicons dashicons-shield" style="color: #00a32a;"></span> <?php _e( 'Protected (Visitor requests decoupled)', 'leanstack' ); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php _e( 'Last Server Queue Dispatch', 'leanstack' ); ?></strong></td>
+                        <td>
+                            <?php
+                            if ( ! empty( $cron_meta['last_run'] ) ) {
+                                $last_time = strtotime( $cron_meta['last_run'] );
+                                printf( esc_html__( '%s (%s ago)', 'leanstack' ), esc_html( $cron_meta['last_run'] ), human_time_diff( $last_time ) );
+                            } else {
+                                _e( 'Systemd Active (Awaiting next 60s trigger)', 'leanstack' );
+                            }
+                            ?>
+                        </td>
+                        <td>
+                            <span class="dashicons dashicons-marker" style="color: #00a32a;"></span>
+                            <?php echo esc_html( ucfirst( isset( $cron_meta['status'] ) ? $cron_meta['status'] : 'active' ) ); ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php _e( 'Scheduled Tasks Due Now', 'leanstack' ); ?></strong></td>
+                        <td><strong><?php echo (int) $due_count; ?></strong> <?php _e( 'task(s) ready to run', 'leanstack' ); ?></td>
+                        <td>
+                            <?php if ( $due_count > 0 ) : ?>
+                                <span class="dashicons dashicons-clock" style="color: #dba617;"></span> <span style="color: #b26b00;"><?php _e( 'Queued for next runner cycle', 'leanstack' ); ?></span>
+                            <?php else : ?>
+                                <span class="dashicons dashicons-yes" style="color: #00a32a;"></span> <span style="color: #00a32a;"><?php _e( 'All scheduled events current', 'leanstack' ); ?></span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div style="margin-top: 25px; padding-top: 20px; border-top: 1px solid #f0f0f1; display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                    <h4 style="margin: 0 0 5px 0;"><?php _e( 'Manual On-Demand Queue Dispatch', 'leanstack' ); ?></h4>
+                    <p style="margin: 0; color: #646970; font-size: 13px;"><?php _e( 'Execute all currently due scheduled WordPress hooks immediately.', 'leanstack' ); ?></p>
+                </div>
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                    <?php wp_nonce_field( 'leanstack_run_cron_action', 'leanstack_nonce' ); ?>
+                    <input type="hidden" name="action" value="leanstack_run_cron_now">
+                    <button type="submit" class="button button-primary">
+                        <span class="dashicons dashicons-update" style="vertical-align: text-bottom;"></span> <?php _e( 'Dispatch Cron Queue Now', 'leanstack' ); ?>
+                    </button>
+                </form>
+            </div>
+
+            <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
+
+            <h4><?php printf( __( 'Scheduled WordPress Tasks (%d events registered)', 'leanstack' ), count( $events_list ) ); ?></h4>
+            <table class="widefat striped" style="margin-top: 10px;">
+                <thead>
+                    <tr>
+                        <th><?php _e( 'Next Execution', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Hook Name', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Schedule / Recurrence', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Arguments', 'leanstack' ); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ( empty( $events_list ) ) : ?>
+                        <tr>
+                            <td colspan="4" style="text-align: center; color: #646970;"><?php _e( 'No scheduled events found.', 'leanstack' ); ?></td>
+                        </tr>
+                    <?php else : ?>
+                        <?php foreach ( array_slice( $events_list, 0, 30 ) as $ev ) : ?>
+                            <tr>
+                                <td>
+                                    <?php if ( $ev['is_due'] ) : ?>
+                                        <span style="color: #d63638; font-weight: bold;"><?php _e( 'Due now', 'leanstack' ); ?></span> (<?php echo esc_html( human_time_diff( $ev['timestamp'] ) ); ?> <?php _e( 'overdue', 'leanstack' ); ?>)
+                                    <?php else : ?>
+                                        <span style="color: #007017;"><?php printf( esc_html__( 'In %s', 'leanstack' ), esc_html( human_time_diff( $ev['timestamp'] ) ) ); ?></span>
+                                        <br><small style="color: #8c8f94;"><?php echo esc_html( date_i18n( 'Y-m-d H:i:s', $ev['timestamp'] ) ); ?></small>
+                                    <?php endif; ?>
+                                </td>
+                                <td><code><?php echo esc_html( $ev['hook'] ); ?></code></td>
+                                <td><?php echo esc_html( $ev['schedule'] ); ?></td>
+                                <td><small><?php echo ! empty( $ev['args'] ) ? esc_html( json_encode( $ev['args'] ) ) : '<em>none</em>'; ?></small></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
         </div>
         <?php
     }

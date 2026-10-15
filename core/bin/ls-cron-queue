@@ -16,9 +16,25 @@ else
 fi
 [ ! -f "$DB_FILE" ] && exit 0
 
-LOG_DIR="/var/log/cpctl"
-mkdir -p "$LOG_DIR"
+LOG_DIR="/var/log/lsctl"
+if [ ! -d "$LOG_DIR" ] && [ -d "/var/log/cpctl" ]; then
+    LOG_DIR="/var/log/cpctl"
+fi
+mkdir -p "$LOG_DIR" 2>/dev/null || LOG_DIR="/tmp"
 LOG_FILE="${LOG_DIR}/cron.log"
+
+# Atomic Flocking Mutex (guarantees zero overlapping cron batches)
+LOCK_FILE="/run/ls-cron.lock"
+if ! touch "$LOCK_FILE" 2>/dev/null; then
+    LOCK_FILE="/tmp/ls-cron.lock"
+    touch "$LOCK_FILE" 2>/dev/null || true
+fi
+chmod 666 "$LOCK_FILE" 2>/dev/null || true
+exec 201>"$LOCK_FILE"
+if ! flock -n 201; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack cron queue process is currently running. Skipping." >> "$LOG_FILE" 2>/dev/null || true
+    exit 0
+fi
 
 run_site_cron() {
     local domain="$1"
@@ -26,24 +42,89 @@ run_site_cron() {
     local site_path="$3"
     local php_ver="$4"
 
-    if [ -d "$site_path" ] && [ -x "/usr/bin/php${php_ver}" ] && [ -x "/usr/local/bin/wp" ]; then
+    # Dynamically resolve PHP CLI binary
+    local php_bin=""
+    if [ -n "$php_ver" ] && [ -x "/usr/bin/php${php_ver}" ]; then
+        php_bin="/usr/bin/php${php_ver}"
+    elif command -v php &>/dev/null; then
+        php_bin="$(command -v php)"
+    fi
+
+    # Dynamically resolve WP-CLI binary
+    local wp_bin=""
+    if [ -x "/usr/local/bin/wp" ]; then
+        wp_bin="/usr/local/bin/wp"
+    elif [ -x "/usr/bin/wp" ]; then
+        wp_bin="/usr/bin/wp"
+    elif command -v wp &>/dev/null; then
+        wp_bin="$(command -v wp)"
+    fi
+
+    if [ -d "$site_path" ] && [ -n "$php_bin" ] && [ -n "$wp_bin" ]; then
+        # Open basedir must permit WP-CLI execution, temporary directories, socket paths, SSL certs, and tenant roots
+        local allowed_paths="${site_path}:/home/${user}/nginx:/home/${user}/tmp:/home/${user}/logs:/home/${user}/.wp-cli:/home/${user}/.cache:/usr/local/bin:/usr/bin:/usr/share/php:/tmp:/run/valkey:/run/mysqld:/proc:/etc/ssl/certs:/usr/share/ca-certificates:/etc/pki:/etc/resolv.conf"
+
+        # WP-CLI relies on proc_open / proc_close for process management.
+        # Restrict dangerous functions while allowing proc_open for WP-CLI execution.
+        local disabled_funcs="exec,passthru,shell_exec,system,dl,show_source"
+
+        local status_dir="/home/${user}/nginx"
+        local alt_status_dir="${site_path}/wp-content/nginx-custom"
+        local cron_meta_file="${status_dir}/.cron_status.json"
+        local alt_cron_meta_file="${alt_status_dir}/.cron_status.json"
+
+        write_cron_status() {
+            local state="$1"
+            local payload="{\"last_run\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"status\": \"$state\"}"
+            if [ -d "$status_dir" ]; then
+                echo "$payload" > "$cron_meta_file" 2>/dev/null || true
+                chown "${user}:www-data" "$cron_meta_file" 2>/dev/null || true
+                chmod 664 "$cron_meta_file" 2>/dev/null || true
+            fi
+            if [ -d "$alt_status_dir" ]; then
+                echo "$payload" > "$alt_cron_meta_file" 2>/dev/null || true
+                chown "${user}:www-data" "$alt_cron_meta_file" 2>/dev/null || true
+                chmod 664 "$alt_cron_meta_file" 2>/dev/null || true
+            fi
+        }
+
+        write_cron_status "running"
+
         # Run WP-CLI cron as tenant user with timeout and strict PHP runtime sandboxing
-        timeout 60 sudo -u "$user" /usr/bin/php${php_ver} \
-            -d open_basedir="${site_path}:/home/${user}/tmp" \
-            -d disable_functions="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,show_source,dl" \
-            /usr/local/bin/wp cron event run --due-now --path="$site_path" --quiet 2>> "$LOG_FILE" || true
+        timeout 60 sudo -u "$user" "$php_bin" \
+            -d open_basedir="${allowed_paths}" \
+            -d disable_functions="${disabled_funcs}" \
+            "$wp_bin" cron event run --due-now --path="$site_path" --quiet 2>> "$LOG_FILE" || true
+
+        write_cron_status "completed"
     fi
 }
 export -f run_site_cron
 export LOG_FILE
 
+TARGET_DOMAIN=""
+for arg in "$@"; do
+    case "$arg" in
+        --domain=*)
+            TARGET_DOMAIN="${arg#*=}"
+            ;;
+        --all)
+            TARGET_DOMAIN=""
+            ;;
+    esac
+done
+
 # Query active sites: domain, user, site_path, php_version
 SITES=$(python3 -c "
-import sqlite3
+import sqlite3, sys
+domain_filter = '$TARGET_DOMAIN'
 try:
     conn = sqlite3.connect('$DB_FILE')
     cur = conn.cursor()
-    cur.execute('SELECT domain, user, site_path, php_version FROM sites')
+    if domain_filter:
+        cur.execute('SELECT domain, user, site_path, php_version FROM sites WHERE domain = ?', (domain_filter,))
+    else:
+        cur.execute('SELECT domain, user, site_path, php_version FROM sites')
     for row in cur.fetchall():
         print(f'{row[0]}|{row[1]}|{row[2]}|{row[3]}')
 except Exception:
@@ -55,4 +136,4 @@ except Exception:
 # Execute with max 4 parallel workers (Zero CPU starvation)
 echo "$SITES" | while IFS='|' read -r domain user site_path php_ver; do
     [ -n "$domain" ] && echo "$domain $user $site_path $php_ver"
-done | xargs -n 4 -P 4 bash -c 'run_site_cron "$@"' _
+done | xargs -r -n 4 -P 4 bash -c 'run_site_cron "$@"' _

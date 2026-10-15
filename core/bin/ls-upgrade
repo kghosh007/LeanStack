@@ -14,6 +14,7 @@ Provides zero-downtime, safe, and automated upgrades across multi-server fleets:
 
 import sys
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -334,7 +335,7 @@ class LeanStackUpgrader:
 
             if not self.dry_run and shutil.which("systemctl"):
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
-                subprocess.run(["systemctl", "enable", "--now", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
+                subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
 
         # Ensure default fallback SSL certificate exists for Angie
         ssl_dir = "/etc/angie/ssl"
@@ -430,6 +431,7 @@ class LeanStackUpgrader:
             return 0
 
         synced_count = 0
+        php_reloaded_needed = False
         mu_plugins = [
             ("leanstack-bridge.php.tpl", "leanstack-bridge.php"),
             ("leanstack-holepunch.php.tpl", "leanstack-holepunch.php"),
@@ -513,10 +515,286 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                     with open(zone_conf, "w") as f:
                         f.write(f"fastcgi_cache_path {site_cache_dir} levels=1:2 keys_zone=CACHE_{zone_key}:20m inactive=7d max_size=512m use_temp_path=off;\n")
 
+                # 3b. Reconcile PHP-FPM Pool open_basedir Permissions
+                php_ver = s["php_version"] if "php_version" in s.keys() else "8.5"
+                pool_paths = [
+                    f"/etc/php/{php_ver}/fpm/pool.d/{user}.conf",
+                    f"/etc/php/8.5/fpm/pool.d/{user}.conf",
+                    f"/etc/php/8.4/fpm/pool.d/{user}.conf",
+                    f"/etc/php/8.3/fpm/pool.d/{user}.conf",
+                    f"/etc/php/8.2/fpm/pool.d/{user}.conf",
+                    f"/etc/php/8.1/fpm/pool.d/{user}.conf",
+                ]
+                for pp in pool_paths:
+                    if os.path.isfile(pp):
+                        try:
+                            with open(pp, "r") as f_pf:
+                                p_content = f_pf.read()
+                            if "/run/valkey" not in p_content or "/run/mysqld" not in p_content:
+                                def _update_ob(m):
+                                    line = m.group(0)
+                                    if "/run/valkey" not in line:
+                                        line += ":/run/valkey"
+                                    if "/run/mysqld" not in line:
+                                        line += ":/run/mysqld"
+                                    return line
+                                p_new = re.sub(r"php_admin_value\[open_basedir\]\s*=\s*[^\n]+", _update_ob, p_content)
+                                if p_new != p_content:
+                                    with open(pp, "w") as f_pf:
+                                        f_pf.write(p_new)
+                                    php_reloaded_needed = True
+                                    self.log(f"Updated PHP-FPM open_basedir with Valkey/MariaDB sockets for {user} ({pp})", Colors.GREEN, prefix="  ✔")
+                        except Exception as e:
+                            self.log(f"Notice: Pool update for {user}: {e}", Colors.DIM, prefix="  ℹ")
+
+                # 4. Reconcile Valkey Cache Credentials in wp-config.php
+                wp_config = os.path.join(site_path, "wp-config.php")
+                if not os.path.isfile(wp_config):
+                    alt_wpc = os.path.join(os.path.dirname(site_path), "wp-config.php")
+                    if os.path.isfile(alt_wpc):
+                        wp_config = alt_wpc
+
+                valkey_pass = None
+                valkey_db = "1"
+                if os.path.isfile(wp_config):
+                    try:
+                        with open(wp_config, "r") as f_wpc:
+                            wpc = f_wpc.read()
+
+                        m_pass = re.search(r"define\s*\(\s*['\"]WP_REDIS_PASSWORD['\"]\s*,\s*['\"]([^'\"]+)['\"]", wpc)
+                        if m_pass:
+                            valkey_pass = m_pass.group(1)
+                        m_db = re.search(r"define\s*\(\s*['\"]WP_REDIS_DATABASE['\"]\s*,\s*([0-9]+)", wpc)
+                        if m_db:
+                            valkey_db = m_db.group(1)
+
+                        modified = False
+                        # 4a. Backfill / Harmonize WP_REDIS_USERNAME and WP_REDIS_USER
+                        if re.search(r"define\s*\(\s*['\"]WP_REDIS_USERNAME['\"]\s*,\s*['\"][^'\"]*['\"]\s*\)", wpc):
+                            wpc_new = re.sub(
+                                r"define\s*\(\s*['\"]WP_REDIS_USERNAME['\"]\s*,\s*['\"][^'\"]*['\"]\s*\)",
+                                f"define( 'WP_REDIS_USERNAME', '{user}' )",
+                                wpc
+                            )
+                            if wpc_new != wpc:
+                                wpc = wpc_new
+                                modified = True
+                        if re.search(r"define\s*\(\s*['\"]WP_REDIS_USER['\"]\s*,\s*['\"][^'\"]*['\"]\s*\)", wpc):
+                            wpc_new = re.sub(
+                                r"define\s*\(\s*['\"]WP_REDIS_USER['\"]\s*,\s*['\"][^'\"]*['\"]\s*\)",
+                                f"define( 'WP_REDIS_USER', '{user}' )",
+                                wpc
+                            )
+                            if wpc_new != wpc:
+                                wpc = wpc_new
+                                modified = True
+
+                        if "WP_REDIS_USERNAME" not in wpc or "WP_REDIS_USER" not in wpc:
+                            if "WP_REDIS_USERNAME" not in wpc and "WP_REDIS_USER" in wpc:
+                                wpc = re.sub(
+                                    r"(define\s*\(\s*['\"]WP_REDIS_USER['\"])",
+                                    f"define( 'WP_REDIS_USERNAME', '{user}' );\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "WP_REDIS_USER" not in wpc and "WP_REDIS_USERNAME" in wpc:
+                                wpc = re.sub(
+                                    r"(define\s*\(\s*['\"]WP_REDIS_USERNAME['\"])",
+                                    f"\\1\ndefine( 'WP_REDIS_USER', '{user}' );",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif re.search(r"define\s*\(\s*['\"]WP_REDIS_PASSWORD['\"]", wpc):
+                                wpc = re.sub(
+                                    r"(define\s*\(\s*['\"]WP_REDIS_PASSWORD['\"])",
+                                    f"define( 'WP_REDIS_USERNAME', '{user}' );\ndefine( 'WP_REDIS_USER', '{user}' );\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "WP_REDIS_PATH" in wpc:
+                                wpc = re.sub(
+                                    r"(define\s*\(\s*['\"]WP_REDIS_PATH['\"][^\n]*\n)",
+                                    f"\\1define( 'WP_REDIS_USERNAME', '{user}' );\ndefine( 'WP_REDIS_USER', '{user}' );\n",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+
+                        # 4b. Ensure WP_CACHE is enabled
+                        if re.search(r"//\s*define\s*\(\s*['\"]WP_CACHE['\"]", wpc):
+                            wpc = re.sub(r"//\s*define\s*\(\s*['\"]WP_CACHE['\"][^\n]*\n", "define( 'WP_CACHE', true );\n", wpc, count=1)
+                            modified = True
+                        elif re.search(r"/\*+[\s*]*define\s*\(\s*['\"]WP_CACHE['\"].*?\*/", wpc, re.DOTALL):
+                            wpc = re.sub(r"/\*+[\s*]*define\s*\(\s*['\"]WP_CACHE['\"].*?\*/", "define( 'WP_CACHE', true );", wpc, count=1)
+                            modified = True
+                        elif re.search(r"define\s*\(\s*['\"]WP_CACHE['\"]\s*,\s*(?:false|0)\s*\)", wpc, re.IGNORECASE):
+                            wpc = re.sub(r"define\s*\(\s*['\"]WP_CACHE['\"]\s*,\s*(?:false|0)\s*\)", "define( 'WP_CACHE', true )", wpc, count=1, flags=re.IGNORECASE)
+                            modified = True
+                        elif "WP_CACHE" not in wpc:
+                            if "WP_REDIS_SCHEME" in wpc:
+                                wpc = re.sub(
+                                    r"(define\s*\(\s*['\"]WP_REDIS_SCHEME['\"])",
+                                    "define( 'WP_CACHE', true );\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "WP_REDIS_PATH" in wpc:
+                                wpc = re.sub(
+                                    r"(define\s*\(\s*['\"]WP_REDIS_PATH['\"])",
+                                    "define( 'WP_CACHE', true );\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "<?php" in wpc:
+                                wpc = re.sub(r"<\?php\s*", "<?php\ndefine( 'WP_CACHE', true );\n", wpc, count=1)
+                                modified = True
+
+                        if modified:
+                            with open(wp_config, "w") as f_wpc:
+                                f_wpc.write(wpc)
+                            import pwd, grp
+                            try:
+                                u_info = pwd.getpwnam(user)
+                                w_info = grp.getgrnam("www-data")
+                                os.chown(wp_config, u_info.pw_uid, w_info.gr_gid)
+                                os.chmod(wp_config, 0o640)
+                            except Exception:
+                                pass
+                            self.log(f"Injected WP_REDIS_USERNAME & WP_CACHE into {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
+                    except Exception as e:
+                        self.log(f"Warning: Reconciling wp-config.php for {domain}: {e}", Colors.YELLOW, prefix="  ⚠️")
+
+                # 5. Reconcile Valkey ACL User & Permissions
+                acl_file = "/etc/valkey/users.acl"
+                if os.path.isfile(acl_file) or os.path.isdir("/etc/valkey"):
+                    try:
+                        acl_content = ""
+                        if os.path.exists(acl_file):
+                            with open(acl_file, "r") as f_acl:
+                                acl_content = f_acl.read()
+
+                        acl_changed = False
+                        if not re.search(r"^user\s+default\s+.*nopass", acl_content, re.MULTILINE):
+                            if re.search(r"^user\s+default\s+.*$", acl_content, re.MULTILINE):
+                                acl_content = re.sub(r"^user\s+default\s+.*$", "user default on nopass ~* &* +@all", acl_content, flags=re.MULTILINE)
+                            else:
+                                acl_content = "user default on nopass ~* &* +@all\n" + acl_content
+                            acl_changed = True
+
+                        if valkey_pass:
+                            user_rule = f"user {user} on >{valkey_pass} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb\n"
+                            user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
+                            if re.search(user_pattern, acl_content, re.MULTILINE):
+                                acl_content_new = re.sub(user_pattern, user_rule.strip(), acl_content, flags=re.MULTILINE)
+                                if acl_content_new != acl_content:
+                                    acl_content = acl_content_new
+                                    acl_changed = True
+                            else:
+                                if acl_content and not acl_content.endswith("\n"):
+                                    acl_content += "\n"
+                                acl_content += user_rule
+                                acl_changed = True
+                        elif f"user {user} " in acl_content and f"~{user}:*" in acl_content:
+                            acl_content = acl_content.replace(f"~{user}:*", "~*")
+                            acl_changed = True
+
+                        if acl_changed:
+                            with open(acl_file, "w") as f_acl:
+                                f_acl.write(acl_content)
+                            import pwd, grp
+                            try:
+                                v_u = pwd.getpwnam("valkey")
+                                v_g = grp.getgrnam("valkey")
+                                os.chown(acl_file, v_u.pw_uid, v_g.gr_gid)
+                                os.chmod(acl_file, 0o640)
+                            except Exception:
+                                pass
+                            cli_cmd = shutil.which("valkey-cli") or shutil.which("redis-cli") or ("/usr/local/bin/valkey-cli" if os.path.exists("/usr/local/bin/valkey-cli") else ("/usr/bin/valkey-cli" if os.path.exists("/usr/bin/valkey-cli") else None))
+                            if cli_cmd:
+                                subprocess.run([cli_cmd, "-s", "/run/valkey/valkey.sock", "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                            self.log(f"Harmonized Valkey ACL permissions (~*) for {user}", Colors.GREEN, prefix="  ✔")
+                    except Exception as e:
+                        self.log(f"Warning: Valkey ACL update for {user}: {e}", Colors.YELLOW, prefix="  ⚠️")
+
+                # 6. Ensure Redis Object Cache Drop-in is enabled if redis-cache plugin exists
+                rc_plugin = os.path.join(site_path, "wp-content", "plugins", "redis-cache")
+                rc_dropin = os.path.join(site_path, "wp-content", "object-cache.php")
+                if os.path.isdir(rc_plugin):
+                    needs_copy = False
+                    if not os.path.exists(rc_dropin) or os.path.getsize(rc_dropin) == 0:
+                        needs_copy = True
+                    else:
+                        try:
+                            with open(rc_dropin, "r", errors="ignore") as f_drop:
+                                if "Redis Object Cache" not in f_drop.read(500):
+                                    needs_copy = True
+                        except Exception:
+                            needs_copy = True
+
+                    if needs_copy:
+                        try:
+                            plugin_dropin = os.path.join(rc_plugin, "includes", "object-cache.php")
+                            if not os.path.isfile(plugin_dropin):
+                                plugin_dropin = os.path.join(rc_plugin, "object-cache.php")
+                            if os.path.isfile(plugin_dropin):
+                                shutil.copy2(plugin_dropin, rc_dropin)
+                                import pwd, grp
+                                try:
+                                    u_info = pwd.getpwnam(user)
+                                    w_info = grp.getgrnam("www-data")
+                                    os.chown(rc_dropin, u_info.pw_uid, w_info.gr_gid)
+                                    os.chmod(rc_dropin, 0o644)
+                                    self.log(f"Installed object-cache.php drop-in for {domain}", Colors.GREEN, prefix="  ✔")
+                                except Exception:
+                                    pass
+                        except Exception as e:
+                            self.log(f"Warning: Object-cache drop-in install for {domain}: {e}", Colors.YELLOW, prefix="  ⚠️")
+
+                    try:
+                        wp_bin = shutil.which("wp") or ("/usr/local/bin/wp" if os.path.exists("/usr/local/bin/wp") else ("/usr/bin/wp" if os.path.exists("/usr/bin/wp") else None))
+                        php_ver_str = s["php_version"] if "php_version" in s.keys() else "8.5"
+                        php_bin = f"/usr/bin/php{php_ver_str}" if os.path.exists(f"/usr/bin/php{php_ver_str}") else (shutil.which("php") or "php")
+                        if wp_bin:
+                            cmd = ["sudo", "-u", user, php_bin, wp_bin, "redis", "enable", "--force", f"--path={site_path}"]
+                            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                                cmd = [php_bin, wp_bin, "redis", "enable", "--force", f"--path={site_path}"]
+                            subprocess.run(
+                                cmd,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                check=False
+                            )
+                    except Exception as e:
+                        pass
+
             synced_count += 1
 
         conn.close()
         self.log(f"Reconciled {synced_count} registered tenant sites.", Colors.GREEN, prefix="  ✔")
+
+        if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0:
+            try:
+                self.sync_binaries()
+                self.sync_templates_and_profiles()
+            except Exception:
+                pass
+
+        if not self.dry_run and shutil.which("systemctl") and os.path.isdir("/run/systemd/system"):
+            if php_reloaded_needed:
+                for v_str in ["8.5", "8.4", "8.3", "8.2", "8.1"]:
+                    svc = f"php{v_str}-fpm"
+                    if subprocess.run(["systemctl", "is-active", "--quiet", svc], check=False).returncode == 0:
+                        subprocess.run(["systemctl", "reload", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                self.log("PHP-FPM reloaded with updated socket permissions.", Colors.GREEN, prefix="  ✔")
+            subprocess.run(["systemctl", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            self.log("Background Cron Queue, Autonomous Watcher & Auto-Update Timers active.", Colors.GREEN, prefix="  ✔")
+
         return synced_count
 
     def reload_services(self) -> bool:
@@ -536,8 +814,8 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
         if not self.dry_run and shutil.which("systemctl"):
             subprocess.run(["systemctl", "restart", "cp-gatekeeper.service"], check=False)
             self.log("Syntax Gatekeeper restarted.", Colors.GREEN, prefix="  ✔")
-            subprocess.run(["systemctl", "enable", "--now", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
-            self.log("Autonomous Watcher & Auto-Update Timers active.", Colors.GREEN, prefix="  ✔")
+            subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
+            self.log("Background Cron Queue, Autonomous Watcher & Auto-Update Timers active.", Colors.GREEN, prefix="  ✔")
 
         return True
 
@@ -578,7 +856,17 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
         self.backup_database()
 
         # 3. Git pull
-        self.git_pull_latest()
+        pulled = self.git_pull_latest()
+        if pulled and not self.dry_run and "--post-pull" not in sys.argv:
+            new_script = os.path.join(self.core_dir, "bin", "ls-upgrade")
+            if os.path.isfile(new_script):
+                self.sync_binaries()
+                self.sync_templates_and_profiles()
+                self.log("Re-executing upgrade with updated code...", Colors.CYAN, prefix="  🔄")
+                try:
+                    os.execv(sys.executable, [sys.executable, new_script, "--post-pull"] + [a for a in sys.argv[1:] if a != "--post-pull"])
+                except Exception:
+                    pass
 
         # 4. Migrations
         applied = self.run_migrations()
@@ -606,9 +894,20 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
 
 
 def main():
+    if "--delegated" not in sys.argv and os.path.exists("/opt/leanstack/core/bin/ls-upgrade"):
+        opt_real = os.path.realpath("/opt/leanstack/core/bin/ls-upgrade")
+        cur_real = os.path.realpath(__file__)
+        if opt_real != cur_real and os.path.isfile(opt_real):
+            try:
+                os.execv(sys.executable, [sys.executable, opt_real, "--delegated"] + sys.argv[1:])
+            except Exception:
+                pass
+
     parser = argparse.ArgumentParser(description="LeanStack Autonomous Upgrade & Migration Engine")
     parser.add_argument("--dry-run", action="store_true", help="Simulate upgrade steps without altering system files")
     parser.add_argument("--force", action="store_true", help="Re-apply all migrations and sync routines")
+    parser.add_argument("--post-pull", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--delegated", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--repo-dir", help="Path to LeanStack repository directory")
     parser.add_argument("--db-file", help="Path to SQLite sites.db file")
     parser.add_argument("--migrate-only", action="store_true", help="Execute database schema migrations only")

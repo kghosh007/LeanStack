@@ -9,6 +9,7 @@ import sys
 import yaml
 import sqlite3
 import tempfile
+import json
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -82,6 +83,8 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("dl,symlink,link", content)
         self.assertIn("php_admin_value[upload_tmp_dir]", content)
         self.assertIn("listen.mode = 0660", content)
+        self.assertIn("/run/valkey", content)
+        self.assertIn("/run/mysqld", content)
 
     def test_wp_config_template_socket_and_proxy(self):
         """Verify wp-config.php.tpl configures Valkey ACL socket, database, and reverse-proxy SSL."""
@@ -92,6 +95,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
 
         self.assertIn("WP_REDIS_SCHEME", content)
         self.assertIn("/run/valkey/valkey.sock", content)
+        self.assertIn("WP_REDIS_USERNAME", content)
         self.assertIn("WP_REDIS_USER", content)
         self.assertIn("WP_REDIS_PASSWORD", content)
         self.assertIn("WP_REDIS_DATABASE", content)
@@ -100,13 +104,19 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("HTTP_CF_VISITOR", content)
 
     def test_cron_queue_sandboxing(self):
-        """Verify cp-cron-queue applies strict PHP open_basedir and disable_functions."""
+        """Verify cp-cron-queue applies strict PHP open_basedir, proc_open retention, and flock lock."""
         cron_bin = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
         self.assertTrue(os.path.exists(cron_bin))
         with open(cron_bin, "r") as f:
             content = f.read()
         self.assertIn("-d open_basedir=", content)
         self.assertIn("-d disable_functions=", content)
+        self.assertNotIn("proc_open,", content)  # proc_open must NOT be disabled for WP-CLI
+        self.assertIn("flock -n", content)
+        self.assertIn(".cron_status.json", content)
+        self.assertIn("/home/${user}/nginx", content)
+        self.assertIn("/etc/ssl/certs", content)
+        self.assertIn("xargs -r", content)
 
     def test_leanstack_shield_mu_plugin(self):
         """Verify leanstack-shield.php.tpl disables XML-RPC and hides version."""
@@ -176,6 +186,14 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("purge_tenant_opcache", b_content)
         self.assertIn("purge_tenant_apcu", b_content)
         self.assertIn("purge_cloudflare_all", b_content)
+        self.assertIn("leanstack_run_cron_now", b_content)
+        self.assertIn("register_site_health_cron_test", b_content)
+        self.assertIn("Background Cron Queue", b_content)
+        self.assertIn("register_dashboard_widgets", b_content)
+        self.assertIn("render_dashboard_cron_widget", b_content)
+        self.assertIn("register_admin_bar_node", b_content)
+        self.assertIn("render_cron_page", b_content)
+        self.assertIn("Valkey Object Cache", b_content)
 
         # 4. lsctl provisioning checks
         lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
@@ -511,13 +529,133 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertFalse(data_unlocked["maintenance_locked"])
 
     def test_lsctl_doctor_watcher_integration(self):
-        """Verify lsctl doctor checks watcher and autoupdate timers."""
+        """Verify lsctl doctor checks watcher and autoupdate timers and handles missing/empty DB."""
         import subprocess
         lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        # 1. Base run without DB
         res = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
         self.assertIn("Autonomous Resilience & Watcher Timers", res.stdout)
         self.assertIn("ls-watcher.timer", res.stdout)
         self.assertIn("ls-autoupdate.timer", res.stdout)
+        self.assertIn("Storage & Memory Health", res.stdout)
+
+        # 2. Run with DB file that does not contain sites table
+        with tempfile.NamedTemporaryFile(suffix=".db") as empty_db:
+            env = os.environ.copy()
+            env["LEANSTACK_DB"] = empty_db.name
+            res_empty = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertIn("Storage & Memory Health", res_empty.stdout)
+
+        # 3. Run with DB file containing site missing WP_REDIS_USERNAME
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "test.db")
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE sites (domain TEXT, site_path TEXT);")
+            site_dir = os.path.join(td, "mysite")
+            os.makedirs(site_dir, exist_ok=True)
+            wp_config = os.path.join(site_dir, "wp-config.php")
+            with open(wp_config, "w") as f:
+                f.write("<?php define('WP_REDIS_PASSWORD', 'secret'); ?>")
+            conn.execute("INSERT INTO sites VALUES ('mysite.local', ?);", (site_dir,))
+            conn.commit()
+            conn.close()
+
+            env = os.environ.copy()
+            env["LEANSTACK_DB"] = db_path
+            res_warn = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertIn("missing WP_REDIS_USERNAME in wp-config.php", res_warn.stdout)
+
+            # Fix wp-config.php and verify warning clears
+            with open(wp_config, "a") as f:
+                f.write("define('WP_REDIS_USERNAME', 'tenant_user');")
+            res_ok = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertNotIn("missing WP_REDIS_USERNAME in wp-config.php", res_ok.stdout)
+
+            # 4. Verify drop-in warning when redis-cache plugin exists without object-cache.php
+            plugin_dir = os.path.join(site_dir, "wp-content", "plugins", "redis-cache")
+            os.makedirs(plugin_dir, exist_ok=True)
+            res_dropin_warn = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertIn("missing object-cache.php drop-in", res_dropin_warn.stdout)
+
+            # Create object-cache.php and verify warning clears
+            dropin_file = os.path.join(site_dir, "wp-content", "object-cache.php")
+            with open(dropin_file, "w") as f:
+                f.write("<?php")
+            res_dropin_ok = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertNotIn("missing object-cache.php drop-in", res_dropin_ok.stdout)
+
+    def test_cron_status_command(self):
+        """Verify lsctl cron:status supports --json and reports timer and lock status."""
+        import subprocess
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        res = subprocess.run([lsctl_path, "cron:status", "--json"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        data = json.loads(res.stdout)
+        self.assertIn("cron_timer", data)
+        self.assertIn("cron_service", data)
+        self.assertIn("cron_locked", data)
+        self.assertIn("timestamp", data)
+        # Verify no trailing newlines in status string values
+        self.assertNotIn("\n", data["cron_timer"])
+        self.assertNotIn("\n", data["cron_service"])
+
+    def test_php_templates_syntax_and_structure(self):
+        """Verify PHP templates have balanced braces and no dangling method/array closures."""
+        tpl_dir = os.path.join(BASE_DIR, "core", "templates")
+        bridge_tpl = os.path.join(tpl_dir, "leanstack-bridge.php.tpl")
+        self.assertTrue(os.path.exists(bridge_tpl))
+        with open(bridge_tpl, "r") as f:
+            content = f.read()
+
+        # Check that class LeanStackBridge opens and closes properly
+        self.assertIn("class LeanStackBridge {", content)
+        self.assertIn("add_action( 'plugins_loaded', array( 'LeanStackBridge', 'get_instance' ) );", content)
+
+        # Verify balanced curly braces in PHP class body
+        # Simple scan ignoring string literals
+        in_single = False
+        in_double = False
+        in_line_comment = False
+        in_block_comment = False
+        brace_count = 0
+        i = 0
+        n = len(content)
+        while i < n:
+            ch = content[i]
+            if in_line_comment:
+                if ch == "\n":
+                    in_line_comment = False
+            elif in_block_comment:
+                if ch == "*" and i + 1 < n and content[i + 1] == "/":
+                    in_block_comment = False
+                    i += 1
+            elif in_single:
+                if ch == "\\" and i + 1 < n:
+                    i += 1
+                elif ch == "'":
+                    in_single = False
+            elif in_double:
+                if ch == "\\" and i + 1 < n:
+                    i += 1
+                elif ch == '"':
+                    in_double = False
+            else:
+                if ch == "/" and i + 1 < n and content[i + 1] == "/":
+                    in_line_comment = True
+                    i += 1
+                elif ch == "/" and i + 1 < n and content[i + 1] == "*":
+                    in_block_comment = True
+                    i += 1
+                elif ch == "'":
+                    in_single = True
+                elif ch == '"':
+                    in_double = True
+                elif ch == "{":
+                    brace_count += 1
+                elif ch == "}":
+                    brace_count -= 1
+                    self.assertGreaterEqual(brace_count, 0, f"Unmatched closing brace at offset {i}")
+            i += 1
+        self.assertEqual(brace_count, 0, f"Unbalanced braces in {bridge_tpl}: final count {brace_count}")
 
 if __name__ == "__main__":
     unittest.main()

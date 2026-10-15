@@ -137,6 +137,72 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
                 content = f.read()
             self.assertIn("<?php", content)
 
+        # 4. Verify wp-config.php Valkey username reconciliation (with WP_REDIS_USER)
+        wp_config_path = os.path.join(site_root, "wp-config.php")
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\ndefine( 'WP_REDIS_USER', 'tenant_u1' );\ndefine( 'WP_REDIS_PASSWORD', 'secret' );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            updated_wpc = f.read()
+        self.assertIn("define( 'WP_REDIS_USERNAME', 'tenant_u1' );", updated_wpc)
+        self.assertIn("define( 'WP_REDIS_USER', 'tenant_u1' );", updated_wpc)
+
+        # 5. Verify wp-config.php reconciliation when ONLY WP_REDIS_PASSWORD is present (user's diagnostic scenario)
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\ndefine( 'WP_REDIS_SCHEME', 'unix' );\ndefine( 'WP_REDIS_PATH', '/run/valkey/valkey.sock' );\ndefine( 'WP_REDIS_PASSWORD', 'my_valkey_pass' );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            updated_wpc2 = f.read()
+        self.assertIn("define( 'WP_REDIS_USERNAME', 'tenant_u1' );", updated_wpc2)
+        self.assertIn("define( 'WP_REDIS_USER', 'tenant_u1' );", updated_wpc2)
+        self.assertIn("define( 'WP_REDIS_PASSWORD', 'my_valkey_pass' );", updated_wpc2)
+        self.assertIn("define( 'WP_CACHE', true );", updated_wpc2)
+
+        # 5b. Verify commented out WP_CACHE is enabled
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\n// define( 'WP_CACHE', false );\ndefine( 'WP_REDIS_PASSWORD', 'pass123' );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            updated_wpc3 = f.read()
+        self.assertIn("define( 'WP_CACHE', true );", updated_wpc3)
+        self.assertNotIn("// define( 'WP_CACHE', false );", updated_wpc3)
+
+        # 6. Verify object-cache.php drop-in fallback copying if plugin includes/object-cache.php exists
+        rc_includes = os.path.join(site_root, "wp-content", "plugins", "redis-cache", "includes")
+        os.makedirs(rc_includes, exist_ok=True)
+        with open(os.path.join(rc_includes, "object-cache.php"), "w") as f:
+            f.write("<?php /* Redis Object Cache Drop-in */")
+        dropin_target = os.path.join(site_root, "wp-content", "object-cache.php")
+        # Test overwrite of corrupted/empty drop-in
+        with open(dropin_target, "w") as f:
+            f.write("/* corrupt or foreign drop-in */")
+        self.upgrader.sync_tenants()
+        self.assertTrue(os.path.exists(dropin_target))
+        with open(dropin_target, "r") as f:
+            self.assertIn("Redis Object Cache Drop-in", f.read())
+
+        # 7. Verify harmonization of incorrect WP_REDIS_USERNAME / WP_REDIS_USER values
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\ndefine( 'WP_REDIS_USERNAME', 'wrong_user' );\ndefine( 'WP_REDIS_USER', 'wrong_user' );\ndefine( 'WP_REDIS_PASSWORD', 'pass123' );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            updated_wpc4 = f.read()
+        self.assertIn("define( 'WP_REDIS_USERNAME', 'tenant_u1' )", updated_wpc4)
+        self.assertIn("define( 'WP_REDIS_USER', 'tenant_u1' )", updated_wpc4)
+        self.assertNotIn("wrong_user", updated_wpc4)
+
+        # 8. Verify wp-config.php in parent directory (nested docroot ABSPATH)
+        parent_wpc = os.path.join(os.path.dirname(site_root), "wp-config.php")
+        os.remove(wp_config_path)
+        with open(parent_wpc, "w") as f:
+            f.write("<?php\ndefine( 'WP_REDIS_PASSWORD', 'parent_pass' );\n")
+        self.upgrader.sync_tenants()
+        with open(parent_wpc, "r") as f:
+            updated_parent_wpc = f.read()
+        self.assertIn("define( 'WP_REDIS_USERNAME', 'tenant_u1' );", updated_parent_wpc)
+        self.assertIn("define( 'WP_CACHE', true );", updated_parent_wpc)
+        os.remove(parent_wpc)
+
     def test_cli_upgrade_dry_run_and_json(self):
         """Verify cp-upgrade CLI flags --dry-run and --json."""
         cmd = [

@@ -26,7 +26,7 @@ slowlog = /home/{{USER_NAME}}/logs/php-slow.log
 catch_workers_output = yes
 
 ; Security Hardening & Tenant Sandboxing
-php_admin_value[open_basedir] = {{WEB_ROOT}}:/home/{{USER_NAME}}/nginx:/home/{{USER_NAME}}/tmp:/var/cache/angie/sites:/proc
+php_admin_value[open_basedir] = {{WEB_ROOT}}:/home/{{USER_NAME}}/nginx:/home/{{USER_NAME}}/tmp:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc
 php_admin_value[upload_tmp_dir] = /home/{{USER_NAME}}/tmp
 php_admin_value[sys_temp_dir] = /home/{{USER_NAME}}/tmp
 php_admin_value[session.save_path] = /home/{{USER_NAME}}/tmp

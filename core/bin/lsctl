@@ -7,6 +7,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Delegation to installed repo payload if running from stale /usr/local/bin copy
+if [ -f "/opt/leanstack/core/bin/lsctl" ]; then
+    OPT_REAL="$(readlink -f "/opt/leanstack/core/bin/lsctl" 2>/dev/null || echo "/opt/leanstack/core/bin/lsctl")"
+    CUR_REAL="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+    if [ "$OPT_REAL" != "$CUR_REAL" ] && [ -x "$OPT_REAL" ]; then
+        exec "$OPT_REAL" "$@"
+    fi
+fi
+
 # Configuration & Templates Paths
 if [ -n "${LEANSTACK_DB:-}" ]; then
     DB_FILE="$LEANSTACK_DB"
@@ -178,6 +187,7 @@ Commands:
   sys:tune        Re-probe hardware and apply dynamic tuning profiles
   cf:sync         Synchronize Cloudflare IP ranges into Angie
   cron:run        Execute anti-thundering background cron queue
+  cron:status     Display background cron timer & execution status (--json supported)
   watcher:status  Check background health watcher service & timer status (--json supported)
   watcher:run     Run autonomous health recovery checks immediately
   update:auto     Trigger autonomous software & security update run
@@ -296,12 +306,14 @@ PY
     update|upgrade)
         require_root
         shift
-        if [ -x "/usr/local/bin/ls-upgrade" ]; then
+        if [ -f "/opt/leanstack/core/bin/ls-upgrade" ]; then
+            python3 /opt/leanstack/core/bin/ls-upgrade "$@"
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 "${SCRIPT_DIR}/ls-upgrade" "$@"
+        elif [ -x "/usr/local/bin/ls-upgrade" ]; then
             python3 /usr/local/bin/ls-upgrade "$@"
         elif [ -x "/usr/local/bin/cp-upgrade" ]; then
             /usr/local/bin/cp-upgrade "$@"
-        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
-            python3 "${SCRIPT_DIR}/ls-upgrade" "$@"
         else
             bash "${SCRIPT_DIR}/cp-upgrade" "$@"
         fi
@@ -311,12 +323,14 @@ PY
     migrate)
         require_root
         shift
-        if [ -x "/usr/local/bin/ls-upgrade" ]; then
+        if [ -f "/opt/leanstack/core/bin/ls-upgrade" ]; then
+            python3 /opt/leanstack/core/bin/ls-upgrade --migrate-only "$@"
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 "${SCRIPT_DIR}/ls-upgrade" --migrate-only "$@"
+        elif [ -x "/usr/local/bin/ls-upgrade" ]; then
             python3 /usr/local/bin/ls-upgrade --migrate-only "$@"
         elif [ -x "/usr/local/bin/cp-upgrade" ]; then
             /usr/local/bin/cp-upgrade --migrate-only "$@"
-        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
-            python3 "${SCRIPT_DIR}/ls-upgrade" --migrate-only "$@"
         else
             bash "${SCRIPT_DIR}/cp-upgrade" --migrate-only "$@"
         fi
@@ -326,12 +340,14 @@ PY
     sync-tenants|site:sync-plugins)
         require_root
         shift
-        if [ -x "/usr/local/bin/ls-upgrade" ]; then
+        if [ -f "/opt/leanstack/core/bin/ls-upgrade" ]; then
+            python3 /opt/leanstack/core/bin/ls-upgrade --sync-tenants-only "$@"
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 "${SCRIPT_DIR}/ls-upgrade" --sync-tenants-only "$@"
+        elif [ -x "/usr/local/bin/ls-upgrade" ]; then
             python3 /usr/local/bin/ls-upgrade --sync-tenants-only "$@"
         elif [ -x "/usr/local/bin/cp-upgrade" ]; then
             /usr/local/bin/cp-upgrade --sync-tenants-only "$@"
-        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
-            python3 "${SCRIPT_DIR}/ls-upgrade" --sync-tenants-only "$@"
         else
             bash "${SCRIPT_DIR}/cp-upgrade" --sync-tenants-only "$@"
         fi
@@ -349,10 +365,67 @@ PY
         ;;
 
     cron:run)
+        shift 1 || true
         if [ -x "/usr/local/bin/cp-cron-queue" ]; then
-            /usr/local/bin/cp-cron-queue
+            /usr/local/bin/cp-cron-queue "$@"
+        elif [ -x "/usr/local/bin/ls-cron-queue" ]; then
+            /usr/local/bin/ls-cron-queue "$@"
+        elif [ -f "${SCRIPT_DIR}/cp-cron-queue" ]; then
+            bash "${SCRIPT_DIR}/cp-cron-queue" "$@"
         else
-            bash "${SCRIPT_DIR}/cp-cron-queue"
+            bash "${SCRIPT_DIR}/ls-cron-queue" "$@"
+        fi
+        exit 0
+        ;;
+
+    cron:status)
+        JSON_OUT=0
+        for arg in "$@"; do
+            [ "$arg" == "--json" ] && JSON_OUT=1
+        done
+
+        CRON_TIMER=$( (systemctl is-active cp-cron.timer 2>/dev/null || systemctl is-active ls-cron.timer 2>/dev/null || echo "inactive") | tr -d '\r\n' )
+        [ -z "$CRON_TIMER" ] && CRON_TIMER="inactive"
+        CRON_SVC=$( (systemctl is-active cp-cron.service 2>/dev/null || systemctl is-active ls-cron.service 2>/dev/null || echo "inactive") | tr -d '\r\n' )
+        [ -z "$CRON_SVC" ] && CRON_SVC="inactive"
+
+        LOCK_HELD="false"
+        for lf in "/run/ls-cron.lock" "/tmp/ls-cron.lock"; do
+            if [ -e "$lf" ]; then
+                if ! flock -s -n "$lf" true 2>/dev/null; then
+                    LOCK_HELD="true"
+                    break
+                fi
+            fi
+        done
+
+        if [ "$JSON_OUT" -eq 1 ]; then
+            python3 - "$CRON_TIMER" "$CRON_SVC" "$LOCK_HELD" << 'PY'
+import sys, json, datetime
+ct, cs, lh = sys.argv[1].strip(), sys.argv[2].strip(), sys.argv[3].strip()
+print(json.dumps({
+    "cron_timer": ct,
+    "cron_service": cs,
+    "cron_locked": (lh == "true"),
+    "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+}, indent=2))
+PY
+            exit 0
+        fi
+
+        echo "=========================================================="
+        echo "⏱ LeanStack Centralized Cron Queue Status"
+        echo "=========================================================="
+        systemctl status cp-cron.timer 2>/dev/null || systemctl status ls-cron.timer 2>/dev/null || echo "Timer unit not found"
+        echo ""
+        systemctl status cp-cron.service 2>/dev/null || systemctl status ls-cron.service 2>/dev/null || echo "Service unit not found"
+        echo ""
+        if [ -f /var/log/lsctl/cron.log ]; then
+            echo "Recent Cron Logs (/var/log/lsctl/cron.log):"
+            tail -n 10 /var/log/lsctl/cron.log
+        elif [ -f /var/log/cpctl/cron.log ]; then
+            echo "Recent Cron Logs (/var/log/cpctl/cron.log):"
+            tail -n 10 /var/log/cpctl/cron.log
         fi
         exit 0
         ;;
@@ -1121,10 +1194,21 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
         VALKEY_DB=$(( (SITE_COUNT % 120) + 1 ))
 
         ACL_FILE="/etc/valkey/users.acl"
-        if [ -f "$ACL_FILE" ]; then
+        if [ -d "/etc/valkey" ]; then
+            if [ ! -f "$ACL_FILE" ]; then
+                echo "user default on nopass ~* &* +@all" > "$ACL_FILE"
+            elif ! grep -q "^user default " "$ACL_FILE"; then
+                sed -i '1s/^/user default on nopass ~* &* +@all\n/' "$ACL_FILE"
+            fi
             sed -i "/user ${USER_NAME} /d" "$ACL_FILE" 2>/dev/null || true
-            echo "user ${USER_NAME} on >${VALKEY_PASS} ~${USER_NAME}:* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select|${VALKEY_DB} +flushdb" >> "$ACL_FILE"
-            valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+            echo "user ${USER_NAME} on >${VALKEY_PASS} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb" >> "$ACL_FILE"
+            chown valkey:valkey "$ACL_FILE" 2>/dev/null || true
+            chmod 640 "$ACL_FILE" 2>/dev/null || true
+            if command -v valkey-cli &>/dev/null; then
+                valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+            elif command -v redis-cli &>/dev/null; then
+                redis-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+            fi
         fi
 
         # Generate wp-config.php
@@ -1354,6 +1438,14 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
             if systemctl is-active --quiet "$svc" 2>/dev/null || ([ -n "$alt" ] && systemctl is-active --quiet "$alt" 2>/dev/null); then
                 echo "  [PASS] Service $svc is running"
             else
+                if [ "${EUID:-$(id -u)}" -eq 0 ] && [[ "$svc" == *.timer ]]; then
+                    systemctl daemon-reload 2>/dev/null || true
+                    systemctl enable --now "$svc" 2>/dev/null || ([ -n "$alt" ] && systemctl enable --now "$alt" 2>/dev/null) || true
+                    if systemctl is-active --quiet "$svc" 2>/dev/null || ([ -n "$alt" ] && systemctl is-active --quiet "$alt" 2>/dev/null); then
+                        echo "  [PASS] Service $svc recovered and running (auto-healed)"
+                        return
+                    fi
+                fi
                 echo "  [FAIL] Service $svc is not running!"
             fi
         }
@@ -1384,6 +1476,41 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
         echo ">>> Autonomous Resilience & Watcher Timers:"
         check_svc ls-watcher.timer
         check_svc ls-autoupdate.timer
+        check_svc cp-cron.timer ls-cron.timer
+
+        echo ">>> Background Cron Queue Diagnostics:"
+        if [ -x "/opt/leanstack/core/bin/ls-cron-queue" ] || [ -x "/usr/local/bin/ls-cron-queue" ] || [ -x "/usr/local/bin/cp-cron-queue" ]; then
+            echo "  [PASS] Anti-thundering cron runner binary installed"
+        else
+            echo "  [WARN] Anti-thundering cron runner binary not found in /usr/local/bin"
+        fi
+        if systemctl is-active --quiet cp-cron.timer 2>/dev/null || systemctl is-active --quiet ls-cron.timer 2>/dev/null; then
+            echo "  [PASS] Background cron timer is active"
+        else
+            echo "  [WARN] Background cron timer is inactive or not loaded (run: sudo systemctl enable --now cp-cron.timer)"
+        fi
+
+        echo ">>> Valkey Cache & Object Cache Diagnostics:"
+        if [ -f /etc/valkey/users.acl ]; then
+            acl_tenants=$(grep -c "^user " /etc/valkey/users.acl 2>/dev/null || true)
+            [ -z "$acl_tenants" ] && acl_tenants="0"
+            echo "  [PASS] Valkey ACL active (${acl_tenants} user(s) configured in /etc/valkey/users.acl)"
+            if ! grep -q "^user default " /etc/valkey/users.acl 2>/dev/null; then
+                echo "  [WARN] User default not declared in /etc/valkey/users.acl (run: sudo lsctl sync-tenants)"
+            fi
+        fi
+        if [ -f "$DB_FILE" ]; then
+            ( (db_query "SELECT domain, site_path FROM sites;" 2>/dev/null || true) | while IFS='|' read -r dom sp; do
+                if [ -n "$sp" ] && [ -f "${sp}/wp-config.php" ]; then
+                    if grep -q "WP_REDIS_PASSWORD" "${sp}/wp-config.php" && ! grep -q "WP_REDIS_USERNAME" "${sp}/wp-config.php"; then
+                        echo "  [WARN] Site ${dom} missing WP_REDIS_USERNAME in wp-config.php (run: sudo lsctl sync-tenants)"
+                    fi
+                    if [ -d "${sp}/wp-content/plugins/redis-cache" ] && [ ! -f "${sp}/wp-content/object-cache.php" ]; then
+                        echo "  [WARN] Site ${dom} missing object-cache.php drop-in (run: sudo lsctl sync-tenants)"
+                    fi
+                fi
+            done ) || true
+        fi
 
         echo ">>> Storage & Memory Health:"
         df -h / | awk 'NR==2 {print "  Disk / Usage: "$3" used / "$2" total ("$5" full)"}'

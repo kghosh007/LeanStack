@@ -10,3 +10,7 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=6
 CPUSchedulingPolicy=other
 Nice=10
+
+[Install]
+WantedBy=multi-user.target
+Alias=ls-cron.service

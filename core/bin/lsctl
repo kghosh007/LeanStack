@@ -178,6 +178,9 @@ Commands:
   sys:tune        Re-probe hardware and apply dynamic tuning profiles
   cf:sync         Synchronize Cloudflare IP ranges into Angie
   cron:run        Execute anti-thundering background cron queue
+  watcher:status  Check background health watcher service & timer status (--json supported)
+  watcher:run     Run autonomous health recovery checks immediately
+  update:auto     Trigger autonomous software & security update run
   doctor          Comprehensive system health & diagnostic check
   update          Autonomous zero-downtime upgrade & migration engine
   migrate         Run database schema migrations only
@@ -210,13 +213,97 @@ require_root() {
 }
 
 case "$COMMAND" in
+    watcher:status)
+        JSON_OUT=0
+        for arg in "$@"; do
+            [ "$arg" == "--json" ] && JSON_OUT=1
+        done
+
+        WATCHER_TIMER=$(systemctl is-active ls-watcher.timer 2>/dev/null | tr -d '\r\n' || true)
+        [ -z "$WATCHER_TIMER" ] && WATCHER_TIMER="inactive"
+        WATCHER_SVC=$(systemctl is-active ls-watcher.service 2>/dev/null | tr -d '\r\n' || true)
+        [ -z "$WATCHER_SVC" ] && WATCHER_SVC="inactive"
+        AUTOUPDATE_TIMER=$(systemctl is-active ls-autoupdate.timer 2>/dev/null | tr -d '\r\n' || true)
+        [ -z "$AUTOUPDATE_TIMER" ] && AUTOUPDATE_TIMER="inactive"
+        AUTOUPDATE_SVC=$(systemctl is-active ls-autoupdate.service 2>/dev/null | tr -d '\r\n' || true)
+        [ -z "$AUTOUPDATE_SVC" ] && AUTOUPDATE_SVC="inactive"
+
+        LOCK_HELD="false"
+        for lf in "/run/ls-maintenance.lock" "/tmp/ls-maintenance.lock"; do
+            if [ -e "$lf" ]; then
+                if ! flock -s -n "$lf" true 2>/dev/null; then
+                    LOCK_HELD="true"
+                    break
+                fi
+            fi
+        done
+
+        if [ "$JSON_OUT" -eq 1 ]; then
+            python3 - "$WATCHER_TIMER" "$WATCHER_SVC" "$AUTOUPDATE_TIMER" "$AUTOUPDATE_SVC" "$LOCK_HELD" << 'PY'
+import sys, json, datetime
+wt, ws, ut, us, lh = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+print(json.dumps({
+    "watcher_timer": wt,
+    "watcher_service": ws,
+    "autoupdate_timer": ut,
+    "autoupdate_service": us,
+    "maintenance_locked": (lh == "true"),
+    "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+}, indent=2))
+PY
+            exit 0
+        fi
+
+        echo "=========================================================="
+        echo "🛡️ LeanStack Autonomous Watcher & Resilience Status"
+        echo "=========================================================="
+        echo "  Health Watcher Timer:     ${WATCHER_TIMER} (Every 60s)"
+        echo "  Health Watcher Service:   ${WATCHER_SVC}"
+        echo "  Auto-Update Timer:        ${AUTOUPDATE_TIMER} (Nightly 03:30)"
+        echo "  Auto-Update Service:      ${AUTOUPDATE_SVC}"
+        echo "  Maintenance Lock State:   $([ "$LOCK_HELD" == "true" ] && echo "Active (Locked)" || echo "Idle (Unlocked)")"
+        echo "=========================================================="
+        LOG_PATH="/var/log/lsctl/watcher.log"
+        [ ! -f "$LOG_PATH" ] && [ -f "/var/log/cpctl/watcher.log" ] && LOG_PATH="/var/log/cpctl/watcher.log"
+        if [ -f "$LOG_PATH" ]; then
+            echo "Recent Watcher Activity:"
+            tail -n 5 "$LOG_PATH" | sed 's/^/  /'
+            echo "=========================================================="
+        fi
+        exit 0
+        ;;
+
+    watcher:run)
+        require_root
+        shift
+        if [ -x "/usr/local/bin/ls-watcher" ]; then
+            exec /usr/local/bin/ls-watcher "$@"
+        else
+            exec "${SCRIPT_DIR}/ls-watcher" "$@"
+        fi
+        ;;
+
+    update:auto)
+        require_root
+        shift
+        if [ -x "/usr/local/bin/ls-autoupdate" ]; then
+            exec /usr/local/bin/ls-autoupdate "$@"
+        else
+            exec "${SCRIPT_DIR}/ls-autoupdate" "$@"
+        fi
+        ;;
+
     update|upgrade)
         require_root
         shift
-        if [ -x "/usr/local/bin/cp-upgrade" ]; then
+        if [ -x "/usr/local/bin/ls-upgrade" ]; then
+            python3 /usr/local/bin/ls-upgrade "$@"
+        elif [ -x "/usr/local/bin/cp-upgrade" ]; then
             /usr/local/bin/cp-upgrade "$@"
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 "${SCRIPT_DIR}/ls-upgrade" "$@"
         else
-            python3 "${SCRIPT_DIR}/cp-upgrade" "$@"
+            bash "${SCRIPT_DIR}/cp-upgrade" "$@"
         fi
         exit 0
         ;;
@@ -224,10 +311,14 @@ case "$COMMAND" in
     migrate)
         require_root
         shift
-        if [ -x "/usr/local/bin/cp-upgrade" ]; then
+        if [ -x "/usr/local/bin/ls-upgrade" ]; then
+            python3 /usr/local/bin/ls-upgrade --migrate-only "$@"
+        elif [ -x "/usr/local/bin/cp-upgrade" ]; then
             /usr/local/bin/cp-upgrade --migrate-only "$@"
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 "${SCRIPT_DIR}/ls-upgrade" --migrate-only "$@"
         else
-            python3 "${SCRIPT_DIR}/cp-upgrade" --migrate-only "$@"
+            bash "${SCRIPT_DIR}/cp-upgrade" --migrate-only "$@"
         fi
         exit 0
         ;;
@@ -235,10 +326,14 @@ case "$COMMAND" in
     sync-tenants|site:sync-plugins)
         require_root
         shift
-        if [ -x "/usr/local/bin/cp-upgrade" ]; then
+        if [ -x "/usr/local/bin/ls-upgrade" ]; then
+            python3 /usr/local/bin/ls-upgrade --sync-tenants-only "$@"
+        elif [ -x "/usr/local/bin/cp-upgrade" ]; then
             /usr/local/bin/cp-upgrade --sync-tenants-only "$@"
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 "${SCRIPT_DIR}/ls-upgrade" --sync-tenants-only "$@"
         else
-            python3 "${SCRIPT_DIR}/cp-upgrade" --sync-tenants-only "$@"
+            bash "${SCRIPT_DIR}/cp-upgrade" --sync-tenants-only "$@"
         fi
         exit 0
         ;;
@@ -1049,13 +1144,14 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
         awk -v r="$SALT_KEYS" '{gsub(/\{\{SALT_KEYS\}\}/, r)}1' "$WP_CONFIG" > "${WP_CONFIG}.tmp" && mv "${WP_CONFIG}.tmp" "$WP_CONFIG"
 
         # Hardened Multi-Tenant Filesystem Permissions
-        chown -R "${USER_NAME}:${USER_NAME}" "/home/${USER_NAME}"
-        chown -R "${USER_NAME}:www-data" "$WEB_ROOT" "$LOG_DIR"
+        chown "${USER_NAME}:www-data" "/home/${USER_NAME}"
         chmod 750 "/home/${USER_NAME}"
+        chown -R "${USER_NAME}:www-data" "$WEB_ROOT" "$LOG_DIR"
         chmod 750 "$WEB_ROOT"
         chmod 700 "/home/${USER_NAME}/tmp"
         chmod 750 "$LOG_DIR"
         chmod 640 "$WP_CONFIG"
+        chmod 640 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
 
         # Deploy LeanStack MU-Plugins Suite
         mkdir -p "${WEB_ROOT}/wp-content/mu-plugins"
@@ -1064,7 +1160,7 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
                 cp "${TEMPLATE_DIR}/${tpl}.tpl" "${WEB_ROOT}/wp-content/mu-plugins/${tpl}"
             fi
         done
-        chown -R "${USER_NAME}:${USER_NAME}" "${WEB_ROOT}/wp-content/mu-plugins"
+        chown -R "${USER_NAME}:www-data" "${WEB_ROOT}/wp-content/mu-plugins"
         chmod 750 "${WEB_ROOT}/wp-content/mu-plugins"
         chmod 644 "${WEB_ROOT}/wp-content/mu-plugins"/*.php 2>/dev/null || true
 
@@ -1170,6 +1266,11 @@ EOF
             sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" theme activate "$THEME" --path="${WEB_ROOT}" 2>/dev/null || true
         fi
 
+        # Re-enforce tenant web root group permissions after WP-CLI plugins & theme installations
+        chown -R "${USER_NAME}:www-data" "$WEB_ROOT"
+        chmod 750 "$WEB_ROOT"
+        chmod 640 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
+
         # Angie Virtual Host Generation
         ensure_ssl_fallback
         VHOST_FILE="/etc/angie/http.d/${DOMAIN}.conf"
@@ -1197,6 +1298,23 @@ EOF
             systemctl reload angie 2>/dev/null || true
         fi
 
+        # Verify ACME Let's Encrypt Certificate Provisioning
+        echo ">>> Checking Let's Encrypt SSL certificate status..."
+        SSL_ACTIVE=0
+        for i in {1..10}; do
+            if compgen -G "/var/lib/angie/acme/${DOMAIN}*" > /dev/null 2>&1; then
+                SSL_ACTIVE=1
+                break
+            fi
+            sleep 1
+        done
+
+        if [ "$SSL_ACTIVE" -eq 1 ]; then
+            echo "✔ Let's Encrypt SSL certificate is active."
+        else
+            echo "ℹ Let's Encrypt SSL certificate is finalizing in the background (self-signed fallback active)."
+        fi
+
         trap - ERR
 
         # Register in SQLite
@@ -1210,6 +1328,11 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
         echo "🎉 WordPress Provisioned Successfully!"
         echo "=========================================================="
         echo "Domain:          https://${DOMAIN}"
+        if [ "$SSL_ACTIVE" -eq 1 ]; then
+            echo "SSL Status:      Active (Let's Encrypt)"
+        else
+            echo "SSL Status:      Pending Let's Encrypt (Self-Signed Fallback Active)"
+        fi
         echo "Profile:         ${PROFILE}"
         echo "Tenant User:     ${USER_NAME}"
         echo "Admin User:      ${ADMIN_USER}"
@@ -1257,6 +1380,10 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
         if command -v angie &>/dev/null; then
             angie -t 2>/dev/null && echo "  [PASS] Angie syntax valid" || echo "  [FAIL] Angie syntax errors found!"
         fi
+
+        echo ">>> Autonomous Resilience & Watcher Timers:"
+        check_svc ls-watcher.timer
+        check_svc ls-autoupdate.timer
 
         echo ">>> Storage & Memory Health:"
         df -h / | awk 'NR==2 {print "  Disk / Usage: "$3" used / "$2" total ("$5" full)"}'

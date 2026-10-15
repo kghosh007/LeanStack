@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly LeanStack Autonomous Software & Security Update
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

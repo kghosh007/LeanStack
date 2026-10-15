@@ -284,4 +284,29 @@ angie -t
 systemctl restart angie 2>/dev/null || true
 systemctl enable angie 2>/dev/null || true
 
+# Install Autonomous Watcher & Updater Binaries and Systemd Timers
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+mkdir -p /usr/local/bin /etc/systemd/system
+for b in ls-watcher cp-watcher ls-autoupdate cp-autoupdate; do
+    if [ -f "${BASE_DIR}/core/bin/${b}" ]; then
+        cp -f "${BASE_DIR}/core/bin/${b}" "/usr/local/bin/${b}"
+        chmod 755 "/usr/local/bin/${b}"
+    fi
+done
+
+for u in ls-watcher.service ls-watcher.timer ls-autoupdate.service ls-autoupdate.timer; do
+    if [ -f "${BASE_DIR}/systemd/${u}" ]; then
+        cp -f "${BASE_DIR}/systemd/${u}" "/etc/systemd/system/${u}"
+    fi
+done
+
+if [ -d "${BASE_DIR}/systemd/overrides" ]; then
+    cp -rf "${BASE_DIR}/systemd/overrides"/* /etc/systemd/system/ 2>/dev/null || true
+fi
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable --now ls-watcher.timer ls-autoupdate.timer 2>/dev/null || true
+
 echo "✅ [Phase 4] Angie Web Server, PQC TLS, 8G WAF & CrowdSec Configured Successfully!"

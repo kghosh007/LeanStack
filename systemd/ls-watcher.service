@@ -1,0 +1,14 @@
+[Unit]
+Description=LeanStack Autonomous Ultra-Lightweight Watcher & Health Recovery
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ls-watcher
+StandardOutput=journal
+StandardError=journal
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUSchedulingPolicy=other
+Nice=15
+MemoryMax=64M

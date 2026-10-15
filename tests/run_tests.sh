@@ -72,7 +72,9 @@ run_pillar 5 "Database Tier High-QPS Tuning" "
 # Pillar 6: PHP Multi-Tenant Isolation
 run_pillar 6 "PHP Multi-Tenant Isolation" "
     grep -q 'php_admin_value\[open_basedir\]' '${BASE_DIR}/core/templates/pool.conf.tpl' && \
-    grep -q 'php_admin_value\[disable_functions\]' '${BASE_DIR}/core/templates/pool.conf.tpl'
+    grep -q 'php_admin_value\[disable_functions\]' '${BASE_DIR}/core/templates/pool.conf.tpl' && \
+    grep -q 'chown \"\${USER_NAME}:www-data\" \"/home/\${USER_NAME}\"' '${BASE_DIR}/core/bin/lsctl' && \
+    grep -q 'chmod 750 \"/home/\${USER_NAME}\"' '${BASE_DIR}/core/bin/lsctl'
 "
 
 # Pillar 7: Multi-Layer Security & Hardening (8G WAF, CrowdSec, Upload PHP Block)
@@ -87,10 +89,11 @@ run_pillar 7 "Multi-Layer Security & Hardening" "
 run_pillar 8 "CLI Engine & Profiles System" "
     '${BASE_DIR}/core/bin/lsctl' help >/dev/null && \
     '${BASE_DIR}/core/bin/cpctl' help >/dev/null && \
+    '${BASE_DIR}/core/bin/lsctl' watcher:status --json >/dev/null && \
     python3 '${BASE_DIR}/tests/test_cli_and_templates.py'
 "
 
-# Pillar 9: Resilience & Automation (Cron Queue, Sync, Gatekeeper, Linter, Upgrade)
+# Pillar 9: Resilience & Automation (Cron Queue, Sync, Gatekeeper, Linter, Upgrade, Watcher, Autoupdate)
 run_pillar 9 "Resilience & Automation" "
     [ -x '${BASE_DIR}/core/bin/ls-upgrade' ] && \
     [ -x '${BASE_DIR}/core/bin/ls-cf-sync' ] && \
@@ -98,6 +101,13 @@ run_pillar 9 "Resilience & Automation" "
     [ -x '${BASE_DIR}/core/bin/ls-cron-queue' ] && \
     [ -x '${BASE_DIR}/core/bin/ls-gatekeeper' ] && \
     [ -x '${BASE_DIR}/core/bin/ls-nginx-linter' ] && \
+    [ -x '${BASE_DIR}/core/bin/ls-watcher' ] && \
+    [ -x '${BASE_DIR}/core/bin/ls-autoupdate' ] && \
+    [ -f '${BASE_DIR}/systemd/ls-watcher.service' ] && \
+    [ -f '${BASE_DIR}/systemd/ls-watcher.timer' ] && \
+    [ -f '${BASE_DIR}/systemd/ls-autoupdate.service' ] && \
+    [ -f '${BASE_DIR}/systemd/ls-autoupdate.timer' ] && \
+    [ -d '${BASE_DIR}/systemd/overrides' ] && \
     python3 '${BASE_DIR}/tests/test_nginx_linter.py' && \
     python3 '${BASE_DIR}/tests/test_upgrade_and_migration.py' && \
     [ -f '${BASE_DIR}/systemd/cp-cron.timer' ]

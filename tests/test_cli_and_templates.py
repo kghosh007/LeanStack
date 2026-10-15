@@ -388,5 +388,138 @@ class TestProfilesAndTemplates(unittest.TestCase):
             cf = f.read()
         self.assertIn('chmod 644 "$TARGET_SNIPPET"', cf)
 
+    def test_tenant_home_traversal_permissions(self):
+        """Verify lsctl grants www-data traversal on tenant home (750) and polls ACME cert."""
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_path, "r") as f:
+            content = f.read()
+        self.assertIn('chown "${USER_NAME}:www-data" "/home/${USER_NAME}"', content)
+        self.assertIn('chmod 750 "/home/${USER_NAME}"', content)
+        self.assertIn('chown -R "${USER_NAME}:www-data" "$WEB_ROOT" "$LOG_DIR"', content)
+        self.assertIn('chmod 750 "$WEB_ROOT"', content)
+        self.assertIn('chmod 700 "/home/${USER_NAME}/tmp"', content)
+        self.assertIn('chmod 640 "$WEB_ROOT/wp-config.php"', content)
+        self.assertIn('compgen -G "/var/lib/angie/acme/${DOMAIN}*"', content)
+
+    def test_autonomous_health_watcher(self):
+        """Verify ls-watcher self-healing engine has flocking, probes, quarantine, and healing."""
+        watcher_path = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
+        self.assertTrue(os.path.exists(watcher_path) and os.access(watcher_path, os.X_OK))
+        with open(watcher_path, "r") as f:
+            w = f.read()
+        self.assertIn("flock -n 200", w)
+        self.assertIn("/run/ls-maintenance.lock", w)
+        self.assertIn("angie -t", w)
+        self.assertIn("quarantine", w)
+        self.assertIn("mariadb-admin", w)
+        self.assertIn("valkey-cli", w)
+        self.assertIn("heal_tenant_permissions", w)
+        self.assertIn("journalctl --vacuum", w)
+
+    def test_autonomous_updater(self):
+        """Verify ls-autoupdate has snapshot, non-interactive apt, rollback, and reloads."""
+        updater_path = os.path.join(BASE_DIR, "core", "bin", "ls-autoupdate")
+        self.assertTrue(os.path.exists(updater_path) and os.access(updater_path, os.X_OK))
+        with open(updater_path, "r") as f:
+            u = f.read()
+        self.assertIn("/run/ls-maintenance.lock", u)
+        self.assertIn("preflight_syntax_check", u)
+        self.assertIn("/var/backups/lsctl/pre_upgrade_", u)
+        self.assertIn("--force-confdef", u)
+        self.assertIn("--force-confold", u)
+        self.assertIn("cscli hub", u)
+        self.assertIn("cli update", u)
+        self.assertIn("update --quiet", u)
+        self.assertIn("ROLLBACK", u)
+        self.assertIn("reload angie", u)
+
+    def test_systemd_watcher_and_updater_units(self):
+        """Verify systemd service units, timers, and drop-in overrides."""
+        ws_path = os.path.join(BASE_DIR, "systemd", "ls-watcher.service")
+        wt_path = os.path.join(BASE_DIR, "systemd", "ls-watcher.timer")
+        us_path = os.path.join(BASE_DIR, "systemd", "ls-autoupdate.service")
+        ut_path = os.path.join(BASE_DIR, "systemd", "ls-autoupdate.timer")
+
+        self.assertTrue(os.path.exists(ws_path))
+        self.assertTrue(os.path.exists(wt_path))
+        self.assertTrue(os.path.exists(us_path))
+        self.assertTrue(os.path.exists(ut_path))
+
+        with open(wt_path, "r") as f:
+            self.assertIn("OnUnitActiveSec=60s", f.read())
+        with open(ut_path, "r") as f:
+            self.assertIn("03:30", f.read())
+
+        # Check drop-in overrides
+        overrides_dir = os.path.join(BASE_DIR, "systemd", "overrides")
+        self.assertTrue(os.path.isdir(overrides_dir))
+        for s in ["angie.service.d", "mariadb.service.d", "valkey.service.d", "php8.4-fpm.service.d"]:
+            ov = os.path.join(overrides_dir, s, "override.conf")
+            self.assertTrue(os.path.exists(ov), f"Missing override {ov}")
+            with open(ov, "r") as f:
+                o_content = f.read()
+            self.assertIn("Restart=on-failure", o_content)
+            self.assertIn("RestartSec=2s", o_content)
+
+    def test_watcher_cli_commands(self):
+        """Verify lsctl watcher:status returns structured output and JSON."""
+        import subprocess, json
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        res = subprocess.run([lsctl_path, "watcher:status", "--json"], stdout=subprocess.PIPE, text=True, check=True)
+        data = json.loads(res.stdout)
+        self.assertIn("watcher_timer", data)
+        self.assertIn("watcher_service", data)
+        self.assertIn("autoupdate_timer", data)
+        self.assertIn("autoupdate_service", data)
+        self.assertIn("maintenance_locked", data)
+
+        res_txt = subprocess.run([lsctl_path, "watcher:status"], stdout=subprocess.PIPE, text=True, check=True)
+        self.assertIn("LeanStack Autonomous Watcher & Resilience Status", res_txt.stdout)
+
+        # Help contains commands
+        res_help = subprocess.run([lsctl_path, "help"], stdout=subprocess.PIPE, text=True, check=True)
+        self.assertIn("watcher:status", res_help.stdout)
+        self.assertIn("watcher:run", res_help.stdout)
+        self.assertIn("update:auto", res_help.stdout)
+
+    def test_watcher_flock_concurrency(self):
+        """Verify ls-watcher gracefully skips when lock is held and watcher:status reports lock state."""
+        import subprocess, json, fcntl, time
+        lock_file = "/tmp/ls-maintenance.lock"
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        watcher_path = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
+
+        # Open and hold exclusive lock
+        with open(lock_file, "w") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                # 1. Verify watcher skips execution while locked
+                res = subprocess.run([watcher_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.assertEqual(res.returncode, 0)
+                self.assertIn("Another LeanStack maintenance or watcher process is currently running", res.stdout)
+
+                # 2. Verify lsctl watcher:status reflects active lock
+                res_status = subprocess.run([lsctl_path, "watcher:status", "--json"], stdout=subprocess.PIPE, text=True, check=True)
+                data = json.loads(res_status.stdout)
+                self.assertTrue(data["maintenance_locked"])
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+        # 3. Verify lsctl watcher:status reflects unlocked state once lock is released
+        res_unlocked = subprocess.run([lsctl_path, "watcher:status", "--json"], stdout=subprocess.PIPE, text=True, check=True)
+        data_unlocked = json.loads(res_unlocked.stdout)
+        self.assertFalse(data_unlocked["maintenance_locked"])
+
+    def test_lsctl_doctor_watcher_integration(self):
+        """Verify lsctl doctor checks watcher and autoupdate timers."""
+        import subprocess
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        res = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        self.assertIn("Autonomous Resilience & Watcher Timers", res.stdout)
+        self.assertIn("ls-watcher.timer", res.stdout)
+        self.assertIn("ls-autoupdate.timer", res.stdout)
+
 if __name__ == "__main__":
     unittest.main()
+
+

@@ -379,14 +379,23 @@ class LeanStackInstaller:
         if self.dry_run:
             time.sleep(0.3)
             return
-        # Copy systemd units
+        # Copy systemd units and drop-in overrides
         systemd_dir = os.path.join(self.base_dir, "systemd")
         for f in os.listdir(systemd_dir):
             if f.endswith(".service") or f.endswith(".timer"):
                 src = os.path.join(systemd_dir, f)
                 subprocess.run(["cp", src, f"/etc/systemd/system/{f}"], check=True)
+        overrides_dir = os.path.join(systemd_dir, "overrides")
+        if os.path.isdir(overrides_dir):
+            for dropin in os.listdir(overrides_dir):
+                s_dropin = os.path.join(overrides_dir, dropin)
+                if os.path.isdir(s_dropin):
+                    d_dropin = f"/etc/systemd/system/{dropin}"
+                    os.makedirs(d_dropin, exist_ok=True)
+                    for of in os.listdir(s_dropin):
+                        shutil.copy2(os.path.join(s_dropin, of), os.path.join(d_dropin, of))
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "cp-cf-sync.timer", "cp-gatekeeper.service"], check=False)
+        subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "cp-cf-sync.timer", "cp-gatekeeper.service", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
 
     def _run_bash_script(self, script_path: str, spinner: ProgressSpinner):
         if not os.path.exists(script_path):

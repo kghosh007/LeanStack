@@ -268,7 +268,9 @@ class LeanStackUpgrader:
             ("cp-gatekeeper", "ls-gatekeeper"),
             ("cp-nginx-linter", "ls-nginx-linter"),
             ("cp-cron-queue", "ls-cron-queue"),
-            ("cp-cf-sync", "ls-cf-sync")
+            ("cp-cf-sync", "ls-cf-sync"),
+            ("cp-watcher", "ls-watcher"),
+            ("cp-autoupdate", "ls-autoupdate")
         ]
         for leg_name, target_name in legacy_links:
             leg_path = os.path.join(target_dir, leg_name)
@@ -310,7 +312,7 @@ class LeanStackUpgrader:
                 shutil.copy2(self.profiles_src, target_prof)
                 self.log(f"Installed baseline profiles to {target_prof}", Colors.GREEN, prefix="  ✔")
 
-        # Systemd service unit files
+        # Systemd service unit files and drop-in overrides
         if os.path.exists(self.systemd_dir) and os.path.isdir("/etc/systemd/system"):
             for s in os.listdir(self.systemd_dir):
                 if s.endswith(".service") or s.endswith(".timer"):
@@ -318,8 +320,21 @@ class LeanStackUpgrader:
                     dest = f"/etc/systemd/system/{s}"
                     if not self.dry_run:
                         shutil.copy2(src, dest)
+
+            overrides_dir = os.path.join(self.systemd_dir, "overrides")
+            if os.path.isdir(overrides_dir):
+                for dropin in os.listdir(overrides_dir):
+                    s_dropin = os.path.join(overrides_dir, dropin)
+                    if os.path.isdir(s_dropin):
+                        d_dropin = f"/etc/systemd/system/{dropin}"
+                        if not self.dry_run:
+                            os.makedirs(d_dropin, exist_ok=True)
+                            for f in os.listdir(s_dropin):
+                                shutil.copy2(os.path.join(s_dropin, f), os.path.join(d_dropin, f))
+
             if not self.dry_run and shutil.which("systemctl"):
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
+                subprocess.run(["systemctl", "enable", "--now", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
 
         # Ensure default fallback SSL certificate exists for Angie
         ssl_dir = "/etc/angie/ssl"
@@ -521,6 +536,8 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
         if not self.dry_run and shutil.which("systemctl"):
             subprocess.run(["systemctl", "restart", "cp-gatekeeper.service"], check=False)
             self.log("Syntax Gatekeeper restarted.", Colors.GREEN, prefix="  ✔")
+            subprocess.run(["systemctl", "enable", "--now", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
+            self.log("Autonomous Watcher & Auto-Update Timers active.", Colors.GREEN, prefix="  ✔")
 
         return True
 

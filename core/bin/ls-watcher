@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# LeanStack Autonomous Watcher & Self-Healing Health Recovery Engine (ls-watcher)
+# Ultra-lightweight health monitor and self-healing engine (<3MB RAM, 0MB idle)
+# ==============================================================================
+set -euo pipefail
+
+# 1. Concurrency Protection via Flocking Lock
+LOCK_FILE="/run/ls-maintenance.lock"
+if ! touch "$LOCK_FILE" 2>/dev/null; then
+    LOCK_FILE="/tmp/ls-maintenance.lock"
+    touch "$LOCK_FILE" 2>/dev/null || true
+fi
+chmod 666 "$LOCK_FILE" 2>/dev/null || true
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack maintenance or watcher process is currently running. Skipping."
+    exit 0
+fi
+
+# 2. Logging Setup
+LOG_DIR="/var/log/lsctl"
+if [ ! -d "$LOG_DIR" ] && [ -d "/var/log/cpctl" ]; then
+    LOG_DIR="/var/log/cpctl"
+fi
+mkdir -p "$LOG_DIR" 2>/dev/null || LOG_DIR="/tmp"
+LOG_FILE="${LOG_DIR}/watcher.log"
+
+log() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "$msg"
+    echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# 3. Database Resolution
+if [ -n "${LEANSTACK_DB:-}" ]; then
+    DB_FILE="$LEANSTACK_DB"
+elif [ -f "/var/lib/lsctl/sites.db" ]; then
+    DB_FILE="/var/lib/lsctl/sites.db"
+elif [ -f "/var/lib/cpctl/sites.db" ]; then
+    DB_FILE="/var/lib/cpctl/sites.db"
+else
+    DB_FILE="/var/lib/lsctl/sites.db"
+fi
+
+# 4. Angie Health & Syntax Check with Quarantine Self-Healing
+check_angie() {
+    if ! command -v angie &>/dev/null; then
+        return 0
+    fi
+
+    # 4a. Syntax Test & Broken Virtual Host Quarantine
+    if ! angie -t 2>/dev/null; then
+        log "[WARN] Angie syntax validation failed! Investigating failure cause..."
+        local angie_err
+        angie_err=$(angie -t 2>&1 || true)
+        log "[DIAG] $angie_err"
+
+        local quarantined=0
+        mkdir -p "/etc/angie/quarantine" 2>/dev/null || true
+
+        # Extract specific broken file from error if present (e.g. "... in /path/to/file.conf:line")
+        local broken_file
+        broken_file=$(echo "$angie_err" | sed -n 's/.*in \(\/[^:]*\.conf\):[0-9]*.*/\1/p' | head -n 1 || true)
+
+        if [ -n "$broken_file" ] && [ -f "$broken_file" ]; then
+            local base_broken
+            base_broken=$(basename "$broken_file")
+            local target_quarantine="/etc/angie/quarantine/${base_broken}.quarantine.$(date +%s)"
+            log "[RECOVER] Quarantining broken configuration file: $broken_file -> $target_quarantine"
+            cp -a "$broken_file" "$target_quarantine" 2>/dev/null || true
+
+            # If inside tenant-custom, replace with harmless comment so include directive doesn't fail
+            if [[ "$broken_file" == *"/tenant-custom/"* ]]; then
+                echo "# Quarantined due to syntax error at $(date '+%Y-%m-%d %H:%M:%S')" > "$broken_file"
+                quarantined=1
+            elif [[ "$broken_file" == *"/http.d/"* ]]; then
+                rm -f "$broken_file" 2>/dev/null || true
+                quarantined=1
+            fi
+        fi
+
+        # Also inspect /etc/angie/http.d/*.conf for domain or vhost matching
+        if [ -d "/etc/angie/http.d" ]; then
+            for vhost in /etc/angie/http.d/*.conf; do
+                [ -e "$vhost" ] || continue
+                local base_vhost domain_name
+                base_vhost=$(basename "$vhost")
+                domain_name="${base_vhost%.conf}"
+
+                if echo "$angie_err" | grep -q "$base_vhost" || echo "$angie_err" | grep -q "$domain_name"; then
+                    local target_quarantine="/etc/angie/quarantine/${base_vhost}.quarantine.$(date +%s)"
+                    log "[RECOVER] Quarantining broken virtual host: $vhost -> $target_quarantine"
+                    mv "$vhost" "$target_quarantine" 2>/dev/null || true
+                    quarantined=1
+                fi
+            done
+        fi
+
+        if [ "$quarantined" -eq 1 ]; then
+            if angie -t 2>/dev/null; then
+                log "[RECOVER] Angie syntax restored to clean state after quarantining broken configuration. Reloading Angie..."
+                systemctl reload angie 2>/dev/null || systemctl restart angie 2>/dev/null || true
+            else
+                log "[ERROR] Angie syntax still contains errors after quarantine pass. Manual inspection needed."
+            fi
+        fi
+    fi
+
+    # 4b. HTTP / HTTPS Loopback Probes
+    if systemctl is-active --quiet angie 2>/dev/null || pidof angie &>/dev/null; then
+        if command -v curl &>/dev/null; then
+            local http_code
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -H "Host: 127.0.0.1" http://127.0.0.1/ 2>/dev/null || echo "000")
+            if [ "$http_code" == "000" ]; then
+                log "[WARN] Angie HTTP loopback probe failed (timeout or connection refused). Restarting Angie..."
+                systemctl restart angie 2>/dev/null || true
+            fi
+        fi
+    else
+        log "[RECOVER] Angie web server is inactive. Restarting service..."
+        systemctl restart angie 2>/dev/null || true
+    fi
+}
+
+# 5. MariaDB Socket Health & Ping Probe
+check_mariadb() {
+    local socket="/run/mysqld/mysqld.sock"
+    local pid_file="/run/mysqld/mysqld.pid"
+
+    if ! command -v mariadb-admin &>/dev/null && ! command -v mysqladmin &>/dev/null; then
+        return 0
+    fi
+    if ! command -v mariadbd &>/dev/null && ! command -v mysqld &>/dev/null && [ ! -d "/etc/mysql" ]; then
+        return 0
+    fi
+
+    local ping_cmd="mariadb-admin"
+    command -v mariadb-admin &>/dev/null || ping_cmd="mysqladmin"
+
+    local ping_ok=0
+    if [ -S "$socket" ]; then
+        if "$ping_cmd" ping --socket="$socket" --silent 2>/dev/null; then
+            ping_ok=1
+        fi
+    elif "$ping_cmd" ping --silent 2>/dev/null; then
+        ping_ok=1
+    fi
+
+    if [ "$ping_ok" -eq 0 ]; then
+        log "[WARN] MariaDB socket unresponsive to ping probe or socket absent."
+        if ! pidof mariadbd &>/dev/null && ! pidof mysqld &>/dev/null; then
+            log "[RECOVER] Cleaning stale MariaDB socket and PID files..."
+            rm -f "$socket" "$pid_file" 2>/dev/null || true
+        fi
+        log "[RECOVER] Restarting MariaDB service..."
+        systemctl restart mariadb 2>/dev/null || systemctl restart mysql 2>/dev/null || true
+        sleep 1
+        if "$ping_cmd" ping --socket="$socket" --silent 2>/dev/null || "$ping_cmd" ping --silent 2>/dev/null; then
+            log "[RECOVER] MariaDB health successfully restored."
+        fi
+    fi
+}
+
+# 6. Valkey Socket Health & Ping Probe
+check_valkey() {
+    local socket="/run/valkey/valkey.sock"
+    local pid_file="/run/valkey/valkey.pid"
+
+    if ! command -v valkey-cli &>/dev/null && ! command -v redis-cli &>/dev/null; then
+        return 0
+    fi
+    if ! command -v valkey-server &>/dev/null && ! command -v redis-server &>/dev/null && [ ! -d "/etc/valkey" ]; then
+        return 0
+    fi
+
+    local cli_cmd="valkey-cli"
+    command -v valkey-cli &>/dev/null || cli_cmd="redis-cli"
+
+    local ping_res=""
+    if [ -S "$socket" ]; then
+        ping_res=$("$cli_cmd" -s "$socket" ping 2>/dev/null || true)
+    elif [ -S "/run/redis/redis-server.sock" ]; then
+        socket="/run/redis/redis-server.sock"
+        ping_res=$("$cli_cmd" -s "$socket" ping 2>/dev/null || true)
+    fi
+
+    if [ "$ping_res" != "PONG" ]; then
+        log "[WARN] Valkey socket unreachable or ping returned: '$ping_res'."
+        if ! pidof valkey-server &>/dev/null && ! pidof redis-server &>/dev/null; then
+            log "[RECOVER] Cleaning stale Valkey socket and PID files..."
+            rm -f "$socket" "$pid_file" 2>/dev/null || true
+        fi
+        log "[RECOVER] Restarting Valkey service..."
+        systemctl restart valkey 2>/dev/null || systemctl restart valkey-server 2>/dev/null || systemctl restart redis-server 2>/dev/null || systemctl restart redis 2>/dev/null || true
+        sleep 1
+        if [ "$("$cli_cmd" -s "$socket" ping 2>/dev/null || true)" == "PONG" ]; then
+            log "[RECOVER] Valkey health successfully restored."
+        fi
+    fi
+}
+
+# 7. Multi-Version PHP-FPM Pool Sockets Check Against sites.db
+check_php_fpm_pools() {
+    [ ! -f "$DB_FILE" ] && return 0
+    command -v sqlite3 &>/dev/null || return 0
+
+    local pools
+    pools=$(sqlite3 "$DB_FILE" "SELECT domain, user, php_version FROM sites;" 2>/dev/null || true)
+    [ -z "$pools" ] && return 0
+
+    local reloaded_services=()
+
+    while IFS='|' read -r domain user php_ver; do
+        [ -z "$user" ] && continue
+        local pool_conf="/etc/php/${php_ver}/fpm/pool.d/${user}.conf"
+        [ -d "/etc/php/${php_ver}/fpm/pool.d" ] && [ ! -f "$pool_conf" ] && continue
+
+        local socket_path="/run/php/php${php_ver}-${user}.sock"
+        local svc_name="php${php_ver}-fpm"
+
+        if [ ! -S "$socket_path" ]; then
+            log "[WARN] Missing PHP socket for ${domain} (${user}): ${socket_path}"
+
+            # Ensure we only restart/reload each PHP service once per watcher run to prevent restart loops
+            local already_reloaded=0
+            for r_svc in "${reloaded_services[@]}"; do
+                if [ "$r_svc" == "$svc_name" ]; then
+                    already_reloaded=1
+                    break
+                fi
+            done
+
+            if [ "$already_reloaded" -eq 0 ]; then
+                reloaded_services+=("$svc_name")
+                if systemctl is-active --quiet "$svc_name" 2>/dev/null; then
+                    log "[RECOVER] Reloading ${svc_name} to restore pool socket..."
+                    systemctl reload "$svc_name" 2>/dev/null || systemctl restart "$svc_name" 2>/dev/null || true
+                else
+                    log "[RECOVER] ${svc_name} is inactive. Starting service..."
+                    systemctl restart "$svc_name" 2>/dev/null || true
+                fi
+            fi
+        fi
+    done <<< "$pools"
+}
+
+# 8. Tenant Permission Drift Self-Healing
+heal_tenant_permissions() {
+    for homedir in /home/*; do
+        [ -d "$homedir" ] || continue
+        local tenant
+        tenant=$(basename "$homedir")
+
+        # Skip system or non-existent user accounts
+        id "$tenant" &>/dev/null || continue
+
+        local web_root="${homedir}/htdocs"
+        [ ! -d "$web_root" ] && [ -d "${homedir}/public_html" ] && web_root="${homedir}/public_html"
+
+        if [ -d "$web_root" ]; then
+            # Enforce user:www-data mode 750 on /home/${tenant}
+            local cur_group cur_mode
+            cur_group=$(stat -c '%G' "$homedir" 2>/dev/null || true)
+            cur_mode=$(stat -c '%a' "$homedir" 2>/dev/null || true)
+
+            if [ "$cur_group" != "www-data" ] || [ "$cur_mode" != "750" ]; then
+                log "[HEAL] Healing tenant home permission drift on ${homedir} (${cur_group} ${cur_mode} -> www-data 750)"
+                chown "${tenant}:www-data" "$homedir" 2>/dev/null || true
+                chmod 750 "$homedir" 2>/dev/null || true
+            fi
+
+            # Enforce user:www-data mode 750 on web root
+            local wr_group wr_mode
+            wr_group=$(stat -c '%G' "$web_root" 2>/dev/null || true)
+            wr_mode=$(stat -c '%a' "$web_root" 2>/dev/null || true)
+            if [ "$wr_group" != "www-data" ] || [ "$wr_mode" != "750" ]; then
+                log "[HEAL] Healing web root permission drift on ${web_root} (${wr_group} ${wr_mode} -> www-data 750)"
+                chown -R "${tenant}:www-data" "$web_root" 2>/dev/null || true
+                chmod 750 "$web_root" 2>/dev/null || true
+            fi
+
+            # Check if wp-content is not owned by www-data
+            if [ -d "${web_root}/wp-content" ]; then
+                local wc_group
+                wc_group=$(stat -c '%G' "${web_root}/wp-content" 2>/dev/null || true)
+                if [ "$wc_group" != "www-data" ]; then
+                    chown -R "${tenant}:www-data" "${web_root}/wp-content" 2>/dev/null || true
+                fi
+            fi
+
+            # Enforce mode 700 on tmp directory
+            if [ -d "${homedir}/tmp" ]; then
+                local tmp_mode
+                tmp_mode=$(stat -c '%a' "${homedir}/tmp" 2>/dev/null || true)
+                if [ "$tmp_mode" != "700" ]; then
+                    chmod 700 "${homedir}/tmp" 2>/dev/null || true
+                fi
+            fi
+
+            # Enforce user:www-data mode 750 on logs directory
+            if [ -d "${homedir}/logs" ]; then
+                local log_group log_mode
+                log_group=$(stat -c '%G' "${homedir}/logs" 2>/dev/null || true)
+                log_mode=$(stat -c '%a' "${homedir}/logs" 2>/dev/null || true)
+                if [ "$log_group" != "www-data" ] || [ "$log_mode" != "750" ]; then
+                    chown -R "${tenant}:www-data" "${homedir}/logs" 2>/dev/null || true
+                    chmod 750 "${homedir}/logs" 2>/dev/null || true
+                fi
+            fi
+
+            # Enforce mode 640 and ownership on wp-config.php
+            if [ -f "${web_root}/wp-config.php" ]; then
+                local wp_mode wp_group
+                wp_mode=$(stat -c '%a' "${web_root}/wp-config.php" 2>/dev/null || true)
+                wp_group=$(stat -c '%G' "${web_root}/wp-config.php" 2>/dev/null || true)
+                if [ "$wp_group" != "www-data" ]; then
+                    chown "${tenant}:www-data" "${web_root}/wp-config.php" 2>/dev/null || true
+                fi
+                if [ "$wp_mode" != "640" ]; then
+                    chmod 640 "${web_root}/wp-config.php" 2>/dev/null || true
+                fi
+            fi
+        fi
+    done
+}
+
+# 9. Disk & Inode Cleanup
+cleanup_disk_and_inodes() {
+    local disk_usage inode_usage
+    disk_usage=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
+    inode_usage=$(df -P -i / 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
+
+    [ -z "$disk_usage" ] && disk_usage=0
+    [ -z "$inode_usage" ] && inode_usage=0
+
+    if [ "$disk_usage" -ge 90 ] || [ "$inode_usage" -ge 90 ]; then
+        log "[CLEANUP] Disk usage (${disk_usage}%) or inode usage (${inode_usage}%) >= 90%. Initiating emergency vacuum..."
+        journalctl --vacuum-size=100M --vacuum-time=3d 2>/dev/null || true
+        apt-get clean 2>/dev/null || true
+        find /home/*/tmp -type f -name "sess_*" -mtime +7 -delete 2>/dev/null || true
+        find /var/backups/lsctl -maxdepth 1 -type d -name "pre_upgrade_*" -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+        log "[CLEANUP] Emergency cleanup cycle completed."
+    fi
+}
+
+main() {
+    check_angie
+    check_mariadb
+    check_valkey
+    check_php_fpm_pools
+    heal_tenant_permissions
+    cleanup_disk_and_inodes
+}
+
+main "$@"

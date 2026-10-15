@@ -1,0 +1,15 @@
+[Unit]
+Description=LeanStack Autonomous Software & Security Updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ls-autoupdate
+TimeoutSec=1800
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUSchedulingPolicy=other
+Nice=19
+StandardOutput=journal
+StandardError=journal

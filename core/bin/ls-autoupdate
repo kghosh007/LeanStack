@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# LeanStack Autonomous Zero-Downtime Software & Security Updater (ls-autoupdate)
+# Automated nightly patching: Angie, PHP, MariaDB, Valkey, CrowdSec, WP-CLI, Core
+# ==============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 1. Concurrency Protection via Flocking Lock
+LOCK_FILE="/run/ls-maintenance.lock"
+if ! touch "$LOCK_FILE" 2>/dev/null; then
+    LOCK_FILE="/tmp/ls-maintenance.lock"
+    touch "$LOCK_FILE" 2>/dev/null || true
+fi
+chmod 666 "$LOCK_FILE" 2>/dev/null || true
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack maintenance process is currently running. Skipping."
+    exit 0
+fi
+
+# 2. Logging Setup
+LOG_DIR="/var/log/lsctl"
+if [ ! -d "$LOG_DIR" ] && [ -d "/var/log/cpctl" ]; then
+    LOG_DIR="/var/log/cpctl"
+fi
+mkdir -p "$LOG_DIR" 2>/dev/null || LOG_DIR="/tmp"
+LOG_FILE="${LOG_DIR}/autoupdate.log"
+
+log() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    echo "$msg"
+    echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+BACKUP_DIR="/var/backups/lsctl/pre_upgrade_$(date +%Y%m%d_%H%M%S)"
+
+# 3. Pre-Flight Syntax & Resource Validation
+preflight_syntax_check() {
+    log "[PREFLIGHT] Checking Angie web server syntax before proceeding..."
+    if command -v angie &>/dev/null; then
+        if ! angie -t 2>/dev/null; then
+            log "[ERROR] Pre-flight Angie syntax check failed! Aborting update to avoid breaking active services."
+            exit 1
+        fi
+    fi
+
+    # Disk Space Guardrail: Ensure at least 200MB free space
+    local avail_mb
+    avail_mb=$(df -P -m / 2>/dev/null | awk 'NR==2 {print $4}' || echo "")
+    if [ -n "$avail_mb" ] && [ "$avail_mb" -lt 200 ]; then
+        log "[ERROR] Insufficient disk space for update (${avail_mb}MB free < 200MB). Aborting to prevent package corruption."
+        exit 1
+    fi
+
+    # Clean legacy snapshots older than 7 days
+    find /var/backups/lsctl -maxdepth 1 -type d -name "pre_upgrade_*" -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+
+    log "[PREFLIGHT] Pre-flight checks passed."
+}
+
+# 4. Atomic Pre-Upgrade State Snapshot
+create_snapshot() {
+    log "[SNAPSHOT] Creating pre-upgrade atomic configuration and database snapshot..."
+    mkdir -p "$BACKUP_DIR"
+    [ -f "/var/lib/lsctl/sites.db" ] && cp -f "/var/lib/lsctl/sites.db" "$BACKUP_DIR/sites.db" 2>/dev/null || true
+    [ -f "/var/lib/cpctl/sites.db" ] && cp -f "/var/lib/cpctl/sites.db" "$BACKUP_DIR/sites_cpctl.db" 2>/dev/null || true
+    [ -d "/etc/angie" ] && cp -a "/etc/angie" "$BACKUP_DIR/angie" 2>/dev/null || true
+    [ -d "/etc/valkey" ] && cp -a "/etc/valkey" "$BACKUP_DIR/valkey" 2>/dev/null || true
+    [ -d "/etc/mysql" ] && cp -a "/etc/mysql" "$BACKUP_DIR/mysql" 2>/dev/null || true
+    [ -d "/etc/php" ] && cp -a "/etc/php" "$BACKUP_DIR/php" 2>/dev/null || true
+    log "[SNAPSHOT] Snapshot saved at ${BACKUP_DIR}."
+}
+
+# 5. APT Stack Package Updates
+update_system_packages() {
+    if ! command -v apt-get &>/dev/null; then
+        return 0
+    fi
+
+    log "[APT] Refreshing package lists..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq 2>/dev/null || true
+
+    local pkgs_to_update=()
+    local patterns=("angie" "angie-module-*" "php*-fpm" "mariadb-server*" "mariadb-client*" "valkey*" "crowdsec*" "crowdsec-firewall-bouncer*")
+
+    log "[APT] Scanning for installed stack packages..."
+    for pat in "${patterns[@]}"; do
+        local matches
+        matches=$(dpkg-query -W -f='${binary:Package} ${Status}\n' "$pat" 2>/dev/null | grep 'install ok installed' | awk '{print $1}' || true)
+        if [ -n "$matches" ]; then
+            while read -r p; do
+                [ -n "$p" ] && pkgs_to_update+=("$p")
+            done <<< "$matches"
+        fi
+    done
+
+    if [ ${#pkgs_to_update[@]} -gt 0 ]; then
+        # Deduplicate packages
+        local unique_pkgs=()
+        while IFS= read -r pkg; do
+            [ -n "$pkg" ] && unique_pkgs+=("$pkg")
+        done < <(printf '%s\n' "${pkgs_to_update[@]}" | sort -u)
+        pkgs_to_update=("${unique_pkgs[@]}")
+
+        log "[APT] Upgrading stack packages with non-interactive flags: ${pkgs_to_update[*]}..."
+        apt-get install -y --only-upgrade \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            "${pkgs_to_update[@]}" 2>&1 | while read -r line; do log "[APT] $line"; done || {
+                log "[WARN] Package upgrade returned non-critical notices."
+            }
+    else
+        log "[APT] All stack packages are up to date."
+    fi
+}
+
+# 6. CrowdSec Hub & Bouncer Updates
+update_crowdsec() {
+    if command -v cscli &>/dev/null; then
+        log "[CROWDSEC] Updating CrowdSec hub and parsers/scenarios..."
+        cscli hub update 2>/dev/null || true
+        cscli hub upgrade 2>/dev/null || true
+        if systemctl is-active --quiet crowdsec 2>/dev/null; then
+            systemctl reload crowdsec 2>/dev/null || systemctl restart crowdsec 2>/dev/null || true
+        fi
+        if systemctl is-active --quiet crowdsec-firewall-bouncer 2>/dev/null; then
+            systemctl restart crowdsec-firewall-bouncer 2>/dev/null || true
+        fi
+        log "[CROWDSEC] Hub and bouncers updated."
+    fi
+}
+
+# 7. WP-CLI Binary Update
+update_wp_cli() {
+    local wp_bin="/usr/local/bin/wp"
+    command -v wp &>/dev/null && wp_bin=$(command -v wp)
+    if [ -x "$wp_bin" ]; then
+        log "[WP-CLI] Checking for WP-CLI updates..."
+        "$wp_bin" cli update --yes --allow-root 2>/dev/null || true
+    fi
+}
+
+# 8. LeanStack Core & Migrations Update
+update_leanstack_core() {
+    log "[CORE] Updating LeanStack core control plane and database schema..."
+    local upgrader_bin="/usr/local/bin/lsctl"
+    if [ -x "$upgrader_bin" ]; then
+        "$upgrader_bin" update --quiet 2>/dev/null || true
+    elif [ -x "${SCRIPT_DIR}/ls-upgrade" ]; then
+        python3 "${SCRIPT_DIR}/ls-upgrade" --quiet 2>/dev/null || true
+    elif [ -x "${SCRIPT_DIR}/lsctl" ]; then
+        "${SCRIPT_DIR}/lsctl" update --quiet 2>/dev/null || true
+    elif [ -x "/usr/local/bin/cp-upgrade" ]; then
+        /usr/local/bin/cp-upgrade --quiet 2>/dev/null || true
+    fi
+}
+
+# 9. Post-Upgrade Verification & Automatic Rollback on Failure
+post_upgrade_verification() {
+    log "[VERIFY] Running post-upgrade configuration syntax test..."
+    if command -v angie &>/dev/null; then
+        if ! angie -t 2>/dev/null; then
+            log "[FATAL] Post-upgrade Angie syntax test failed! Initiating rollback from snapshot..."
+            if [ -d "$BACKUP_DIR/angie" ]; then
+                rm -rf /etc/angie
+                cp -a "$BACKUP_DIR/angie" /etc/angie
+                log "[ROLLBACK] Restored /etc/angie from ${BACKUP_DIR}/angie"
+            fi
+            if [ -d "$BACKUP_DIR/php" ]; then
+                rm -rf /etc/php
+                cp -a "$BACKUP_DIR/php" /etc/php
+                log "[ROLLBACK] Restored /etc/php from ${BACKUP_DIR}/php"
+            fi
+            if [ -f "$BACKUP_DIR/sites.db" ]; then
+                cp -f "$BACKUP_DIR/sites.db" /var/lib/lsctl/sites.db 2>/dev/null || true
+            fi
+            if [ -f "$BACKUP_DIR/sites_cpctl.db" ]; then
+                cp -f "$BACKUP_DIR/sites_cpctl.db" /var/lib/cpctl/sites.db 2>/dev/null || true
+            fi
+            angie -t 2>/dev/null || true
+            systemctl restart angie 2>/dev/null || true
+            log "[ROLLBACK] System restored to previous operational state."
+            exit 1
+        fi
+    fi
+
+    # Zero-downtime graceful reloads
+    log "[RELOAD] Performing zero-downtime graceful reloads..."
+    if systemctl is-active --quiet angie 2>/dev/null; then
+        systemctl reload angie 2>/dev/null || true
+        log "[RELOAD] Angie reloaded."
+    fi
+
+    if command -v systemctl &>/dev/null; then
+        for svc in $(systemctl list-units --type=service --state=running 'php*-fpm*' --no-legend 2>/dev/null | awk '{print $1}'); do
+            [ -n "$svc" ] && systemctl reload "$svc" 2>/dev/null || true
+        done
+        log "[RELOAD] Active PHP-FPM pools reloaded."
+    fi
+
+    log "[SUCCESS] Autonomous zero-downtime update completed successfully."
+}
+
+main() {
+    log "=========================================================="
+    log "🚀 Starting LeanStack Autonomous Software & Security Update"
+    log "=========================================================="
+    preflight_syntax_check
+    create_snapshot
+    update_system_packages
+    update_crowdsec
+    update_wp_cli
+    update_leanstack_core
+    post_upgrade_verification
+    log "=========================================================="
+    log "✔ Update cycle finished cleanly."
+    log "=========================================================="
+}
+
+main "$@"

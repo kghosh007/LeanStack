@@ -8,24 +8,36 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Configuration & Templates Paths
-if [ -d "/var/lib/lsctl" ]; then
+if [ -n "${LEANSTACK_DB:-}" ]; then
+    DB_FILE="$LEANSTACK_DB"
+    DB_DIR="$(dirname "$DB_FILE")"
+elif [ -d "/var/lib/lsctl" ]; then
     DB_DIR="/var/lib/lsctl"
+    DB_FILE="${DB_DIR}/sites.db"
 elif [ -d "/var/lib/cpctl" ]; then
     DB_DIR="/var/lib/cpctl"
+    DB_FILE="${DB_DIR}/sites.db"
 else
     DB_DIR="/var/lib/lsctl"
+    DB_FILE="${DB_DIR}/sites.db"
 fi
-DB_FILE="${LEANSTACK_DB:-${DB_DIR}/sites.db}"
+
+if [ -n "${LEANSTACK_PROFILES:-}" ]; then
+    PROFILES_FILE="$LEANSTACK_PROFILES"
+elif [ -f "/etc/lsctl/profiles.yaml" ]; then
+    PROFILES_FILE="/etc/lsctl/profiles.yaml"
+elif [ -f "/etc/cpctl/profiles.yaml" ]; then
+    PROFILES_FILE="/etc/cpctl/profiles.yaml"
+else
+    PROFILES_FILE="${SCRIPT_DIR}/../config/profiles.yaml"
+fi
 
 if [ -d "/etc/lsctl/templates" ]; then
     TEMPLATE_DIR="/etc/lsctl/templates"
-    PROFILES_FILE="/etc/lsctl/profiles.yaml"
 elif [ -d "/etc/cpctl/templates" ]; then
     TEMPLATE_DIR="/etc/cpctl/templates"
-    PROFILES_FILE="/etc/cpctl/profiles.yaml"
 else
     TEMPLATE_DIR="${SCRIPT_DIR}/../templates"
-    PROFILES_FILE="${SCRIPT_DIR}/../config/profiles.yaml"
 fi
 
 BACKUP_DIR="/var/backups/lsctl/trash"
@@ -216,7 +228,43 @@ case "$COMMAND" in
         done
 
         python3 - "$PROFILES_FILE" "$JSON_MODE" << 'PY'
-import yaml, json, sys, os
+import json, sys, os
+
+def load_yaml(text):
+    try:
+        import yaml
+        return yaml.safe_load(text) or {}
+    except ImportError:
+        pass
+    profiles = {}
+    current = None
+    curr_key = None
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line or line.startswith('#'):
+            continue
+        if not line.startswith(' '):
+            if ':' in line:
+                current = line.split(':')[0].strip()
+                profiles[current] = {}
+        elif current is not None:
+            s = line.strip()
+            if s.startswith('- ') and curr_key:
+                val = s[2:].strip().strip('"').strip("'")
+                if not isinstance(profiles[current].get(curr_key), list):
+                    profiles[current][curr_key] = []
+                profiles[current][curr_key].append(val)
+            elif ':' in s:
+                k, v = s.split(':', 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                curr_key = k
+                if v == 'true': v = True
+                elif v == 'false': v = False
+                elif not v: v = []
+                profiles[current][k] = v
+    return profiles
+
 p_file = sys.argv[1]
 json_mode = int(sys.argv[2])
 try:
@@ -224,7 +272,7 @@ try:
         print(f"ERROR: Profiles configuration file {p_file} not found.", file=sys.stderr)
         sys.exit(1)
     with open(p_file, "r") as f:
-        profiles = yaml.safe_load(f) or {}
+        profiles = load_yaml(f.read())
     if json_mode == 1:
         print(json.dumps(profiles, indent=2))
     else:
@@ -265,7 +313,43 @@ PY
         done
 
         python3 - "$PROFILES_FILE" "$P_NAME" "$JSON_MODE" << 'PY'
-import yaml, json, sys, os
+import json, sys, os
+
+def load_yaml(text):
+    try:
+        import yaml
+        return yaml.safe_load(text) or {}
+    except ImportError:
+        pass
+    profiles = {}
+    current = None
+    curr_key = None
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line or line.startswith('#'):
+            continue
+        if not line.startswith(' '):
+            if ':' in line:
+                current = line.split(':')[0].strip()
+                profiles[current] = {}
+        elif current is not None:
+            s = line.strip()
+            if s.startswith('- ') and curr_key:
+                val = s[2:].strip().strip('"').strip("'")
+                if not isinstance(profiles[current].get(curr_key), list):
+                    profiles[current][curr_key] = []
+                profiles[current][curr_key].append(val)
+            elif ':' in s:
+                k, v = s.split(':', 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                curr_key = k
+                if v == 'true': v = True
+                elif v == 'false': v = False
+                elif not v: v = []
+                profiles[current][k] = v
+    return profiles
+
 p_file = sys.argv[1]
 p_name = sys.argv[2]
 json_mode = int(sys.argv[3])
@@ -274,7 +358,7 @@ try:
         print(f"ERROR: Profiles file {p_file} not found.", file=sys.stderr)
         sys.exit(1)
     with open(p_file, "r") as f:
-        profiles = yaml.safe_load(f) or {}
+        profiles = load_yaml(f.read())
     if p_name not in profiles:
         print(f"ERROR: Profile '{p_name}' does not exist.", file=sys.stderr)
         sys.exit(1)
@@ -525,8 +609,16 @@ else:
         fi
 
         mv "$NEW_STAGED" "$NEW_POOL"
-        php-fpm${NEW_PHP} -t &>/dev/null || { echo "ERROR: PHP syntax check failed."; rm -f "$NEW_POOL"; exit 1; }
-        systemctl reload "php${NEW_PHP}-fpm"
+        FPM_BIN="php-fpm${NEW_PHP}"
+        if ! command -v "$FPM_BIN" &>/dev/null; then
+            if [ -x "/usr/sbin/php-fpm${NEW_PHP}" ]; then
+                FPM_BIN="/usr/sbin/php-fpm${NEW_PHP}"
+            elif command -v php-fpm &>/dev/null; then
+                FPM_BIN="php-fpm"
+            fi
+        fi
+        "$FPM_BIN" -t &>/dev/null || { echo "ERROR: PHP syntax check failed."; rm -f "$NEW_POOL"; exit 1; }
+        systemctl reload "php${NEW_PHP}-fpm" 2>/dev/null || systemctl restart "php${NEW_PHP}-fpm" 2>/dev/null || true
 
         READY=0
         for i in {1..8}; do
@@ -680,14 +772,53 @@ else:
             exit 1
         fi
 
-        # Parse YAML Profile safely using Python (No eval)
-        PROFILE_DATA=$(python3 - "$PROFILES_FILE" "$PROFILE" << 'PY'
-import yaml, json, sys
+        # Parse YAML Profile safely using Python (Zero-dependency fallback included)
+        PROFILE_DATA=""
+        if ! PROFILE_DATA=$(python3 - "$PROFILES_FILE" "$PROFILE" << 'PY'
+import json, sys, os
+
+def load_yaml(text):
+    try:
+        import yaml
+        return yaml.safe_load(text) or {}
+    except ImportError:
+        pass
+    profiles = {}
+    current = None
+    curr_key = None
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line or line.startswith('#'):
+            continue
+        if not line.startswith(' '):
+            if ':' in line:
+                current = line.split(':')[0].strip()
+                profiles[current] = {}
+        elif current is not None:
+            s = line.strip()
+            if s.startswith('- ') and curr_key:
+                val = s[2:].strip().strip('"').strip("'")
+                if not isinstance(profiles[current].get(curr_key), list):
+                    profiles[current][curr_key] = []
+                profiles[current][curr_key].append(val)
+            elif ':' in s:
+                k, v = s.split(':', 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                curr_key = k
+                if v == 'true': v = True
+                elif v == 'false': v = False
+                elif not v: v = []
+                profiles[current][k] = v
+    return profiles
+
 p_file = sys.argv[1]
 p_name = sys.argv[2]
 try:
+    if not os.path.exists(p_file):
+        sys.exit(3)
     with open(p_file, "r") as f:
-        data = yaml.safe_load(f) or {}
+        data = load_yaml(f.read())
     p = data.get(p_name)
     if not p:
         sys.exit(2)
@@ -695,13 +826,13 @@ try:
 except Exception:
     sys.exit(1)
 PY
-)
-        RET=$?
-        if [ $RET -eq 2 ]; then
-            echo "ERROR: Profile '$PROFILE' not found in $PROFILES_FILE" >&2
-            exit 1
-        elif [ $RET -ne 0 ]; then
-            echo "ERROR: Failed to parse $PROFILES_FILE" >&2
+); then
+            RET=$?
+            if [ $RET -eq 2 ]; then
+                echo "ERROR: Profile '$PROFILE' not found in $PROFILES_FILE" >&2
+            else
+                echo "ERROR: Failed to parse $PROFILES_FILE" >&2
+            fi
             exit 1
         fi
 
@@ -735,10 +866,10 @@ PY
         EXISTS=$(db_query "SELECT count(*) FROM sites WHERE domain='$DOMAIN';")
         [ "$EXISTS" -gt 0 ] && { echo "ERROR: Domain $DOMAIN is already registered."; exit 1; }
 
-        # System User slug (Domain derived + random 4 chars)
+        # System User slug (Domain derived + random 4 hex chars, safe from SIGPIPE)
         CLEAN_DOMAIN=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '_')
         SHORT_SLUG=$(echo "$CLEAN_DOMAIN" | cut -c 1-14 | sed 's/_$//')
-        RAND_SUFFIX=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 4)
+        RAND_SUFFIX=$(openssl rand -hex 2)
         USER_NAME="${SHORT_SLUG}_${RAND_SUFFIX}"
         [[ "$USER_NAME" =~ ^[0-9] ]] && USER_NAME="s_${USER_NAME}"
 
@@ -750,9 +881,9 @@ PY
         LOG_DIR="/home/${USER_NAME}/logs"
         SOCKET_PATH="/run/php/php${PHP_VER}-${USER_NAME}.sock"
 
-        RAND_PREFIX=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 6)
+        RAND_PREFIX=$(openssl rand -hex 3)
         TABLE_PREFIX="${RAND_PREFIX}_"
-        RAND_SALT=$(tr -dc 'a-z0-9' < /dev/urandom | head -c 6)
+        RAND_SALT=$(openssl rand -hex 3)
         CACHE_KEY_SALT="${RAND_SALT}_"
 
         # Rollback Trap
@@ -782,12 +913,18 @@ PY
 
         mkdir -p "$WEB_ROOT" "$LOG_DIR" "/home/${USER_NAME}/tmp"
 
+        # Resolve PHP and WP-CLI binaries
+        PHP_BIN="/usr/bin/php${PHP_VER}"
+        [ ! -x "$PHP_BIN" ] && PHP_BIN=$(command -v "php${PHP_VER}" 2>/dev/null || command -v php 2>/dev/null || echo "/usr/bin/php")
+        WP_BIN="/usr/local/bin/wp"
+        [ ! -x "$WP_BIN" ] && WP_BIN=$(command -v wp 2>/dev/null || echo "/usr/local/bin/wp")
+
         # Download or copy WordPress Core
         if [ -d "$WP_MASTER_TEMPLATE" ] && [ -f "${WP_MASTER_TEMPLATE}/wp-settings.php" ]; then
             cp -a "${WP_MASTER_TEMPLATE}/"* "${WEB_ROOT}/"
         else
             echo ">>> Downloading WordPress Core via WP-CLI..."
-            /usr/local/bin/wp core download --path="${WEB_ROOT}" --allow-root >/dev/null
+            "$PHP_BIN" "$WP_BIN" core download --path="${WEB_ROOT}" --allow-root >/dev/null
         fi
 
         # MariaDB Database Creation
@@ -817,8 +954,14 @@ PY
             sed -i "s|{{PM_DYNAMIC_SETTINGS}}||g" "$POOL_FILE"
         fi
 
-        php-fpm${PHP_VER} -t
-        systemctl reload "php${PHP_VER}-fpm"
+        if command -v "php-fpm${PHP_VER}" &>/dev/null; then
+            "php-fpm${PHP_VER}" -t
+        elif [ -x "/usr/sbin/php-fpm${PHP_VER}" ]; then
+            "/usr/sbin/php-fpm${PHP_VER}" -t
+        elif command -v php-fpm &>/dev/null; then
+            php-fpm -t
+        fi
+        systemctl reload "php${PHP_VER}-fpm" 2>/dev/null || systemctl restart "php${PHP_VER}-fpm" 2>/dev/null || true
         TARGET_SOCKET="unix:${SOCKET_PATH}"
 
         # Cryptographic Salts
@@ -957,7 +1100,7 @@ EOF
         chmod 644 "${PROD_CUSTOM}"/*.conf "/etc/angie/cache-zones/${DOMAIN}.conf" 2>/dev/null || true
 
         # WP-CLI Core Installation
-        sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp core install \
+        sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" core install \
             --path="${WEB_ROOT}" \
             --url="https://${DOMAIN}" \
             --title="${SITE_TITLE}" \
@@ -967,20 +1110,20 @@ EOF
             --skip-email
 
         # Set Timezone
-        sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp option update timezone_string "$TIMEZONE" --path="${WEB_ROOT}" 2>/dev/null || true
+        sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" option update timezone_string "$TIMEZONE" --path="${WEB_ROOT}" 2>/dev/null || true
 
         # Install Plugins
         if [ -n "$PLUGINS" ]; then
             for PLUG in $PLUGINS; do
-                sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp plugin install "$PLUG" --activate --path="${WEB_ROOT}" 2>/dev/null || true
+                sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" plugin install "$PLUG" --activate --path="${WEB_ROOT}" 2>/dev/null || true
             done
-            [ "$CACHE_ARG" == "on" ] && sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp redis enable --path="${WEB_ROOT}" 2>/dev/null || true
+            [ "$CACHE_ARG" == "on" ] && sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" redis enable --path="${WEB_ROOT}" 2>/dev/null || true
         fi
 
         # Install Theme
         if [ -n "$THEME" ]; then
-            sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp theme install "$THEME" --activate --path="${WEB_ROOT}" 2>/dev/null || \
-            sudo -u "${USER_NAME}" /usr/bin/php${PHP_VER} /usr/local/bin/wp theme activate "$THEME" --path="${WEB_ROOT}" 2>/dev/null || true
+            sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" theme install "$THEME" --activate --path="${WEB_ROOT}" 2>/dev/null || \
+            sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" theme activate "$THEME" --path="${WEB_ROOT}" 2>/dev/null || true
         fi
 
         # Angie Virtual Host Generation
@@ -1027,7 +1170,8 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
 
         check_svc() {
             local svc="$1"
-            if systemctl is-active --quiet "$svc" 2>/dev/null; then
+            local alt="${2:-}"
+            if systemctl is-active --quiet "$svc" 2>/dev/null || ([ -n "$alt" ] && systemctl is-active --quiet "$alt" 2>/dev/null); then
                 echo "  [PASS] Service $svc is running"
             else
                 echo "  [FAIL] Service $svc is not running!"
@@ -1046,7 +1190,7 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
         echo ">>> Service Status Checks:"
         check_svc angie
         check_svc mariadb
-        check_svc valkey
+        check_svc valkey valkey-server
 
         echo ">>> Core Sockets:"
         check_socket /run/valkey/valkey.sock

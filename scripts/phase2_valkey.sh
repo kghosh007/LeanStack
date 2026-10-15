@@ -41,11 +41,12 @@ fi
 groupadd -f tenants
 groupadd -f valkey
 id -u valkey &>/dev/null || useradd -r -s /bin/false -g valkey -G tenants valkey
+usermod -aG valkey,tenants www-data 2>/dev/null || true
 
 mkdir -p /etc/valkey /var/lib/valkey /run/valkey /var/log/valkey
 chown -R valkey:valkey /var/lib/valkey /var/log/valkey
 chown valkey:tenants /run/valkey
-chmod 770 /run/valkey
+chmod 775 /run/valkey
 
 # Dynamically Scale Valkey Memory (10% of total RAM, min 128MB, capped at 2048MB)
 RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
@@ -93,10 +94,6 @@ appendonly no
 
 # Memory allocator optimizations
 jemalloc-bg-thread yes
-activedefrag yes
-active-defrag-ignore-bytes 100mb
-active-defrag-threshold-lower 10
-active-defrag-threshold-upper 30
 
 # Latency optimizations
 tcp-backlog 511
@@ -109,19 +106,31 @@ touch /etc/valkey/users.acl
 chown valkey:valkey /etc/valkey/valkey.conf /etc/valkey/users.acl
 chmod 640 /etc/valkey/valkey.conf /etc/valkey/users.acl
 
-# If packaged valkey is used, link paths
-if [ -f /usr/bin/valkey-server ] && [ ! -f /usr/local/bin/valkey-server ]; then
-    ln -sf /usr/bin/valkey-server /usr/local/bin/valkey-server
-    ln -sf /usr/bin/valkey-cli /usr/local/bin/valkey-cli
+# Locate Valkey binaries and ensure symlinks exist in both /usr/bin and /usr/local/bin
+VALKEY_BIN="$(command -v valkey-server 2>/dev/null || true)"
+[ -z "$VALKEY_BIN" ] && [ -x "/usr/bin/valkey-server" ] && VALKEY_BIN="/usr/bin/valkey-server"
+[ -z "$VALKEY_BIN" ] && [ -x "/usr/local/bin/valkey-server" ] && VALKEY_BIN="/usr/local/bin/valkey-server"
+
+VALKEY_CLI="$(command -v valkey-cli 2>/dev/null || true)"
+[ -z "$VALKEY_CLI" ] && [ -x "/usr/bin/valkey-cli" ] && VALKEY_CLI="/usr/bin/valkey-cli"
+[ -z "$VALKEY_CLI" ] && [ -x "/usr/local/bin/valkey-cli" ] && VALKEY_CLI="/usr/local/bin/valkey-cli"
+
+if [ -n "$VALKEY_BIN" ]; then
+    [ ! -f /usr/local/bin/valkey-server ] && ln -sf "$VALKEY_BIN" /usr/local/bin/valkey-server
+    [ ! -f /usr/bin/valkey-server ] && ln -sf "$VALKEY_BIN" /usr/bin/valkey-server
+fi
+if [ -n "$VALKEY_CLI" ]; then
+    [ ! -f /usr/local/bin/valkey-cli ] && ln -sf "$VALKEY_CLI" /usr/local/bin/valkey-cli
+    [ ! -f /usr/bin/valkey-cli ] && ln -sf "$VALKEY_CLI" /usr/bin/valkey-cli
 fi
 
 # Stop existing services and remove unit symlinks to prevent 'linked unit file' conflicts
-systemctl stop valkey valkey-server 2>/dev/null || true
+systemctl stop valkey valkey-server redis-server redis 2>/dev/null || true
 systemctl disable valkey valkey-server 2>/dev/null || true
 rm -f /etc/systemd/system/valkey.service /etc/systemd/system/valkey-server.service
 
 # Deploy Systemd Unit
-cat << 'EOF' > /etc/systemd/system/valkey.service
+cat << EOF > /etc/systemd/system/valkey.service
 [Unit]
 Description=Valkey High-Performance In-Memory Data Store
 After=network.target disable-thp.service
@@ -131,21 +140,26 @@ Type=notify
 User=valkey
 Group=valkey
 SupplementaryGroups=tenants
-ExecStart=/usr/local/bin/valkey-server /etc/valkey/valkey.conf
-ExecStop=/bin/kill -s TERM $MAINPID
+ExecStart=${VALKEY_BIN:-/usr/bin/valkey-server} /etc/valkey/valkey.conf
+ExecStop=/bin/kill -s TERM \$MAINPID
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
 RuntimeDirectory=valkey
-RuntimeDirectoryMode=0770
+RuntimeDirectoryMode=0775
+UMask=007
 
 [Install]
 WantedBy=multi-user.target
+Alias=valkey-server.service
 EOF
 
+# Ensure valkey-server.service points to valkey.service to prevent alias conflicts
+ln -sf /etc/systemd/system/valkey.service /etc/systemd/system/valkey-server.service
+
 systemctl daemon-reload
-systemctl unmask valkey 2>/dev/null || true
+systemctl unmask valkey valkey-server 2>/dev/null || true
 systemctl enable valkey.service 2>/dev/null || true
-systemctl restart valkey.service 2>/dev/null || true
+systemctl restart valkey.service
 
 echo "✅ [Phase 2] Valkey In-Memory Cache Configured & Running via Unix Socket!"

@@ -718,10 +718,49 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                                 wpc = re.sub(r"<\?php\s*", "<?php\ndefine( 'WP_CACHE', true );\n", wpc, count=1)
                                 modified = True
 
+                        # 4c. Ensure DISALLOW_FILE_EDIT is enabled
+                        if re.search(r"//\s*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]", wpc):
+                            wpc = re.sub(r"//\s*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"][^\n]*\n", "define( 'DISALLOW_FILE_EDIT', true );\n", wpc, count=1)
+                            modified = True
+                        elif re.search(r"/\*+[\s*]*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"].*?\*/", wpc, re.DOTALL):
+                            wpc = re.sub(r"/\*+[\s*]*define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"].*?\*/", "define( 'DISALLOW_FILE_EDIT', true );", wpc, count=1)
+                            modified = True
+                        elif re.search(r"define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0)\s*\)", wpc, re.IGNORECASE):
+                            wpc = re.sub(r"define\s*\(\s*['\"]DISALLOW_FILE_EDIT['\"]\s*,\s*(?:false|0)\s*\)", "define( 'DISALLOW_FILE_EDIT', true )", wpc, count=1, flags=re.IGNORECASE)
+                            modified = True
+                        elif "DISALLOW_FILE_EDIT" not in wpc:
+                            if re.search(r"define\s*\(\s*['\"]DISABLE_WP_CRON['\"]", wpc):
+                                wpc = re.sub(
+                                    r"(define\s*\(\s*['\"]DISABLE_WP_CRON['\"][^\n]*\n)",
+                                    "\\1\ndefine( 'DISALLOW_FILE_EDIT', true );\n",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "/* That's all, stop editing!" in wpc:
+                                wpc = re.sub(
+                                    r"(/\*\s*That's all, stop editing!)",
+                                    "define( 'DISALLOW_FILE_EDIT', true );\n\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "require_once" in wpc and "wp-settings.php" in wpc:
+                                wpc = re.sub(
+                                    r"([^\n]*require_once[^\n]*wp-settings\.php[^\n]*)",
+                                    "define( 'DISALLOW_FILE_EDIT', true );\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "<?php" in wpc:
+                                wpc = re.sub(r"<\?php\s*", "<?php\ndefine( 'DISALLOW_FILE_EDIT', true );\n", wpc, count=1)
+                                modified = True
+
                         if modified:
                             with open(wp_config, "w") as f_wpc:
                                 f_wpc.write(wpc)
-                            self.log(f"Injected WP_REDIS_USERNAME & WP_CACHE into {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
+                            self.log(f"Reconciled WP_REDIS_USERNAME, WP_CACHE & DISALLOW_FILE_EDIT in {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
 
                         # Enforce mode 0600 and tenant ownership on wp-config.php
                         try:

@@ -204,7 +204,25 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
             updated_parent_wpc = f.read()
         self.assertIn("define( 'WP_REDIS_USERNAME', 'tenant_u1' );", updated_parent_wpc)
         self.assertIn("define( 'WP_CACHE', true );", updated_parent_wpc)
+        self.assertIn("define( 'DISALLOW_FILE_EDIT', true );", updated_parent_wpc)
         os.remove(parent_wpc)
+
+        # 9. Verify DISALLOW_FILE_EDIT reconciliation for missing, commented out, or false values
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\ndefine( 'DISABLE_WP_CRON', true );\n// define( 'DISALLOW_FILE_EDIT', false );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            wpc_edit1 = f.read()
+        self.assertIn("define( 'DISALLOW_FILE_EDIT', true );", wpc_edit1)
+        self.assertNotIn("// define( 'DISALLOW_FILE_EDIT', false );", wpc_edit1)
+
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\ndefine( 'DISALLOW_FILE_EDIT', false );\n")
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            wpc_edit2 = f.read()
+        self.assertIn("define( 'DISALLOW_FILE_EDIT', true )", wpc_edit2)
+        self.assertNotIn("false", wpc_edit2)
 
     def test_cli_upgrade_dry_run_and_json(self):
         """Verify cp-upgrade CLI flags --dry-run and --json."""

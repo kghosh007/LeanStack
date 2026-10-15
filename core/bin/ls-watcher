@@ -311,18 +311,21 @@ heal_tenant_permissions() {
                 fi
             fi
 
-            # Enforce mode 640 and ownership on wp-config.php
-            if [ -f "${web_root}/wp-config.php" ]; then
-                local wp_mode wp_group
-                wp_mode=$(stat -c '%a' "${web_root}/wp-config.php" 2>/dev/null || true)
-                wp_group=$(stat -c '%G' "${web_root}/wp-config.php" 2>/dev/null || true)
-                if [ "$wp_group" != "www-data" ]; then
-                    chown "${tenant}:www-data" "${web_root}/wp-config.php" 2>/dev/null || true
+            # Enforce mode 600 and tenant ownership on wp-config.php
+            for wpc in "${web_root}/wp-config.php" "${homedir}/wp-config.php"; do
+                if [ -f "$wpc" ]; then
+                    local wp_mode wp_user wp_group
+                    wp_mode=$(stat -c '%a' "$wpc" 2>/dev/null || true)
+                    wp_user=$(stat -c '%U' "$wpc" 2>/dev/null || true)
+                    wp_group=$(stat -c '%G' "$wpc" 2>/dev/null || true)
+                    if [ "$wp_user" != "$tenant" ] || [ "$wp_group" != "$tenant" ]; then
+                        chown "${tenant}:${tenant}" "$wpc" 2>/dev/null || chown "${tenant}:www-data" "$wpc" 2>/dev/null || true
+                    fi
+                    if [ "$wp_mode" != "600" ]; then
+                        chmod 600 "$wpc" 2>/dev/null || true
+                    fi
                 fi
-                if [ "$wp_mode" != "640" ]; then
-                    chmod 640 "${web_root}/wp-config.php" 2>/dev/null || true
-                fi
-            fi
+            done
         fi
     done
 }

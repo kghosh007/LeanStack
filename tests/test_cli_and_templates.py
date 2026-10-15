@@ -417,7 +417,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn('chown -R "${USER_NAME}:www-data" "$WEB_ROOT" "$LOG_DIR"', content)
         self.assertIn('chmod 750 "$WEB_ROOT"', content)
         self.assertIn('chmod 700 "/home/${USER_NAME}/tmp"', content)
-        self.assertIn('chmod 640 "$WEB_ROOT/wp-config.php"', content)
+        self.assertIn('chmod 600 "$WEB_ROOT/wp-config.php"', content)
         self.assertIn('compgen -G "/var/lib/angie/acme/${DOMAIN}*"', content)
 
     def test_autonomous_health_watcher(self):

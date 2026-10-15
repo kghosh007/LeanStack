@@ -721,15 +721,19 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         if modified:
                             with open(wp_config, "w") as f_wpc:
                                 f_wpc.write(wpc)
-                            import pwd, grp
-                            try:
-                                u_info = pwd.getpwnam(user)
-                                w_info = grp.getgrnam("www-data")
-                                os.chown(wp_config, u_info.pw_uid, w_info.gr_gid)
-                                os.chmod(wp_config, 0o640)
-                            except Exception:
-                                pass
                             self.log(f"Injected WP_REDIS_USERNAME & WP_CACHE into {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
+
+                        # Enforce mode 0600 and tenant ownership on wp-config.php
+                        try:
+                            import pwd
+                            u_info = pwd.getpwnam(user)
+                            os.chown(wp_config, u_info.pw_uid, u_info.pw_gid)
+                        except Exception:
+                            pass
+                        try:
+                            os.chmod(wp_config, 0o600)
+                        except Exception:
+                            pass
                     except Exception as e:
                         self.log(f"Warning: Reconciling wp-config.php for {domain}: {e}", Colors.YELLOW, prefix="  ⚠️")
 

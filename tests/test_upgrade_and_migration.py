@@ -147,6 +147,8 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
             updated_wpc = f.read()
         self.assertIn("define( 'WP_REDIS_USERNAME', 'tenant_u1' );", updated_wpc)
         self.assertIn("define( 'WP_REDIS_USER', 'tenant_u1' );", updated_wpc)
+        import stat
+        self.assertEqual(stat.S_IMODE(os.stat(wp_config_path).st_mode), 0o600)
 
         # 5. Verify wp-config.php reconciliation when ONLY WP_REDIS_PASSWORD is present (user's diagnostic scenario)
         with open(wp_config_path, "w") as f:

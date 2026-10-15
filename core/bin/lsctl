@@ -1235,8 +1235,9 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
         chmod 750 "$WEB_ROOT"
         chmod 700 "/home/${USER_NAME}/tmp"
         chmod 750 "$LOG_DIR"
-        chmod 640 "$WP_CONFIG"
-        chmod 640 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
+        chown "${USER_NAME}:${USER_NAME}" "$WP_CONFIG" 2>/dev/null || chown "${USER_NAME}:www-data" "$WP_CONFIG" 2>/dev/null || true
+        chmod 600 "$WP_CONFIG"
+        chmod 600 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
 
         # Deploy LeanStack MU-Plugins Suite
         mkdir -p "${WEB_ROOT}/wp-content/mu-plugins"
@@ -1354,7 +1355,8 @@ EOF
         # Re-enforce tenant web root group permissions after WP-CLI plugins & theme installations
         chown -R "${USER_NAME}:www-data" "$WEB_ROOT"
         chmod 750 "$WEB_ROOT"
-        chmod 640 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
+        chown "${USER_NAME}:${USER_NAME}" "$WEB_ROOT/wp-config.php" 2>/dev/null || chown "${USER_NAME}:www-data" "$WEB_ROOT/wp-config.php" 2>/dev/null || true
+        chmod 600 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
 
         # Angie Virtual Host Generation
         ensure_ssl_fallback

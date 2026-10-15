@@ -64,7 +64,6 @@ server {
     # Server-Side Includes (SSI) Engine for Hole-Punching
     ssi on;
     ssi_silent_errors on;
-    ssi_types text/html;
 
     # Universal Protocol Detection
     set $custom_https $https;
@@ -202,7 +201,8 @@ server {
         fastcgi_cache CACHE_{{ZONE_KEY}};
         fastcgi_cache_bypass $skip_cache;
         fastcgi_no_cache $skip_cache;
-        fastcgi_cache_valid 200 301 302 $site_cache_ttl;
+        fastcgi_cache_valid 200 301 302 60m;
+        fastcgi_cache_valid 404 1m;
         fastcgi_cache_use_stale error timeout updating invalid_header http_500 http_503;
         fastcgi_cache_background_update on;
         fastcgi_cache_lock on;

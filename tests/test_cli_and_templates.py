@@ -62,6 +62,11 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("security-headers.conf", content)
         self.assertIn("avif", content)
         self.assertIn("wasm", content)
+        # Check valid literal time on fastcgi_cache_valid (no variables allowed by Angie/Nginx)
+        self.assertIn("fastcgi_cache_valid 200 301 302 60m;", content)
+        self.assertNotIn("$site_cache_ttl", content)
+        # Check no duplicate ssi_types text/html (text/html is default)
+        self.assertNotIn("ssi_types text/html;", content)
 
     def test_pool_template_isolation(self):
         """Verify pool.conf.tpl enforces tenant sandboxing, open_basedir, and expanded disable_functions."""

@@ -11,7 +11,7 @@ class TestValkeyAclSyntax(unittest.TestCase):
             self.skipTest("redis-server or valkey-server not installed")
         
         with tempfile.NamedTemporaryFile("w", delete=False) as f:
-            f.write("user default on nopass ~* &* +@all\nuser test on >pass123 ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb\n")
+            f.write("user default on nopass ~* &* +@all\nuser test on >pass123 ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info\n")
             acl_path = f.name
             
         try:
@@ -29,8 +29,21 @@ class TestValkeyAclSyntax(unittest.TestCase):
             
             redis_cli = shutil.which("redis-cli") or shutil.which("valkey-cli")
             if redis_cli and os.path.exists(sock_path):
-                res = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "ping"], capture_output=True, text=True)
-                self.assertIn("PONG", res.stdout)
+                # 1. Verify ping works
+                res_ping = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "ping"], capture_output=True, text=True)
+                self.assertIn("PONG", res_ping.stdout)
+
+                # 2. Verify info command succeeds without NOPERM error (required for WordPress Redis Object Cache)
+                res_info = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "info"], capture_output=True, text=True)
+                self.assertNotIn("NOPERM", res_info.stdout + res_info.stderr)
+                self.assertTrue("redis_version" in res_info.stdout or "valkey_version" in res_info.stdout or "Server" in res_info.stdout)
+
+                # 3. Verify dangerous/admin commands remain strictly forbidden
+                res_config = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "config", "get", "dir"], capture_output=True, text=True)
+                self.assertIn("NOPERM", res_config.stdout + res_config.stderr)
+
+                res_shutdown = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "shutdown"], capture_output=True, text=True)
+                self.assertIn("NOPERM", res_shutdown.stdout + res_shutdown.stderr)
             
             proc.terminate()
             proc.wait(timeout=2)

@@ -1,0 +1,15 @@
+[Unit]
+Description=LeanStack Background Config Watcher & Syntax Gatekeeper
+After=network.target angie.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ls-gatekeeper
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+Alias=cp-gatekeeper.service

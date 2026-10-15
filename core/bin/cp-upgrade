@@ -2,5 +2,20 @@
 # ==============================================================================
 # LeanStack Upgrade Legacy Compatibility Wrapper (cp-upgrade -> ls-upgrade)
 # ==============================================================================
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 "${SCRIPT_DIR}/ls-upgrade" "$@"
+TARGET="${SCRIPT_DIR}/ls-upgrade"
+if [ ! -f "$TARGET" ] && [ -f "/usr/local/bin/ls-upgrade" ]; then
+    TARGET="/usr/local/bin/ls-upgrade"
+fi
+
+TARGET_REAL="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+CUR_REAL="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+if [ -n "${_LEANSTACK_CPUPGRADE_LOOP:-}" ] || [ "$TARGET_REAL" == "$CUR_REAL" ]; then
+    echo "❌ Error: Circular delegation detected. cp-upgrade and ls-upgrade resolve to the same binary ($CUR_REAL)." >&2
+    exit 1
+fi
+
+export _LEANSTACK_CPUPGRADE_LOOP=1
+exec python3 "$TARGET" "$@"

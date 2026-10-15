@@ -251,11 +251,22 @@ class LeanStackUpgrader:
         if not self.dry_run and not os.path.exists(target_dir):
             os.makedirs(target_dir, exist_ok=True)
 
+        legacy_names = {
+            "cpctl", "cp-upgrade", "cp-gatekeeper", "cp-nginx-linter",
+            "cp-cron-queue", "cp-cf-sync", "cp-watcher", "cp-autoupdate"
+        }
         for b in os.listdir(self.bin_dir):
+            if b in legacy_names or b.startswith("cp-") or b == "cpctl":
+                continue
             src = os.path.join(self.bin_dir, b)
             dest = os.path.join(target_dir, b)
             if os.path.isfile(src) and not b.startswith("."):
                 if not self.dry_run:
+                    if os.path.islink(dest) or os.path.exists(dest):
+                        try:
+                            os.remove(dest)
+                        except Exception:
+                            pass
                     shutil.copy2(src, dest)
                     os.chmod(dest, 0o755)
                     self.log(f"Installed {dest}", Colors.DIM, prefix="  ✔")
@@ -316,11 +327,28 @@ class LeanStackUpgrader:
         # Systemd service unit files and drop-in overrides
         if os.path.exists(self.systemd_dir) and os.path.isdir("/etc/systemd/system"):
             for s in os.listdir(self.systemd_dir):
+                if s == "cp-gatekeeper.service":
+                    continue
                 if s.endswith(".service") or s.endswith(".timer"):
                     src = os.path.join(self.systemd_dir, s)
                     dest = f"/etc/systemd/system/{s}"
                     if not self.dry_run:
+                        if os.path.islink(dest) or os.path.exists(dest):
+                            try:
+                                os.remove(dest)
+                            except Exception:
+                                pass
                         shutil.copy2(src, dest)
+
+            # Ensure cp-gatekeeper.service symlink exists pointing to ls-gatekeeper.service
+            legacy_gk = "/etc/systemd/system/cp-gatekeeper.service"
+            if not self.dry_run:
+                try:
+                    if os.path.islink(legacy_gk) or os.path.exists(legacy_gk):
+                        os.remove(legacy_gk)
+                    os.symlink("ls-gatekeeper.service", legacy_gk)
+                except Exception:
+                    pass
 
             overrides_dir = os.path.join(self.systemd_dir, "overrides")
             if os.path.isdir(overrides_dir):
@@ -333,9 +361,11 @@ class LeanStackUpgrader:
                             for f in os.listdir(s_dropin):
                                 shutil.copy2(os.path.join(s_dropin, f), os.path.join(d_dropin, f))
 
-            if not self.dry_run and shutil.which("systemctl"):
-                subprocess.run(["systemctl", "daemon-reload"], check=False)
-                subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
+            if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl"):
+                subprocess.run(["systemctl", "--no-ask-password", "stop", "ls-watcher.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                subprocess.run(["systemctl", "--no-ask-password", "reset-failed", "ls-watcher.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                subprocess.run(["systemctl", "--no-ask-password", "daemon-reload"], check=False)
+                subprocess.run(["systemctl", "--no-ask-password", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
 
         # Ensure default fallback SSL certificate exists for Angie
         ssl_dir = "/etc/angie/ssl"
@@ -687,7 +717,7 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                             acl_changed = True
 
                         if valkey_pass:
-                            user_rule = f"user {user} on >{valkey_pass} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb\n"
+                            user_rule = f"user {user} on >{valkey_pass} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info\n"
                             user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
                             if re.search(user_pattern, acl_content, re.MULTILINE):
                                 acl_content_new = re.sub(user_pattern, user_rule.strip(), acl_content, flags=re.MULTILINE)
@@ -703,6 +733,15 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                             acl_content = acl_content.replace(f"~{user}:*", "~*")
                             acl_changed = True
 
+                        user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
+                        m_u = re.search(user_pattern, acl_content, re.MULTILINE)
+                        if m_u:
+                            rule_str = m_u.group(0).strip()
+                            if "-@admin" in rule_str and (rule_str.rfind("+info") < rule_str.rfind("-@admin")):
+                                rule_str_fixed = rule_str.replace(" +info", "") + " +info"
+                                acl_content = re.sub(user_pattern, rule_str_fixed, acl_content, flags=re.MULTILINE)
+                                acl_changed = True
+
                         if acl_changed:
                             with open(acl_file, "w") as f_acl:
                                 f_acl.write(acl_content)
@@ -714,9 +753,19 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                                 os.chmod(acl_file, 0o640)
                             except Exception:
                                 pass
-                            cli_cmd = shutil.which("valkey-cli") or shutil.which("redis-cli") or ("/usr/local/bin/valkey-cli" if os.path.exists("/usr/local/bin/valkey-cli") else ("/usr/bin/valkey-cli" if os.path.exists("/usr/bin/valkey-cli") else None))
+                            sock_candidates = ["/run/valkey/valkey.sock", "/run/redis/redis-server.sock", "/var/run/valkey/valkey.sock"]
+                            valkey_sock = next((s for s in sock_candidates if os.path.exists(s)), "/run/valkey/valkey.sock")
+                            cli_candidates = [
+                                shutil.which("valkey-cli"),
+                                shutil.which("redis-cli"),
+                                "/usr/local/bin/valkey-cli" if os.path.exists("/usr/local/bin/valkey-cli") else None,
+                                "/usr/bin/valkey-cli" if os.path.exists("/usr/bin/valkey-cli") else None,
+                                "/usr/local/bin/redis-cli" if os.path.exists("/usr/local/bin/redis-cli") else None,
+                                "/usr/bin/redis-cli" if os.path.exists("/usr/bin/redis-cli") else None,
+                            ]
+                            cli_cmd = next((c for c in cli_candidates if c), None)
                             if cli_cmd:
-                                subprocess.run([cli_cmd, "-s", "/run/valkey/valkey.sock", "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                                subprocess.run([cli_cmd, "-s", valkey_sock, "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                             self.log(f"Harmonized Valkey ACL permissions (~*) for {user}", Colors.GREEN, prefix="  ✔")
                     except Exception as e:
                         self.log(f"Warning: Valkey ACL update for {user}: {e}", Colors.YELLOW, prefix="  ⚠️")
@@ -759,14 +808,15 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         wp_bin = shutil.which("wp") or ("/usr/local/bin/wp" if os.path.exists("/usr/local/bin/wp") else ("/usr/bin/wp" if os.path.exists("/usr/bin/wp") else None))
                         php_ver_str = s["php_version"] if "php_version" in s.keys() else "8.5"
                         php_bin = f"/usr/bin/php{php_ver_str}" if os.path.exists(f"/usr/bin/php{php_ver_str}") else (shutil.which("php") or "php")
-                        if wp_bin:
-                            cmd = ["sudo", "-u", user, php_bin, wp_bin, "redis", "enable", "--force", f"--path={site_path}"]
+                        if wp_bin and os.path.isdir(site_path) and os.path.exists(os.path.join(site_path, "wp-load.php")):
+                            cmd = ["sudo", "-u", user, php_bin, wp_bin, "redis", "enable", "--force", f"--path={site_path}", "--skip-plugins", "--skip-themes"]
                             if hasattr(os, "geteuid") and os.geteuid() != 0:
-                                cmd = [php_bin, wp_bin, "redis", "enable", "--force", f"--path={site_path}"]
+                                cmd = [php_bin, wp_bin, "redis", "enable", "--force", f"--path={site_path}", "--skip-plugins", "--skip-themes"]
                             subprocess.run(
                                 cmd,
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
+                                timeout=5,
                                 check=False
                             )
                     except Exception as e:
@@ -777,6 +827,40 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
         conn.close()
         self.log(f"Reconciled {synced_count} registered tenant sites.", Colors.GREEN, prefix="  ✔")
 
+        # Global audit of /etc/valkey/users.acl to ensure all existing tenant users have +info
+        acl_file = "/etc/valkey/users.acl"
+        if os.path.isfile(acl_file) and not self.dry_run:
+            try:
+                with open(acl_file, "r") as f_acl:
+                    global_acl = f_acl.read()
+                g_changed = False
+                g_lines = []
+                for line in global_acl.splitlines():
+                    if line.startswith("user ") and not line.startswith("user default "):
+                        if "-@admin" in line and (line.rfind("+info") < line.rfind("-@admin")):
+                            line = line.replace(" +info", "").strip() + " +info"
+                            g_changed = True
+                    g_lines.append(line)
+                if g_changed:
+                    with open(acl_file, "w") as f_acl:
+                        f_acl.write("\n".join(g_lines) + "\n")
+                    sock_candidates = ["/run/valkey/valkey.sock", "/run/redis/redis-server.sock", "/var/run/valkey/valkey.sock"]
+                    valkey_sock = next((s for s in sock_candidates if os.path.exists(s)), "/run/valkey/valkey.sock")
+                    cli_candidates = [
+                        shutil.which("valkey-cli"),
+                        shutil.which("redis-cli"),
+                        "/usr/local/bin/valkey-cli" if os.path.exists("/usr/local/bin/valkey-cli") else None,
+                        "/usr/bin/valkey-cli" if os.path.exists("/usr/bin/valkey-cli") else None,
+                        "/usr/local/bin/redis-cli" if os.path.exists("/usr/local/bin/redis-cli") else None,
+                        "/usr/bin/redis-cli" if os.path.exists("/usr/bin/redis-cli") else None,
+                    ]
+                    cli_cmd = next((c for c in cli_candidates if c), None)
+                    if cli_cmd:
+                        subprocess.run([cli_cmd, "-s", valkey_sock, "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    self.log("Globally ensured +info permission in /etc/valkey/users.acl", Colors.GREEN, prefix="  ✔")
+            except Exception as e:
+                self.log(f"Notice: Valkey ACL global audit: {e}", Colors.DIM, prefix="  ℹ")
+
         if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0:
             try:
                 self.sync_binaries()
@@ -784,15 +868,15 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
             except Exception:
                 pass
 
-        if not self.dry_run and shutil.which("systemctl") and os.path.isdir("/run/systemd/system"):
+        if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl") and os.path.isdir("/run/systemd/system"):
             if php_reloaded_needed:
                 for v_str in ["8.5", "8.4", "8.3", "8.2", "8.1"]:
                     svc = f"php{v_str}-fpm"
-                    if subprocess.run(["systemctl", "is-active", "--quiet", svc], check=False).returncode == 0:
-                        subprocess.run(["systemctl", "reload", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:
+                        subprocess.run(["systemctl", "--no-ask-password", "reload", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 self.log("PHP-FPM reloaded with updated socket permissions.", Colors.GREEN, prefix="  ✔")
-            subprocess.run(["systemctl", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(["systemctl", "--no-ask-password", "daemon-reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.run(["systemctl", "--no-ask-password", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             self.log("Background Cron Queue, Autonomous Watcher & Auto-Update Timers active.", Colors.GREEN, prefix="  ✔")
 
         return synced_count
@@ -807,14 +891,14 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                 self.log("Angie configuration test failed after upgrade!", Colors.RED, prefix="❌")
                 self.log(res.stderr.strip(), Colors.DIM)
                 return False
-            if not self.dry_run:
-                subprocess.run(["systemctl", "reload", "angie"], check=False)
+            if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0:
+                subprocess.run(["systemctl", "--no-ask-password", "reload", "angie"], check=False)
                 self.log("Angie reloaded with zero downtime.", Colors.GREEN, prefix="  ✔")
 
-        if not self.dry_run and shutil.which("systemctl"):
-            subprocess.run(["systemctl", "restart", "cp-gatekeeper.service"], check=False)
+        if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl"):
+            subprocess.run(["systemctl", "--no-ask-password", "restart", "ls-gatekeeper.service"], check=False)
             self.log("Syntax Gatekeeper restarted.", Colors.GREEN, prefix="  ✔")
-            subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
+            subprocess.run(["systemctl", "--no-ask-password", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer", "ls-gatekeeper.service"], check=False)
             self.log("Background Cron Queue, Autonomous Watcher & Auto-Update Timers active.", Colors.GREEN, prefix="  ✔")
 
         return True

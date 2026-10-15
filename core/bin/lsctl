@@ -8,10 +8,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Delegation to installed repo payload if running from stale /usr/local/bin copy
-if [ -f "/opt/leanstack/core/bin/lsctl" ]; then
+if [ -z "${_LEANSTACK_LSCTL_DELEGATED:-}" ] && [ -f "/opt/leanstack/core/bin/lsctl" ]; then
     OPT_REAL="$(readlink -f "/opt/leanstack/core/bin/lsctl" 2>/dev/null || echo "/opt/leanstack/core/bin/lsctl")"
     CUR_REAL="$(readlink -f "$0" 2>/dev/null || echo "$0")"
     if [ "$OPT_REAL" != "$CUR_REAL" ] && [ -x "$OPT_REAL" ]; then
+        export _LEANSTACK_LSCTL_DELEGATED=1
         exec "$OPT_REAL" "$@"
     fi
 fi
@@ -1201,7 +1202,7 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
                 sed -i '1s/^/user default on nopass ~* &* +@all\n/' "$ACL_FILE"
             fi
             sed -i "/user ${USER_NAME} /d" "$ACL_FILE" 2>/dev/null || true
-            echo "user ${USER_NAME} on >${VALKEY_PASS} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb" >> "$ACL_FILE"
+            echo "user ${USER_NAME} on >${VALKEY_PASS} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info" >> "$ACL_FILE"
             chown valkey:valkey "$ACL_FILE" 2>/dev/null || true
             chmod 640 "$ACL_FILE" 2>/dev/null || true
             if command -v valkey-cli &>/dev/null; then
@@ -1497,6 +1498,9 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
             echo "  [PASS] Valkey ACL active (${acl_tenants} user(s) configured in /etc/valkey/users.acl)"
             if ! grep -q "^user default " /etc/valkey/users.acl 2>/dev/null; then
                 echo "  [WARN] User default not declared in /etc/valkey/users.acl (run: sudo lsctl sync-tenants)"
+            fi
+            if grep -E "^user [^ ]+ on .* -@admin" /etc/valkey/users.acl 2>/dev/null | grep -vq "\+info"; then
+                echo "  [WARN] Valkey ACL tenant user(s) missing +info permission required by WordPress Redis Object Cache (run: sudo lsctl sync-tenants)"
             fi
         fi
         if [ -f "$DB_FILE" ]; then

@@ -322,12 +322,43 @@ class LeanStackInstaller:
             time.sleep(0.3)
             return
         # Install all control plane binaries into /usr/local/bin
+        legacy_names = {
+            "cpctl", "cp-upgrade", "cp-gatekeeper", "cp-nginx-linter",
+            "cp-cron-queue", "cp-cf-sync", "cp-watcher", "cp-autoupdate"
+        }
         bin_dir = os.path.join(self.base_dir, "core", "bin")
         if os.path.exists(bin_dir):
             for b in os.listdir(bin_dir):
+                if b in legacy_names or b.startswith("cp-") or b == "cpctl":
+                    continue
                 src = os.path.join(bin_dir, b)
                 if os.path.isfile(src):
-                    subprocess.run(["install", "-m", "0755", src, f"/usr/local/bin/{b}"], check=True)
+                    dest = f"/usr/local/bin/{b}"
+                    if os.path.islink(dest) or os.path.exists(dest):
+                        try:
+                            os.remove(dest)
+                        except Exception:
+                            pass
+                    subprocess.run(["install", "-m", "0755", src, dest], check=True)
+
+            legacy_links = [
+                ("cpctl", "lsctl"),
+                ("cp-upgrade", "ls-upgrade"),
+                ("cp-gatekeeper", "ls-gatekeeper"),
+                ("cp-nginx-linter", "ls-nginx-linter"),
+                ("cp-cron-queue", "ls-cron-queue"),
+                ("cp-cf-sync", "ls-cf-sync"),
+                ("cp-watcher", "ls-watcher"),
+                ("cp-autoupdate", "ls-autoupdate")
+            ]
+            for leg_name, target_name in legacy_links:
+                leg_path = f"/usr/local/bin/{leg_name}"
+                try:
+                    if os.path.islink(leg_path) or os.path.exists(leg_path):
+                        os.remove(leg_path)
+                    os.symlink(target_name, leg_path)
+                except Exception:
+                    pass
 
         # Populate /etc/lsctl/templates and baseline profiles
         os.makedirs("/etc/lsctl/templates", exist_ok=True)

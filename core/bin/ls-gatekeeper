@@ -88,6 +88,24 @@ process_tenant_config() {
     mkdir -p "$prod_dir" 2>/dev/null || true
     local prod_file="${prod_dir}/${filename}"
 
+    if [ ! -f "$filepath" ]; then
+        if [ -f "$prod_file" ]; then
+            rm -f "$prod_file"
+            validate_and_reload_angie
+        fi
+        cat > "$status_file" << EOF
+{
+  "status": "removed",
+  "file": "${filename}",
+  "message": "Configuration removed.",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+        chmod 644 "$status_file" 2>/dev/null || true
+        chown "${tenant_user}:www-data" "$status_file" 2>/dev/null || true
+        return 0
+    fi
+
     # 1. Run Security Linter
     if [ -x "$LINTER_BIN" ]; then
         local lint_out
@@ -209,31 +227,51 @@ if [ "${1:-}" == "--process" ] && [ -n "${2:-}" ]; then
     exit $?
 fi
 
+# Concurrency Protection via Flocking Mutex Lock
+LOCK_FILE="/run/ls-gatekeeper.lock"
+if ! touch "$LOCK_FILE" 2>/dev/null; then
+    LOCK_FILE="/tmp/ls-gatekeeper.lock"
+    touch "$LOCK_FILE" 2>/dev/null || true
+fi
+chmod 666 "$LOCK_FILE" 2>/dev/null || true
+exec 202>"$LOCK_FILE"
+if ! flock -n 202; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack gatekeeper process is currently running. Skipping."
+    exit 0
+fi
+
 log "Starting LeanStack Syntax Gatekeeper..."
 
-# Discover watch directories
-WATCH_DIRS=""
-[ -d "/etc/angie/http.d" ] && WATCH_DIRS="$WATCH_DIRS /etc/angie/http.d"
-for user_nginx in /home/*/nginx; do
-    [ -d "$user_nginx" ] && WATCH_DIRS="$WATCH_DIRS $user_nginx"
-done
-
-if command -v inotifywait &>/dev/null && [ -n "$WATCH_DIRS" ]; then
-    log "Using inotifywait event listener on: $WATCH_DIRS"
-    inotifywait -m -r -e close_write,moved_to,delete $WATCH_DIRS 2>/dev/null | while read -r directory events filename; do
-        log "Configuration file event: $events on ${directory}${filename}"
-        if [[ "$directory" =~ /home/.*/nginx/ ]]; then
-            sleep 1.5  # Debounce burst writes
-            process_tenant_config "${directory}${filename}"
-        else
-            validate_and_reload_angie
-            validate_and_reload_php
-        fi
+PREV_WATCH_DIRS=""
+while true; do
+    # Dynamically discover watch directories on each cycle
+    WATCH_DIRS=""
+    [ -d "/etc/angie/http.d" ] && WATCH_DIRS="$WATCH_DIRS /etc/angie/http.d"
+    for user_nginx in /home/*/nginx; do
+        [ -d "$user_nginx" ] && WATCH_DIRS="$WATCH_DIRS $user_nginx"
     done
-else
-    log "Running periodic syntax and tenant audit loop..."
-    while true; do
+
+    if [ -n "$WATCH_DIRS" ] && command -v inotifywait &>/dev/null; then
+        if [ "$WATCH_DIRS" != "$PREV_WATCH_DIRS" ]; then
+            log "Using inotifywait event listener on: $WATCH_DIRS"
+            PREV_WATCH_DIRS="$WATCH_DIRS"
+        fi
+        # inotifywait -t 60 times out every 60s so new tenant directories can be discovered
+        inotifywait -t 60 -m -r -e close_write,moved_to,delete $WATCH_DIRS 2>/dev/null | while read -r directory events filename; do
+            [ -z "$filename" ] && continue
+            log "Configuration file event: $events on ${directory}${filename}"
+            if [[ "$directory" =~ /home/.*/nginx/ ]]; then
+                sleep 1.5  # Debounce burst writes
+                process_tenant_config "${directory}${filename}"
+            else
+                validate_and_reload_angie
+                validate_and_reload_php
+            fi
+        done || true
+    else
+        log "Running periodic syntax and tenant audit loop..."
         validate_and_reload_angie
         sleep 30
-    done
-fi
+    fi
+    sleep 2
+done

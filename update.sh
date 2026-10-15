@@ -61,30 +61,57 @@ if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/.git" ]; then
     git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
 fi
 
-# 2. Deploy/Sync Control Plane Binaries & Templates directly to ensure freshest executables
+# 2. Terminate any hung or looping background processes from previous corrupted installations
+if [ "$DRY_RUN" -eq 0 ]; then
+    echo -e "${CYAN}🧹 Clearing any hung watcher or gatekeeper processes...${NC}"
+    if command -v systemctl &>/dev/null && [ -d "/run/systemd/system" ]; then
+        systemctl stop ls-watcher.service cp-gatekeeper.service ls-gatekeeper.service 2>/dev/null || true
+        systemctl reset-failed ls-watcher.service 2>/dev/null || true
+    fi
+    # Terminate any hung looping processes running stale recursive wrappers
+    pkill -9 -f "(/usr/local/bin|/opt/leanstack/core/bin)/(ls-watcher|cp-watcher|ls-gatekeeper|cp-gatekeeper|lsctl|cpctl)" 2>/dev/null || true
+fi
+
+# 3. Deploy/Sync Control Plane Binaries & Templates directly to ensure freshest executables
 if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/core/bin" ]; then
     mkdir -p /usr/local/bin /etc/lsctl/templates
     for b in "${INSTALL_DIR}/core/bin/"*; do
         if [ -f "$b" ]; then
             b_name=$(basename "$b")
+            # Do not copy legacy wrappers as files to /usr/local/bin; they must strictly be symlinks
+            case "$b_name" in
+                cpctl|cp-*) continue ;;
+            esac
+            rm -f "/usr/local/bin/${b_name}"
             cp -f "$b" "/usr/local/bin/${b_name}"
             chmod 0755 "/usr/local/bin/${b_name}"
         fi
     done
-    # Legacy compatibility links
-    ln -sf lsctl /usr/local/bin/cpctl 2>/dev/null || true
-    ln -sf ls-upgrade /usr/local/bin/cp-upgrade 2>/dev/null || true
-    ln -sf ls-gatekeeper /usr/local/bin/cp-gatekeeper 2>/dev/null || true
-    ln -sf ls-cron-queue /usr/local/bin/cp-cron-queue 2>/dev/null || true
-    ln -sf ls-cf-sync /usr/local/bin/cp-cf-sync 2>/dev/null || true
-    ln -sf ls-watcher /usr/local/bin/cp-watcher 2>/dev/null || true
-    ln -sf ls-autoupdate /usr/local/bin/cp-autoupdate 2>/dev/null || true
+    # Legacy compatibility links: safely unlink before creating fresh symlinks
+    for leg in cpctl:lsctl cp-upgrade:ls-upgrade cp-gatekeeper:ls-gatekeeper \
+               cp-nginx-linter:ls-nginx-linter cp-cron-queue:ls-cron-queue \
+               cp-cf-sync:ls-cf-sync cp-watcher:ls-watcher cp-autoupdate:ls-autoupdate; do
+        leg_name="${leg%%:*}"
+        target_name="${leg##*:}"
+        rm -f "/usr/local/bin/${leg_name}"
+        ln -sf "$target_name" "/usr/local/bin/${leg_name}" 2>/dev/null || true
+    done
 
     if [ -d "${INSTALL_DIR}/core/templates" ]; then
         cp -a "${INSTALL_DIR}/core/templates/"* /etc/lsctl/templates/ 2>/dev/null || true
     fi
     if [ -d "${INSTALL_DIR}/systemd" ] && [ -d "/etc/systemd/system" ]; then
-        cp -f "${INSTALL_DIR}/systemd/"*.service "${INSTALL_DIR}/systemd/"*.timer /etc/systemd/system/ 2>/dev/null || true
+        for u in "${INSTALL_DIR}/systemd/"*.service "${INSTALL_DIR}/systemd/"*.timer; do
+            [ -f "$u" ] || continue
+            u_name=$(basename "$u")
+            if [ "$u_name" == "cp-gatekeeper.service" ]; then
+                continue
+            fi
+            rm -f "/etc/systemd/system/${u_name}"
+            cp -f "$u" "/etc/systemd/system/${u_name}"
+        done
+        rm -f /etc/systemd/system/cp-gatekeeper.service
+        ln -sf ls-gatekeeper.service /etc/systemd/system/cp-gatekeeper.service 2>/dev/null || true
         systemctl daemon-reload 2>/dev/null || true
     fi
 fi

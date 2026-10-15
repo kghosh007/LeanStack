@@ -224,12 +224,14 @@ check_php_fpm_pools() {
 
             # Ensure we only restart/reload each PHP service once per watcher run to prevent restart loops
             local already_reloaded=0
-            for r_svc in "${reloaded_services[@]}"; do
-                if [ "$r_svc" == "$svc_name" ]; then
-                    already_reloaded=1
-                    break
-                fi
-            done
+            if [ ${#reloaded_services[@]} -gt 0 ]; then
+                for r_svc in "${reloaded_services[@]}"; do
+                    if [ "$r_svc" == "$svc_name" ]; then
+                        already_reloaded=1
+                        break
+                    fi
+                done
+            fi
 
             if [ "$already_reloaded" -eq 0 ]; then
                 reloaded_services+=("$svc_name")

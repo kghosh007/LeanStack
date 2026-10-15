@@ -1,3 +1,18 @@
 #!/usr/bin/env bash
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 "${SCRIPT_DIR}/ls-nginx-linter" "$@"
+TARGET="${SCRIPT_DIR}/ls-nginx-linter"
+if [ ! -x "$TARGET" ] && [ -x "/usr/local/bin/ls-nginx-linter" ]; then
+    TARGET="/usr/local/bin/ls-nginx-linter"
+fi
+
+TARGET_REAL="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+CUR_REAL="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+if [ -n "${_LEANSTACK_CPLINTER_LOOP:-}" ] || [ "$TARGET_REAL" == "$CUR_REAL" ]; then
+    echo "❌ Error: Circular delegation detected. cp-nginx-linter and ls-nginx-linter resolve to the same binary ($CUR_REAL)." >&2
+    exit 1
+fi
+
+export _LEANSTACK_CPLINTER_LOOP=1
+exec python3 "$TARGET" "$@"

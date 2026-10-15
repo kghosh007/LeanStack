@@ -289,11 +289,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 mkdir -p /usr/local/bin /etc/systemd/system
-for b in ls-watcher cp-watcher ls-autoupdate cp-autoupdate; do
+for b in ls-watcher ls-autoupdate; do
     if [ -f "${BASE_DIR}/core/bin/${b}" ]; then
+        rm -f "/usr/local/bin/${b}"
         cp -f "${BASE_DIR}/core/bin/${b}" "/usr/local/bin/${b}"
         chmod 755 "/usr/local/bin/${b}"
     fi
+done
+for leg in cp-watcher:ls-watcher cp-autoupdate:ls-autoupdate; do
+    leg_name="${leg%%:*}"
+    target_name="${leg##*:}"
+    rm -f "/usr/local/bin/${leg_name}"
+    ln -sf "$target_name" "/usr/local/bin/${leg_name}" 2>/dev/null || true
 done
 
 for u in ls-watcher.service ls-watcher.timer ls-autoupdate.service ls-autoupdate.timer; do

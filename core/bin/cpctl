@@ -2,6 +2,24 @@
 # ==============================================================================
 # LeanStack Control Plane Legacy Compatibility Wrapper (cpctl -> lsctl)
 # ==============================================================================
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CLI_NAME="cpctl"
-exec "${SCRIPT_DIR}/lsctl" "$@"
+
+TARGET="${SCRIPT_DIR}/lsctl"
+if [ ! -x "$TARGET" ] && [ -x "/usr/local/bin/lsctl" ]; then
+    TARGET="/usr/local/bin/lsctl"
+fi
+
+TARGET_REAL="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+CUR_REAL="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+if [ -n "${_LEANSTACK_CPCTL_LOOP:-}" ] || [ "$TARGET_REAL" == "$CUR_REAL" ]; then
+    echo "❌ Error: Circular delegation detected. cpctl and lsctl resolve to the same binary ($CUR_REAL)." >&2
+    echo "   Please re-run LeanStack update or restore /usr/local/bin symlinks." >&2
+    exit 1
+fi
+
+export _LEANSTACK_CPCTL_LOOP=1
+exec "$TARGET" "$@"

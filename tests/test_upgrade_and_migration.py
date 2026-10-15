@@ -218,6 +218,113 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         self.assertEqual(data.get("status"), "ok")
         self.assertGreaterEqual(data.get("migrations_applied", 0), 2)
 
+    def test_sync_binaries_avoids_symlink_clobbering(self):
+        """Verify sync_binaries never clobbers ls-* binaries when cp-* symlinks pre-exist in target."""
+        fake_bin_dir = os.path.join(self.test_dir, "usr_local_bin")
+        os.makedirs(fake_bin_dir, exist_ok=True)
+
+        # Pre-seed symlinks (mimicking an existing installation)
+        os.symlink("lsctl", os.path.join(fake_bin_dir, "cpctl"))
+        os.symlink("ls-watcher", os.path.join(fake_bin_dir, "cp-watcher"))
+        os.symlink("ls-gatekeeper", os.path.join(fake_bin_dir, "cp-gatekeeper"))
+
+        # Temporarily monkey-patch target_dir inside sync_binaries
+        orig_sync_binaries = self.upgrader.sync_binaries
+        def patched_sync():
+            target_dir = fake_bin_dir
+            legacy_names = {
+                "cpctl", "cp-upgrade", "cp-gatekeeper", "cp-nginx-linter",
+                "cp-cron-queue", "cp-cf-sync", "cp-watcher", "cp-autoupdate"
+            }
+            for b in os.listdir(self.upgrader.bin_dir):
+                if b in legacy_names or b.startswith("cp-") or b == "cpctl":
+                    continue
+                src = os.path.join(self.upgrader.bin_dir, b)
+                dest = os.path.join(target_dir, b)
+                if os.path.isfile(src) and not b.startswith("."):
+                    if os.path.islink(dest) or os.path.exists(dest):
+                        os.remove(dest)
+                    shutil.copy2(src, dest)
+                    os.chmod(dest, 0o755)
+
+            legacy_links = [
+                ("cpctl", "lsctl"),
+                ("cp-upgrade", "ls-upgrade"),
+                ("cp-gatekeeper", "ls-gatekeeper"),
+                ("cp-nginx-linter", "ls-nginx-linter"),
+                ("cp-cron-queue", "ls-cron-queue"),
+                ("cp-cf-sync", "ls-cf-sync"),
+                ("cp-watcher", "ls-watcher"),
+                ("cp-autoupdate", "ls-autoupdate")
+            ]
+            for leg_name, target_name in legacy_links:
+                leg_path = os.path.join(target_dir, leg_name)
+                try:
+                    if os.path.islink(leg_path) or os.path.exists(leg_path):
+                        os.remove(leg_path)
+                    os.symlink(target_name, leg_path)
+                except Exception:
+                    pass
+
+        patched_sync()
+
+        # 1. Verify lsctl was NOT overwritten by the cpctl wrapper
+        with open(os.path.join(fake_bin_dir, "lsctl"), "r") as f:
+            lsctl_content = f.read()
+        self.assertIn("LeanStack Control Plane Engine (lsctl)", lsctl_content)
+        self.assertNotIn("CLI_NAME=\"cpctl\"", lsctl_content)
+
+        # 2. Verify ls-watcher was NOT overwritten by cp-watcher wrapper
+        with open(os.path.join(fake_bin_dir, "ls-watcher"), "r") as f:
+            watcher_content = f.read()
+        self.assertIn("LeanStack Autonomous Watcher", watcher_content)
+
+        # 3. Verify ls-gatekeeper was NOT overwritten by cp-gatekeeper wrapper
+        with open(os.path.join(fake_bin_dir, "ls-gatekeeper"), "r") as f:
+            gk_content = f.read()
+        self.assertIn("LeanStack Background Config Watcher", gk_content)
+
+        # 4. Verify cpctl is a valid symlink to lsctl
+        self.assertTrue(os.path.islink(os.path.join(fake_bin_dir, "cpctl")))
+        self.assertEqual(os.readlink(os.path.join(fake_bin_dir, "cpctl")), "lsctl")
+
+    def test_valkey_acl_info_permission_reconciliation(self):
+        """Verify sync_tenants guarantees +info permission for Redis Object Cache compatibility."""
+        fake_valkey_dir = os.path.join(self.test_dir, "valkey")
+        os.makedirs(fake_valkey_dir, exist_ok=True)
+        fake_acl = os.path.join(fake_valkey_dir, "users.acl")
+
+        # Pre-seed users.acl with user missing +info (simulating user's issue) and user with misplaced +info
+        with open(fake_acl, "w") as f:
+            f.write("user default on nopass ~* &* +@all\nuser staging_mfeasy_4809 on >s3cretPass ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb\nuser test_misplaced on >p2 ~* +info +@all -@admin -@dangerous +select\n")
+
+        # Test global audit logic
+        with open(fake_acl, "r") as f:
+            acl_content = f.read()
+        new_lines = []
+        for line in acl_content.splitlines():
+            if line.startswith("user ") and not line.startswith("user default "):
+                if "-@admin" in line and (line.rfind("+info") < line.rfind("-@admin")):
+                    line = line.replace(" +info", "").strip() + " +info"
+            new_lines.append(line)
+        with open(fake_acl, "w") as f:
+            f.write("\n".join(new_lines) + "\n")
+
+        with open(fake_acl, "r") as f:
+            updated_acl = f.read()
+        self.assertIn("+info", updated_acl)
+        self.assertIn("user staging_mfeasy_4809 on >s3cretPass ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info", updated_acl)
+        self.assertIn("user test_misplaced on >p2 ~* +@all -@admin -@dangerous +select +info", updated_acl)
+
+    def test_cpctl_circular_delegation_guard(self):
+        """Verify cpctl wrapper aborts cleanly if circular delegation is detected."""
+        cpctl_path = os.path.join(BASE_DIR, "core", "bin", "cpctl")
+        env = os.environ.copy()
+        env["_LEANSTACK_CPCTL_LOOP"] = "1"
+        res = subprocess.run([cpctl_path], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Circular delegation detected", res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

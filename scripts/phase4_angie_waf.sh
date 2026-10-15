@@ -228,10 +228,37 @@ http {
     # 6. Include Per-Site Dedicated FastCGI Cache Zones
     include /etc/angie/cache-zones/*.conf;
 
+    # Default Catch-All Server (Enforces port 443 / QUIC reuseport and drops unmatched SNI)
+    server {
+        listen 80 default_server;
+        listen [::]:80 default_server;
+        listen 443 ssl default_server reuseport;
+        listen [::]:443 ssl default_server reuseport;
+        listen 443 quic default_server reuseport;
+        listen [::]:443 quic default_server reuseport;
+        server_name _;
+
+        ssl_certificate /etc/angie/ssl/default.crt;
+        ssl_certificate_key /etc/angie/ssl/default.key;
+
+        return 444;
+    }
+
     # Virtual Hosts
     include /etc/angie/http.d/*.conf;
 }
 EOF
+
+# Generate Self-Signed Default / Fallback SSL Certificate
+mkdir -p /etc/angie/ssl
+if [ ! -f /etc/angie/ssl/default.crt ] || [ ! -f /etc/angie/ssl/default.key ]; then
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /etc/angie/ssl/default.key \
+        -out /etc/angie/ssl/default.crt \
+        -subj "/CN=leanstack-fallback/O=LeanStack/C=US" 2>/dev/null || true
+    chmod 600 /etc/angie/ssl/default.key 2>/dev/null || true
+    chmod 644 /etc/angie/ssl/default.crt 2>/dev/null || true
+fi
 
 mkdir -p /etc/angie/cache-zones /var/cache/angie/sites
 

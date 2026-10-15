@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 "
 }
 
+ensure_ssl_fallback() {
+    if [ ! -f /etc/angie/ssl/default.crt ] || [ ! -f /etc/angie/ssl/default.key ]; then
+        mkdir -p /etc/angie/ssl
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout /etc/angie/ssl/default.key \
+            -out /etc/angie/ssl/default.crt \
+            -subj "/CN=leanstack-fallback/O=LeanStack/C=US" 2>/dev/null || true
+        chmod 600 /etc/angie/ssl/default.key 2>/dev/null || true
+        chmod 644 /etc/angie/ssl/default.crt 2>/dev/null || true
+    fi
+}
+
 COMMAND="${1:-}"
 
 show_help() {
@@ -899,6 +911,8 @@ PY
                 valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
             fi
             userdel -r "$USER_NAME" 2>/dev/null || rm -rf "/home/${USER_NAME}"
+            sed -i "/ ${DOMAIN}$/d" /etc/hosts 2>/dev/null || true
+            angie -t &>/dev/null && systemctl reload angie 2>/dev/null || true
             exit 1
         }
         trap cleanup_on_error ERR
@@ -1079,7 +1093,7 @@ EOF
         cp "${TENANT_NGINX}/security-headers.conf" "${PROD_CUSTOM}/security-headers.conf"
 
         # Scaffold Per-Site Dedicated FastCGI Cache Directory & Angie Zone
-        ZONE_KEY=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '_')
+        ZONE_KEY=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
         SITE_CACHE_DIR="/var/cache/angie/sites/${DOMAIN}"
         mkdir -p "$SITE_CACHE_DIR" /etc/angie/cache-zones
         chown -R "${USER_NAME}:www-data" "$SITE_CACHE_DIR"
@@ -1127,6 +1141,7 @@ EOF
         fi
 
         # Angie Virtual Host Generation
+        ensure_ssl_fallback
         VHOST_FILE="/etc/angie/http.d/${DOMAIN}.conf"
         cp "${TEMPLATE_DIR}/vhost.conf.tpl" "$VHOST_FILE"
         sed -i "s|{{DOMAIN}}|${SERVER_NAMES}|g" "$VHOST_FILE"

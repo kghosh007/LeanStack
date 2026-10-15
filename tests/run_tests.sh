@@ -53,7 +53,8 @@ run_pillar 3 "Hardware-Aware Auto-Tuning" "
 
 # Pillar 4: Web & Caching Tier (Angie, HTTP/3, Valkey Unix Socket, FastCGI & SSI)
 run_pillar 4 "Web & Caching Tier" "
-    grep -q 'quic reuseport' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
+    grep -q 'listen 443 quic;' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
+    grep -q 'quic default_server reuseport' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
     grep -q 'unixsocket /run/valkey/valkey.sock' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
     grep -q 'port 0' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
     python3 '${BASE_DIR}/tests/test_cache_invalidation.py'

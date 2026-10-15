@@ -3,6 +3,19 @@
 # Angie Web Server • HTTP/3 (QUIC) • Native ACME • 8G WAF • Hardened Tenant
 # ==============================================================================
 
+# Native C-based Angie ACME Client
+acme_client acme_{{ZONE_KEY}} https://acme-v02.api.letsencrypt.org/directory challenge=http;
+
+# Fallback to default self-signed SSL cert while ACME certificate is pending
+map $acme_cert_acme_{{ZONE_KEY}} $ssl_cert_{{ZONE_KEY}} {
+    "" /etc/angie/ssl/default.crt;
+    default $acme_cert_acme_{{ZONE_KEY}};
+}
+map $acme_cert_key_acme_{{ZONE_KEY}} $ssl_key_{{ZONE_KEY}} {
+    "" /etc/angie/ssl/default.key;
+    default $acme_cert_key_acme_{{ZONE_KEY}};
+}
+
 # HTTP Port 80 -> HTTPS Port 443 Permanent Redirect
 server {
     listen 80;
@@ -10,10 +23,7 @@ server {
     server_name {{DOMAIN}};
     root {{WEB_ROOT}};
 
-    # Let's Encrypt ACME Challenge
-    location /.well-known/acme-challenge/ {
-        root /var/lib/angie/acme;
-    }
+    acme acme_{{ZONE_KEY}};
 
     location / {
         return 301 https://$host$request_uri;
@@ -24,8 +34,8 @@ server {
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
-    listen 443 quic reuseport;
-    listen [::]:443 quic reuseport;
+    listen 443 quic;
+    listen [::]:443 quic;
 
     server_name {{DOMAIN}};
     root {{WEB_ROOT}};
@@ -36,10 +46,10 @@ server {
     access_log {{LOG_DIR}}/access.log combined buffer=32k flush=1m;
     error_log {{LOG_DIR}}/error.log warn;
 
-    # Native C-based Angie ACME Let's Encrypt Client
-    acme_certificate /var/lib/angie/acme/{{PRIMARY_DOMAIN}}/cert.pem
-                     /var/lib/angie/acme/{{PRIMARY_DOMAIN}}/key.pem
-                     acme;
+    # Native Angie ACME Let's Encrypt Client with Seamless Fallback
+    acme acme_{{ZONE_KEY}};
+    ssl_certificate     $ssl_cert_{{ZONE_KEY}};
+    ssl_certificate_key $ssl_key_{{ZONE_KEY}};
 
     # SSL Security Headers (Modular Snippet prevents Nginx inheritance wipeout)
     include /etc/angie/snippets/ssl-headers.conf;

@@ -321,6 +321,25 @@ class LeanStackUpgrader:
             if not self.dry_run and shutil.which("systemctl"):
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
 
+        # Ensure default fallback SSL certificate exists for Angie
+        ssl_dir = "/etc/angie/ssl"
+        if os.path.isdir("/etc/angie") and not (os.path.exists(f"{ssl_dir}/default.crt") and os.path.exists(f"{ssl_dir}/default.key")):
+            if not self.dry_run:
+                os.makedirs(ssl_dir, exist_ok=True)
+                subprocess.run([
+                    "openssl", "req", "-x509", "-nodes", "-days", "3650", "-newkey", "rsa:2048",
+                    "-keyout", f"{ssl_dir}/default.key",
+                    "-out", f"{ssl_dir}/default.crt",
+                    "-subj", "/CN=leanstack-fallback/O=LeanStack/C=US"
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                if os.path.exists(f"{ssl_dir}/default.key"):
+                    try: os.chmod(f"{ssl_dir}/default.key", 0o600)
+                    except Exception: pass
+                if os.path.exists(f"{ssl_dir}/default.crt"):
+                    try: os.chmod(f"{ssl_dir}/default.crt", 0o644)
+                    except Exception: pass
+                self.log(f"Generated fallback SSL certificates in {ssl_dir}", Colors.GREEN, prefix="  ✔")
+
     def sync_tenants(self) -> int:
         """
         Synchronizes all existing active tenant sites:

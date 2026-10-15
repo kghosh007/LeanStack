@@ -38,9 +38,11 @@ class TestProfilesAndTemplates(unittest.TestCase):
             content = f.read()
 
         # Check HTTP/3 QUIC
-        self.assertIn("quic reuseport", content)
+        self.assertIn("listen 443 quic;", content)
         # Check ACME native client
-        self.assertIn("acme_certificate", content)
+        self.assertIn("acme_client", content)
+        self.assertIn("acme acme_{{ZONE_KEY}};", content)
+        self.assertIn("$acme_cert_acme_{{ZONE_KEY}}", content)
         # Check modular SSL headers snippet
         self.assertIn("include /etc/angie/snippets/ssl-headers.conf;", content)
         # Check 8G WAF snippet

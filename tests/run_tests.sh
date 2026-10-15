@@ -102,7 +102,7 @@ run_pillar 9 "Resilience & Automation" "
 # Pillar 10: Verification & Edge Cases
 run_pillar 10 "Edge Case Guardrails & Verifications" "
     grep -q 'cf_proto_https' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
-    grep -q 'ssl-headers.conf' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
+    grep -q 'security-headers.conf' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
     grep -q 'whitelists.yaml' '${BASE_DIR}/scripts/phase4_angie_waf.sh'
 "
 

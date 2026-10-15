@@ -43,8 +43,9 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("acme_client", content)
         self.assertIn("acme acme_{{ZONE_KEY}};", content)
         self.assertIn("$acme_cert_acme_{{ZONE_KEY}}", content)
-        # Check modular SSL headers snippet
-        self.assertIn("include /etc/angie/snippets/ssl-headers.conf;", content)
+        # Check tenant security headers and ensure ssl-headers.conf is deduplicated
+        self.assertIn("include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/security-headers.conf;", content)
+        self.assertNotIn("ssl-headers.conf", content)
         # Check 8G WAF snippet
         self.assertIn("include /etc/angie/snippets/8g-firewall.conf;", content)
         # Check hard blocks: uploads PHP execution denied

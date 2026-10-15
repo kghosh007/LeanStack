@@ -58,8 +58,7 @@ server {
     ssl_certificate     $ssl_cert_{{ZONE_KEY}};
     ssl_certificate_key $ssl_key_{{ZONE_KEY}};
 
-    # SSL Security Headers (Modular Snippet prevents Nginx inheritance wipeout)
-    include /etc/angie/snippets/ssl-headers.conf;
+    # Tenant Security Headers & Policies
     include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/security-headers.conf;
 
     # 8G Web Application Firewall
@@ -98,7 +97,6 @@ server {
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         fastcgi_param DOCUMENT_ROOT $realpath_root;
         fastcgi_param HTTPS $custom_https;
-        include /etc/angie/snippets/ssl-headers.conf;
         include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/security-headers.conf;
     }
 
@@ -162,7 +160,6 @@ server {
         access_log off;
         log_not_found off;
         add_header Cache-Control "public, no-transform";
-        include /etc/angie/snippets/ssl-headers.conf;
         include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/security-headers.conf;
         try_files $uri =404;
     }
@@ -228,8 +225,7 @@ server {
         fastcgi_param DOCUMENT_ROOT $realpath_root;
         fastcgi_param HTTPS $custom_https;
 
-        # Modular SSL Headers (Fixes the add_header inheritance trap)
-        include /etc/angie/snippets/ssl-headers.conf;
+        # Modular Security Headers (Prevents add_header inheritance wipeout)
         include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/security-headers.conf;
     }
 

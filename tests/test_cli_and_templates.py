@@ -85,6 +85,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("listen.mode = 0660", content)
         self.assertIn("/run/valkey", content)
         self.assertIn("/run/mysqld", content)
+        self.assertIn("php_admin_value[max_input_vars] = 5000", content)
 
     def test_wp_config_template_socket_and_proxy(self):
         """Verify wp-config.php.tpl configures Valkey ACL socket, database, and reverse-proxy SSL."""

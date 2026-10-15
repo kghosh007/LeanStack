@@ -378,6 +378,24 @@ class LeanStackUpgrader:
                     "-out", f"{ssl_dir}/default.crt",
                     "-subj", "/CN=leanstack-fallback/O=LeanStack/C=US"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+        # Ensure global PHP INI files enforce max_input_vars = 5000
+        if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0:
+            import glob
+            for ini_path in glob.glob("/etc/php/*/fpm/php.ini") + glob.glob("/etc/php/*/cli/php.ini"):
+                try:
+                    with open(ini_path, "r") as f_ini:
+                        ini_c = f_ini.read()
+                    if "max_input_vars" not in ini_c:
+                        with open(ini_path, "a") as f_ini:
+                            f_ini.write("\nmax_input_vars = 5000\n")
+                    else:
+                        ini_c_new = re.sub(r";?\s*max_input_vars\s*=\s*\d+", "max_input_vars = 5000", ini_c)
+                        if ini_c_new != ini_c:
+                            with open(ini_path, "w") as f_ini:
+                                f_ini.write(ini_c_new)
+                except Exception:
+                    pass
                 if os.path.exists(f"{ssl_dir}/default.key"):
                     try: os.chmod(f"{ssl_dir}/default.key", 0o600)
                     except Exception: pass
@@ -560,6 +578,7 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         try:
                             with open(pp, "r") as f_pf:
                                 p_content = f_pf.read()
+                            p_changed = False
                             if "/run/valkey" not in p_content or "/run/mysqld" not in p_content:
                                 def _update_ob(m):
                                     line = m.group(0)
@@ -570,10 +589,25 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                                     return line
                                 p_new = re.sub(r"php_admin_value\[open_basedir\]\s*=\s*[^\n]+", _update_ob, p_content)
                                 if p_new != p_content:
-                                    with open(pp, "w") as f_pf:
-                                        f_pf.write(p_new)
-                                    php_reloaded_needed = True
+                                    p_content = p_new
+                                    p_changed = True
                                     self.log(f"Updated PHP-FPM open_basedir with Valkey/MariaDB sockets for {user} ({pp})", Colors.GREEN, prefix="  ✔")
+
+                            if "max_input_vars" not in p_content:
+                                p_content = p_content.strip() + "\nphp_admin_value[max_input_vars] = 5000\n"
+                                p_changed = True
+                                self.log(f"Configured max_input_vars = 5000 for {user} ({pp})", Colors.GREEN, prefix="  ✔")
+                            elif re.search(r"php_admin_value\[max_input_vars\]\s*=\s*(\d+)", p_content):
+                                m_vars = re.search(r"php_admin_value\[max_input_vars\]\s*=\s*(\d+)", p_content)
+                                if int(m_vars.group(1)) < 3000:
+                                    p_content = re.sub(r"php_admin_value\[max_input_vars\]\s*=\s*\d+", "php_admin_value[max_input_vars] = 5000", p_content)
+                                    p_changed = True
+                                    self.log(f"Increased max_input_vars to 5000 for {user} ({pp})", Colors.GREEN, prefix="  ✔")
+
+                            if p_changed:
+                                with open(pp, "w") as f_pf:
+                                    f_pf.write(p_content)
+                                php_reloaded_needed = True
                         except Exception as e:
                             self.log(f"Notice: Pool update for {user}: {e}", Colors.DIM, prefix="  ℹ")
 

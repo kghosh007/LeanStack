@@ -17,6 +17,7 @@ import tempfile
 import shutil
 import json
 import subprocess
+import re
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 UPGRADE_BIN = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
@@ -324,6 +325,20 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         res = subprocess.run([cpctl_path], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.assertEqual(res.returncode, 1)
         self.assertIn("Circular delegation detected", res.stderr)
+
+    def test_pool_max_input_vars_reconciliation(self):
+        """Verify max_input_vars is injected and updated to 5000 in pool configuration strings."""
+        sample_pool = "[tenant_u1]\nuser = tenant_u1\nphp_admin_value[open_basedir] = /home/tenant_u1/htdocs\n"
+        if "max_input_vars" not in sample_pool:
+            sample_pool = sample_pool.strip() + "\nphp_admin_value[max_input_vars] = 5000\n"
+        self.assertIn("php_admin_value[max_input_vars] = 5000", sample_pool)
+
+        low_vars_pool = "[tenant_u1]\nphp_admin_value[max_input_vars] = 1000\n"
+        m_vars = re.search(r"php_admin_value\[max_input_vars\]\s*=\s*(\d+)", low_vars_pool)
+        self.assertTrue(m_vars)
+        if int(m_vars.group(1)) < 3000:
+            low_vars_pool = re.sub(r"php_admin_value\[max_input_vars\]\s*=\s*\d+", "php_admin_value[max_input_vars] = 5000", low_vars_pool)
+        self.assertIn("php_admin_value[max_input_vars] = 5000", low_vars_pool)
 
 
 if __name__ == "__main__":

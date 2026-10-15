@@ -8,7 +8,7 @@
 
 if ( ! defined( 'ABSPATH' ) ) {
     // Micro-endpoint execution directly hit by Angie SSI subrequest (/leanstack-esi/)
-    require_once dirname( dirname( dirname( __DIR__ ) ) ) . '/wp-load.php';
+    require_once dirname( __DIR__, 2 ) . '/wp-load.php';
     leanstack_handle_esi_subrequest();
     exit;
 }

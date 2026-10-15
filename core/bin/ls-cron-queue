@@ -5,7 +5,15 @@
 # ==============================================================================
 set -euo pipefail
 
-DB_FILE="/var/lib/cpctl/sites.db"
+if [ -n "${LEANSTACK_DB:-}" ]; then
+    DB_FILE="$LEANSTACK_DB"
+elif [ -f "/var/lib/lsctl/sites.db" ]; then
+    DB_FILE="/var/lib/lsctl/sites.db"
+elif [ -f "/var/lib/cpctl/sites.db" ]; then
+    DB_FILE="/var/lib/cpctl/sites.db"
+else
+    DB_FILE="/var/lib/lsctl/sites.db"
+fi
 [ ! -f "$DB_FILE" ] && exit 0
 
 LOG_DIR="/var/log/cpctl"

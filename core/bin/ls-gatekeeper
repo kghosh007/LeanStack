@@ -9,7 +9,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LINTER_BIN="${SCRIPT_DIR}/cp-nginx-linter"
 [ ! -x "$LINTER_BIN" ] && LINTER_BIN="/usr/local/bin/cp-nginx-linter"
 
-DB_FILE="/var/lib/cpctl/cpctl.db"
+if [ -n "${LEANSTACK_DB:-}" ]; then
+    DB_FILE="$LEANSTACK_DB"
+elif [ -f "/var/lib/lsctl/sites.db" ]; then
+    DB_FILE="/var/lib/lsctl/sites.db"
+elif [ -f "/var/lib/cpctl/sites.db" ]; then
+    DB_FILE="/var/lib/cpctl/sites.db"
+else
+    DB_FILE="/var/lib/lsctl/sites.db"
+fi
 LOG_FILE="/var/log/cpctl/gatekeeper.log"
 mkdir -p /var/log/cpctl 2>/dev/null || true
 

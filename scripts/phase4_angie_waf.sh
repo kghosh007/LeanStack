@@ -29,7 +29,9 @@ if ! command -v angie &>/dev/null; then
 
     echo ">>> [Phase 4] Updating package index & installing Angie..."
     apt-get update -qq
-    apt-get install -y -qq angie angie-module-brotli 2>/dev/null || apt-get install -y -qq angie
+    apt-get install -y -qq angie angie-module-brotli angie-module-cache-purge 2>/dev/null || \
+    apt-get install -y -qq angie angie-module-brotli 2>/dev/null || \
+    apt-get install -y -qq angie
 fi
 
 # 2. Prevent CrowdSec SSH Lockout: Whitelist Active SSH Connection & Local Subnets
@@ -127,6 +129,13 @@ brotli_types text/plain text/css application/javascript application/json applica
 SNIPPET_EOF
 else
     rm -f /etc/angie/modules.d/brotli.conf /etc/angie/snippets/brotli.conf
+fi
+
+# Dynamic Cache-Purge Module Configuration (if installed)
+if [ -f /usr/lib/angie/modules/ngx_http_cache_purge_module.so ] || [ -f /etc/angie/modules/ngx_http_cache_purge_module.so ]; then
+    cat << 'MODULE_EOF' > /etc/angie/modules.d/cache-purge.conf
+load_module modules/ngx_http_cache_purge_module.so;
+MODULE_EOF
 fi
 
 # 4. Deploy Global Master Angie Configuration

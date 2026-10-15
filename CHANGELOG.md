@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Angie Dynamic Cache-Purge Module & Resilient Purge Fallback**: Added `angie-module-cache-purge` package installation alongside `angie` and `angie-module-brotli` in `scripts/phase4_angie_waf.sh`. Automated dynamic module loader scaffolding (`/etc/angie/modules.d/cache-purge.conf`) across `phase4_angie_waf.sh`, `core/bin/lsctl`, and `core/bin/ls-upgrade`. Introduced `{{PURGE_DIRECTIVE}}` placeholder in `vhost.conf.tpl`, allowing `lsctl` to dynamically substitute `fastcgi_cache_purge` when the module is present or `return 204;` as a safe fallback when uninstalled. Added loopback surgical purge endpoint to Port 80 server block before redirecting to avoid 301 HTTPS interception on local WP cache purge requests.
+
 ### Planned
 - Lightweight Go/Rust Unix socket RPC daemon for optional administrative dashboard.
 - Automated multi-server fleet health telemetry aggregation.

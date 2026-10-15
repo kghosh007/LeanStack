@@ -135,6 +135,20 @@ ensure_ssl_fallback() {
             cp -f "${SCRIPT_DIR}/../snippets/"*.conf /etc/angie/snippets/ 2>/dev/null || true
         fi
     fi
+    ensure_angie_modules
+}
+
+ensure_angie_modules() {
+    # Scaffold Angie cache-purge module loader if shared library exists
+    if [ -f /usr/lib/angie/modules/ngx_http_cache_purge_module.so ] || [ -f /etc/angie/modules/ngx_http_cache_purge_module.so ]; then
+        if [ ! -f /etc/angie/modules.d/cache-purge.conf ]; then
+            mkdir -p /etc/angie/modules.d
+            cat << 'EOF' > /etc/angie/modules.d/cache-purge.conf
+load_module modules/ngx_http_cache_purge_module.so;
+EOF
+            systemctl restart angie 2>/dev/null || true
+        fi
+    fi
 }
 
 COMMAND="${1:-}"
@@ -1159,6 +1173,13 @@ EOF
         sed -i "s|{{TARGET_SOCKET}}|${TARGET_SOCKET}|g" "$VHOST_FILE"
         sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$VHOST_FILE"
         sed -i "s|{{ZONE_KEY}}|${ZONE_KEY}|g" "$VHOST_FILE"
+
+        if [ -f /etc/angie/modules.d/cache-purge.conf ] && { [ -f /usr/lib/angie/modules/ngx_http_cache_purge_module.so ] || [ -f /etc/angie/modules/ngx_http_cache_purge_module.so ]; }; then
+            PURGE_DIRECTIVE="fastcgi_cache_purge CACHE_${ZONE_KEY} \"httpsGET\$host\$1\";"
+        else
+            PURGE_DIRECTIVE="return 204;"
+        fi
+        sed -i "s|{{PURGE_DIRECTIVE}}|${PURGE_DIRECTIVE}|g" "$VHOST_FILE"
 
         angie -t
         systemctl reload angie

@@ -25,6 +25,13 @@ server {
 
     acme acme_{{ZONE_KEY}};
 
+    # Internal Loopback Surgical Cache Purge Endpoint (Port 80 Loopback)
+    location ~ /leanstack-purge(/.*) {
+        allow 127.0.0.1;
+        deny all;
+        {{PURGE_DIRECTIVE}}
+    }
+
     location / {
         return 301 https://$host$request_uri;
     }
@@ -230,7 +237,7 @@ server {
     location ~ /leanstack-purge(/.*) {
         allow 127.0.0.1;
         deny all;
-        fastcgi_cache_purge CACHE_{{ZONE_KEY}} "$scheme$request_method$host$1";
+        {{PURGE_DIRECTIVE}}
     }
 
     # Internal SSI / ESI Hole-Punching Subrequest Handler

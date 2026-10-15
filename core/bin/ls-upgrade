@@ -353,6 +353,25 @@ class LeanStackUpgrader:
             else:
                 self.log(f"[Dry-Run] Would synchronize snippets to {target_snip}", Colors.YELLOW, prefix="  [DRY-RUN]")
 
+        # Ensure Angie cache-purge dynamic module loader is scaffolded if shared library exists
+        purge_mod_paths = [
+            "/usr/lib/angie/modules/ngx_http_cache_purge_module.so",
+            "/etc/angie/modules/ngx_http_cache_purge_module.so"
+        ]
+        has_purge_so = any(os.path.exists(p) for p in purge_mod_paths)
+        purge_conf = "/etc/angie/modules.d/cache-purge.conf"
+        if has_purge_so and os.path.isdir("/etc/angie"):
+            if not os.path.exists(purge_conf):
+                if not self.dry_run:
+                    os.makedirs("/etc/angie/modules.d", exist_ok=True)
+                    with open(purge_conf, "w") as f:
+                        f.write("load_module modules/ngx_http_cache_purge_module.so;\n")
+                    self.log("Scaffolded cache-purge module loader in /etc/angie/modules.d/cache-purge.conf", Colors.GREEN, prefix="  ✔")
+                    if shutil.which("systemctl"):
+                        subprocess.run(["systemctl", "restart", "angie"], check=False)
+                else:
+                    self.log("[Dry-Run] Would scaffold /etc/angie/modules.d/cache-purge.conf", Colors.YELLOW, prefix="  [DRY-RUN]")
+
     def sync_tenants(self) -> int:
         """
         Synchronizes all existing active tenant sites:

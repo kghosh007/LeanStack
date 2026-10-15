@@ -55,6 +55,8 @@ run_pillar 3 "Hardware-Aware Auto-Tuning" "
 run_pillar 4 "Web & Caching Tier" "
     grep -q 'listen 443 quic;' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
     grep -q 'quic default_server reuseport' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
+    grep -q 'angie-module-cache-purge' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
+    grep -q '{{PURGE_DIRECTIVE}}' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
     grep -q 'unixsocket /run/valkey/valkey.sock' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
     grep -q 'port 0' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
     python3 '${BASE_DIR}/tests/test_cache_invalidation.py'
@@ -76,6 +78,7 @@ run_pillar 6 "PHP Multi-Tenant Isolation" "
 # Pillar 7: Multi-Layer Security & Hardening (8G WAF, CrowdSec, Upload PHP Block)
 run_pillar 7 "Multi-Layer Security & Hardening" "
     [ -f '${BASE_DIR}/core/snippets/8g-firewall.conf' ] && \
+    grep -q 'PURGE' '${BASE_DIR}/core/snippets/8g-firewall.conf' && \
     [ -f '${BASE_DIR}/core/snippets/ssl-headers.conf' ] && \
     grep -q 'wp-content/uploads' '${BASE_DIR}/core/templates/vhost.conf.tpl'
 "
@@ -91,6 +94,7 @@ run_pillar 8 "CLI Engine & Profiles System" "
 run_pillar 9 "Resilience & Automation" "
     [ -x '${BASE_DIR}/core/bin/ls-upgrade' ] && \
     [ -x '${BASE_DIR}/core/bin/ls-cf-sync' ] && \
+    grep -q 'chmod 644' '${BASE_DIR}/core/bin/ls-cf-sync' && \
     [ -x '${BASE_DIR}/core/bin/ls-cron-queue' ] && \
     [ -x '${BASE_DIR}/core/bin/ls-gatekeeper' ] && \
     [ -x '${BASE_DIR}/core/bin/ls-nginx-linter' ] && \

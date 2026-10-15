@@ -289,5 +289,96 @@ class TestProfilesAndTemplates(unittest.TestCase):
                         code = pcre2_compile(pat.encode("utf-8"), len(pat), 0, ctypes.byref(errcode), ctypes.byref(erroffset), None)
                         self.assertIsNotNone(code, f"PCRE2 syntax error in {filepath}:{line_no}: {raw_pat} -> {pat} (err {errcode.value} at offset {erroffset.value})")
 
+    def test_cache_purge_resilience_and_module_scaffolding(self):
+        """Verify dynamic cache purge directive, module loader scaffolding, and port 80 loopback."""
+        vhost_tpl = os.path.join(BASE_DIR, "core", "templates", "vhost.conf.tpl")
+        with open(vhost_tpl, "r") as f:
+            vhost = f.read()
+
+        # Check {{PURGE_DIRECTIVE}} in both Port 80 and Port 443 blocks
+        self.assertEqual(vhost.count("{{PURGE_DIRECTIVE}}"), 2)
+
+        # Check Port 80 contains loopback purge before location /
+        p80_idx = vhost.find("listen 80;")
+        p443_idx = vhost.find("listen 443 ssl;")
+        p80_block = vhost[p80_idx:p443_idx]
+        purge_80_idx = p80_block.find("location ~ /leanstack-purge(/.*)")
+        root_80_idx = p80_block.find("location / {")
+        self.assertTrue(purge_80_idx != -1 and purge_80_idx < root_80_idx, "Port 80 purge must appear before location /")
+
+        # Check lsctl substitution and fallback
+        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_bin, "r") as f:
+            lsctl = f.read()
+        self.assertIn("ensure_angie_modules", lsctl)
+        self.assertIn("fastcgi_cache_purge CACHE_${ZONE_KEY}", lsctl)
+        self.assertIn('PURGE_DIRECTIVE="return 204;"', lsctl)
+        self.assertIn("ngx_http_cache_purge_module.so", lsctl)
+
+        # Check phase4 and ls-upgrade module loader scaffolding
+        phase4 = os.path.join(BASE_DIR, "scripts", "phase4_angie_waf.sh")
+        with open(phase4, "r") as f:
+            p4 = f.read()
+        self.assertIn("angie-module-cache-purge", p4)
+        self.assertIn("ngx_http_cache_purge_module.so", p4)
+
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            up = f.read()
+        self.assertIn("ngx_http_cache_purge_module.so", up)
+        self.assertIn("/etc/angie/modules.d/cache-purge.conf", up)
+
+    def test_8g_waf_purge_method(self):
+        """Verify 8G firewall snippet permits HTTP PURGE requests."""
+        waf_path = os.path.join(BASE_DIR, "core", "snippets", "8g-firewall.conf")
+        with open(waf_path, "r") as f:
+            waf = f.read()
+        self.assertIn("PURGE", waf)
+        self.assertIn("(GET|POST|HEAD|PUT|DELETE|OPTIONS|PURGE)", waf)
+
+    def test_security_headers_deduplication(self):
+        """Verify security headers are deduplicated and managed via tenant custom file."""
+        vhost_tpl = os.path.join(BASE_DIR, "core", "templates", "vhost.conf.tpl")
+        with open(vhost_tpl, "r") as f:
+            vhost = f.read()
+        self.assertNotIn("ssl-headers.conf", vhost)
+        self.assertEqual(vhost.count("security-headers.conf"), 4)
+
+        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_bin, "r") as f:
+            lsctl = f.read()
+        self.assertIn("Alt-Svc", lsctl)
+
+    def test_holepunch_path_resolution(self):
+        """Verify leanstack-holepunch correctly traverses to wp-load.php without overshoot."""
+        hp_path = os.path.join(BASE_DIR, "core", "templates", "leanstack-holepunch.php.tpl")
+        with open(hp_path, "r") as f:
+            hp = f.read()
+        self.assertIn("dirname( __DIR__, 2 ) . '/wp-load.php'", hp)
+        self.assertNotIn("dirname( dirname( dirname( __DIR__ ) ) )", hp)
+
+    def test_db_path_harmonization(self):
+        """Verify gatekeeper and cron queue check LEANSTACK_DB and /var/lib/lsctl/sites.db."""
+        gk_path = os.path.join(BASE_DIR, "core", "bin", "ls-gatekeeper")
+        with open(gk_path, "r") as f:
+            gk = f.read()
+        self.assertIn("LEANSTACK_DB", gk)
+        self.assertIn("/var/lib/lsctl/sites.db", gk)
+        self.assertIn("/var/lib/cpctl/sites.db", gk)
+
+        cron_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
+        with open(cron_path, "r") as f:
+            cq = f.read()
+        self.assertIn("LEANSTACK_DB", cq)
+        self.assertIn("/var/lib/lsctl/sites.db", cq)
+        self.assertIn("/var/lib/cpctl/sites.db", cq)
+
+    def test_cf_sync_permissions(self):
+        """Verify Cloudflare sync snippet enforces 0644 readable permissions."""
+        cf_path = os.path.join(BASE_DIR, "core", "bin", "ls-cf-sync")
+        with open(cf_path, "r") as f:
+            cf = f.read()
+        self.assertIn('chmod 644 "$TARGET_SNIPPET"', cf)
+
 if __name__ == "__main__":
     unittest.main()

@@ -12,13 +12,22 @@ fi
 echo ">>> [Phase 4] Installing Angie Web Server & CrowdSec IPS..."
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Install Angie from Official Repository
+# 1. Install Angie from Official Repository (Official Debian/Ubuntu Method)
 if ! command -v angie &>/dev/null; then
-    curl -fsSL https://angie.software/keys/angie-signing.gpg | gpg --dearmor -o /etc/apt/trusted.gpg.d/angie-signing.gpg 2>/dev/null || true
-    echo "deb https://download.angie.software/angie/$(lsb_release -is | tr '[:upper:]' '[:lower:]')/ $(lsb_release -cs) main" \
-        | tee /etc/apt/sources.list.d/angie.list >/dev/null
+    echo ">>> [Phase 4] Configuring official Angie repository..."
     apt-get update -qq
-    apt-get install -y -qq angie angie-module-brotli >/dev/null 2>&1 || apt-get install -y -qq angie >/dev/null
+    apt-get install -y -qq ca-certificates curl
+
+    # Download official signing key directly to trusted keyring (already binary OpenPGP)
+    mkdir -p /etc/apt/trusted.gpg.d
+    curl -fsSL -o /etc/apt/trusted.gpg.d/angie-signing.gpg https://angie.software/keys/angie-signing.gpg
+
+    # Add official Angie repository using /etc/os-release ($ID/$VERSION_ID $VERSION_CODENAME)
+    echo "deb https://download.en.angie.software/angie/$(. /etc/os-release && echo "$ID/$VERSION_ID $VERSION_CODENAME") main" \
+        | tee /etc/apt/sources.list.d/angie.list > /dev/null
+
+    apt-get update -qq
+    apt-get install -y -qq angie angie-module-brotli 2>/dev/null || apt-get install -y -qq angie
 fi
 
 # 2. Prevent CrowdSec SSH Lockout: Whitelist Active SSH Connection & Local Subnets
@@ -88,6 +97,24 @@ chown -R www-data:www-data /var/cache/angie /var/lib/angie
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cp "${SCRIPT_DIR}/core/snippets/"*.conf /etc/angie/snippets/
 
+# Dynamic Brotli Module Configuration (if installed)
+mkdir -p /etc/angie/modules.d
+if [ -f /usr/lib/angie/modules/ngx_http_brotli_filter_module.so ]; then
+    cat << 'MODULE_EOF' > /etc/angie/modules.d/brotli.conf
+load_module modules/ngx_http_brotli_filter_module.so;
+load_module modules/ngx_http_brotli_static_module.so;
+MODULE_EOF
+
+    cat << 'SNIPPET_EOF' > /etc/angie/snippets/brotli.conf
+brotli on;
+brotli_comp_level 4;
+brotli_static on;
+brotli_types text/plain text/css application/javascript application/json application/xml image/svg+xml application/wasm;
+SNIPPET_EOF
+else
+    rm -f /etc/angie/modules.d/brotli.conf /etc/angie/snippets/brotli.conf
+fi
+
 # 4. Deploy Global Master Angie Configuration
 cat << 'EOF' > /etc/angie/angie.conf
 user www-data;
@@ -95,6 +122,9 @@ pid /run/angie.pid;
 worker_processes auto;
 worker_cpu_affinity auto;
 worker_rlimit_nofile 65535;
+
+# Dynamic Module Includes
+include /etc/angie/modules.d/*.conf;
 
 events {
     worker_connections 8192;
@@ -134,11 +164,8 @@ http {
     client_max_body_size 128M;
     client_body_buffer_size 128k;
 
-    # Google Brotli Compression (if module installed)
-    brotli on;
-    brotli_comp_level 4;
-    brotli_static on;
-    brotli_types text/plain text/css application/javascript application/json application/xml image/svg+xml application/wasm;
+    # Google Brotli Compression (dynamically enabled if module present)
+    include /etc/angie/snippets/brotli.conf*;
 
     # Gzip Compression Fallback
     gzip on;
@@ -194,9 +221,15 @@ EOF
 
 mkdir -p /etc/angie/cache-zones /var/cache/angie/sites
 
+# Stop and disable competing web servers if present
+systemctl stop apache2 2>/dev/null || true
+systemctl disable apache2 2>/dev/null || true
+systemctl stop nginx 2>/dev/null || true
+systemctl disable nginx 2>/dev/null || true
+
 # Validate syntax and reload
 angie -t
-systemctl restart angie
-systemctl enable angie
+systemctl restart angie 2>/dev/null || true
+systemctl enable angie 2>/dev/null || true
 
 echo "✅ [Phase 4] Angie Web Server, PQC TLS, 8G WAF & CrowdSec Configured Successfully!"

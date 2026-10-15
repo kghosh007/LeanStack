@@ -314,6 +314,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("fastcgi_cache_purge CACHE_${ZONE_KEY}", lsctl)
         self.assertIn('PURGE_DIRECTIVE="return 204;"', lsctl)
         self.assertIn("ngx_http_cache_purge_module.so", lsctl)
+        self.assertIn('include /etc/angie/modules.d/*.conf;', lsctl)
 
         # Check phase4 and ls-upgrade module loader scaffolding
         phase4 = os.path.join(BASE_DIR, "scripts", "phase4_angie_waf.sh")
@@ -321,12 +322,14 @@ class TestProfilesAndTemplates(unittest.TestCase):
             p4 = f.read()
         self.assertIn("angie-module-cache-purge", p4)
         self.assertIn("ngx_http_cache_purge_module.so", p4)
+        self.assertIn("rm -f /etc/angie/modules.d/cache-purge.conf", p4)
 
         upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
         with open(upgrade_bin, "r") as f:
             up = f.read()
         self.assertIn("ngx_http_cache_purge_module.so", up)
         self.assertIn("/etc/angie/modules.d/cache-purge.conf", up)
+        self.assertIn("include /etc/angie/modules.d/*.conf;", up)
 
     def test_8g_waf_purge_method(self):
         """Verify 8G firewall snippet permits HTTP PURGE requests."""
@@ -348,6 +351,11 @@ class TestProfilesAndTemplates(unittest.TestCase):
         with open(lsctl_bin, "r") as f:
             lsctl = f.read()
         self.assertIn("Alt-Svc", lsctl)
+
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            up = f.read()
+        self.assertIn("security-headers.conf", up)
 
     def test_holepunch_path_resolution(self):
         """Verify leanstack-holepunch correctly traverses to wp-load.php without overshoot."""

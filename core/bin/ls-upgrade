@@ -360,6 +360,7 @@ class LeanStackUpgrader:
         ]
         has_purge_so = any(os.path.exists(p) for p in purge_mod_paths)
         purge_conf = "/etc/angie/modules.d/cache-purge.conf"
+        angie_conf = "/etc/angie/angie.conf"
         if has_purge_so and os.path.isdir("/etc/angie"):
             if not os.path.exists(purge_conf):
                 if not self.dry_run:
@@ -371,6 +372,25 @@ class LeanStackUpgrader:
                         subprocess.run(["systemctl", "restart", "angie"], check=False)
                 else:
                     self.log("[Dry-Run] Would scaffold /etc/angie/modules.d/cache-purge.conf", Colors.YELLOW, prefix="  [DRY-RUN]")
+
+            # Ensure angie.conf includes modules.d
+            if os.path.exists(angie_conf):
+                with open(angie_conf, "r") as f:
+                    a_content = f.read()
+                if "modules.d" not in a_content:
+                    if not self.dry_run:
+                        with open(angie_conf, "w") as f:
+                            f.write("include /etc/angie/modules.d/*.conf;\n" + a_content)
+                        if shutil.which("systemctl"):
+                            subprocess.run(["systemctl", "restart", "angie"], check=False)
+                    else:
+                        self.log("[Dry-Run] Would add modules.d include to /etc/angie/angie.conf", Colors.YELLOW, prefix="  [DRY-RUN]")
+        elif not has_purge_so and os.path.exists(purge_conf):
+            if not self.dry_run:
+                try:
+                    os.remove(purge_conf)
+                except Exception:
+                    pass
 
     def sync_tenants(self) -> int:
         """
@@ -439,6 +459,25 @@ class LeanStackUpgrader:
                         with open(cache_cfg, "w") as f:
                             f.write("# Tenant FastCGI Cache Configuration\nset $site_cache_enabled 1;\nset $site_cache_ttl 3600s;\n")
                         shutil.copy2(cache_cfg, os.path.join(prod_custom, "cache-config.conf"))
+
+                    # Ensure security-headers.conf exists
+                    sec_hdr = os.path.join(tenant_nginx, "security-headers.conf")
+                    prod_sec_hdr = os.path.join(prod_custom, "security-headers.conf")
+                    if not os.path.exists(sec_hdr):
+                        with open(sec_hdr, "w") as f:
+                            f.write("""# Tenant Security Headers & Policies
+add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+add_header Content-Security-Policy "default-src 'self' https: data: 'unsafe-inline' 'unsafe-eval'; worker-src 'self' blob:; frame-ancestors 'self';" always;
+add_header Alt-Svc 'h3=":443"; ma=86400';
+""")
+                        shutil.copy2(sec_hdr, prod_sec_hdr)
+                    elif not os.path.exists(prod_sec_hdr):
+                        shutil.copy2(sec_hdr, prod_sec_hdr)
 
                 # 3. Ensure Dedicated Cache Directory & Angie Zone Exist
                 site_cache_dir = f"/var/cache/angie/sites/{domain}"

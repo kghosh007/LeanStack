@@ -136,6 +136,8 @@ if [ -f /usr/lib/angie/modules/ngx_http_cache_purge_module.so ] || [ -f /etc/ang
     cat << 'MODULE_EOF' > /etc/angie/modules.d/cache-purge.conf
 load_module modules/ngx_http_cache_purge_module.so;
 MODULE_EOF
+else
+    rm -f /etc/angie/modules.d/cache-purge.conf
 fi
 
 # 4. Deploy Global Master Angie Configuration

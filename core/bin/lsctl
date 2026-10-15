@@ -128,7 +128,8 @@ ensure_ssl_fallback() {
         chmod 644 /etc/angie/ssl/default.crt 2>/dev/null || true
     fi
     # Reconcile Angie snippets in /etc/angie/snippets
-    if [ -d "/etc/angie/snippets" ]; then
+    if [ -d "/etc/angie" ]; then
+        mkdir -p /etc/angie/snippets
         if [ -d "/opt/leanstack/core/snippets" ]; then
             cp -f /opt/leanstack/core/snippets/*.conf /etc/angie/snippets/ 2>/dev/null || true
         elif [ -d "${SCRIPT_DIR}/../snippets" ]; then
@@ -148,6 +149,12 @@ load_module modules/ngx_http_cache_purge_module.so;
 EOF
             systemctl restart angie 2>/dev/null || true
         fi
+        if [ -f /etc/angie/angie.conf ] && ! grep -q "modules.d" /etc/angie/angie.conf; then
+            sed -i '1s|^|include /etc/angie/modules.d/*.conf;\n|' /etc/angie/angie.conf
+            systemctl restart angie 2>/dev/null || true
+        fi
+    else
+        rm -f /etc/angie/modules.d/cache-purge.conf
     fi
 }
 
@@ -1182,8 +1189,13 @@ EOF
         fi
         sed -i "s|{{PURGE_DIRECTIVE}}|${PURGE_DIRECTIVE}|g" "$VHOST_FILE"
 
-        angie -t
-        systemctl reload angie
+        if command -v angie &>/dev/null; then
+            if ! angie -t &>/dev/null; then
+                sed -i "s|fastcgi_cache_purge CACHE_${ZONE_KEY} \"httpsGET\\\$host\\\$1\";|return 204;|g" "$VHOST_FILE"
+            fi
+            angie -t
+            systemctl reload angie 2>/dev/null || true
+        fi
 
         trap - ERR
 

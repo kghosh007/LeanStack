@@ -6,7 +6,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LINTER_BIN="${SCRIPT_DIR}/cp-nginx-linter"
+LINTER_BIN="${SCRIPT_DIR}/ls-nginx-linter"
+[ ! -x "$LINTER_BIN" ] && LINTER_BIN="${SCRIPT_DIR}/cp-nginx-linter"
+[ ! -x "$LINTER_BIN" ] && LINTER_BIN="/usr/local/bin/ls-nginx-linter"
 [ ! -x "$LINTER_BIN" ] && LINTER_BIN="/usr/local/bin/cp-nginx-linter"
 
 if [ -n "${LEANSTACK_DB:-}" ]; then

@@ -238,5 +238,50 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertEqual(woo["memory_limit"], "512M")
         self.assertTrue(woo["cf"])
 
+    def test_pcre2_regex_syntax(self):
+        """Verify all regex patterns in snippets and templates compile without PCRE2 syntax errors."""
+        import ctypes
+        import re
+
+        try:
+            pcre2 = ctypes.CDLL("libpcre2-8.so.0")
+        except OSError:
+            try:
+                pcre2 = ctypes.CDLL("libpcre2-8.so")
+            except OSError:
+                return  # Skip if PCRE2 shared library is not available in test runner
+        
+        pcre2_compile = pcre2.pcre2_compile_8
+        pcre2_compile.restype = ctypes.c_void_p
+        pcre2_compile.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p]
+
+        files_to_check = [
+            os.path.join(BASE_DIR, "core", "snippets", "8g-firewall.conf"),
+            os.path.join(BASE_DIR, "core", "templates", "vhost.conf.tpl")
+        ]
+
+        for filepath in files_to_check:
+            self.assertTrue(os.path.exists(filepath), f"Missing {filepath}")
+            with open(filepath, "r", encoding="utf-8") as fp:
+                for line_no, line in enumerate(fp, 1):
+                    m = re.search(r"(?:~[*]?|!~[*]?)\s+(\"[^\"]+\"|\S+)", line)
+                    if m:
+                        raw_pat = m.group(1).strip()
+                        if raw_pat.endswith(";"): raw_pat = raw_pat[:-1].strip()
+                        if raw_pat.endswith("{"): raw_pat = raw_pat[:-1].strip()
+                        if raw_pat.startswith('"') and raw_pat.endswith('"'):
+                            pat = re.sub(r"\\\\", r"\\", raw_pat[1:-1])
+                        else:
+                            pat = raw_pat
+                        
+                        # Replace template placeholders
+                        pat = re.sub(r"\{\{[^}]+\}\}", "zone123", pat)
+                        pat = re.sub(r"\$[a-zA-Z0-9_]+", "var", pat)
+
+                        errcode = ctypes.c_int()
+                        erroffset = ctypes.c_size_t()
+                        code = pcre2_compile(pat.encode("utf-8"), len(pat), 0, ctypes.byref(errcode), ctypes.byref(erroffset), None)
+                        self.assertIsNotNone(code, f"PCRE2 syntax error in {filepath}:{line_no}: {raw_pat} -> {pat} (err {errcode.value} at offset {erroffset.value})")
+
 if __name__ == "__main__":
     unittest.main()

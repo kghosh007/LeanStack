@@ -340,6 +340,19 @@ class LeanStackUpgrader:
                     except Exception: pass
                 self.log(f"Generated fallback SSL certificates in {ssl_dir}", Colors.GREEN, prefix="  ✔")
 
+        # Synchronize Angie Snippets (/etc/angie/snippets)
+        snippets_dir = os.path.join(self.core_dir, "snippets")
+        target_snip = "/etc/angie/snippets"
+        if os.path.exists(snippets_dir) and os.path.isdir("/etc/angie"):
+            if not self.dry_run:
+                os.makedirs(target_snip, exist_ok=True)
+                for s in os.listdir(snippets_dir):
+                    if s.endswith(".conf"):
+                        shutil.copy2(os.path.join(snippets_dir, s), os.path.join(target_snip, s))
+                self.log(f"Synchronized Angie snippets in {target_snip}", Colors.GREEN, prefix="  ✔")
+            else:
+                self.log(f"[Dry-Run] Would synchronize snippets to {target_snip}", Colors.YELLOW, prefix="  [DRY-RUN]")
+
     def sync_tenants(self) -> int:
         """
         Synchronizes all existing active tenant sites:

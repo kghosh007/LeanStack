@@ -127,6 +127,14 @@ ensure_ssl_fallback() {
         chmod 600 /etc/angie/ssl/default.key 2>/dev/null || true
         chmod 644 /etc/angie/ssl/default.crt 2>/dev/null || true
     fi
+    # Reconcile Angie snippets in /etc/angie/snippets
+    if [ -d "/etc/angie/snippets" ]; then
+        if [ -d "/opt/leanstack/core/snippets" ]; then
+            cp -f /opt/leanstack/core/snippets/*.conf /etc/angie/snippets/ 2>/dev/null || true
+        elif [ -d "${SCRIPT_DIR}/../snippets" ]; then
+            cp -f "${SCRIPT_DIR}/../snippets/"*.conf /etc/angie/snippets/ 2>/dev/null || true
+        fi
+    fi
 }
 
 COMMAND="${1:-}"

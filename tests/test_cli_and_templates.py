@@ -39,8 +39,9 @@ class TestProfilesAndTemplates(unittest.TestCase):
         with open(tpl_path, "r") as f:
             content = f.read()
 
-        # Check HTTP/3 QUIC
+        # Check HTTP/3 QUIC and HTTP/2
         self.assertIn("listen 443 quic;", content)
+        self.assertIn("http2 on;", content)
         # Check ACME native client
         self.assertIn("acme_client", content)
         self.assertIn("acme acme_{{ZONE_KEY}};", content)
@@ -814,6 +815,65 @@ class TestProfilesAndTemplates(unittest.TestCase):
         broken_pos = content.find("has broken Query Monitor db.php symlink")
         missing_pos = content.find("missing Query Monitor db.php drop-in", broken_pos)
         self.assertGreater(missing_pos, broken_pos, "Broken symlink check must precede missing file check in doctor")
+
+    def test_phase4_angie_tls_and_doctor_hardening(self):
+        """Verify phase4_angie_waf.sh configures full TLS 1.2/1.3 ECDHE AEAD ciphers, prime256v1, http2 on, and lsctl doctor audits them."""
+        import subprocess
+        phase4_path = os.path.join(BASE_DIR, "scripts", "phase4_angie_waf.sh")
+        with open(phase4_path, "r") as f:
+            p4 = f.read()
+
+        self.assertIn("ssl_protocols TLSv1.2 TLSv1.3;", p4)
+        self.assertIn("ssl_prefer_server_ciphers on;", p4)
+        self.assertIn("ssl_session_cache shared:SSL:50m;", p4)
+        self.assertIn("ssl_session_timeout 1d;", p4)
+        self.assertIn("ssl_session_tickets off;", p4)
+        self.assertIn("ssl_ecdh_curve X25519MLKEM768:x25519:prime256v1:secp384r1;", p4)
+        self.assertIn("ssl_ecdh_curve x25519:prime256v1:secp384r1;", p4)
+        self.assertIn(
+            "ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+            "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+            "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+            "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;",
+            p4
+        )
+        self.assertIn("http2 on;", p4)
+        self.assertIn("quic_gso on;", p4)
+        self.assertIn("quic_retry on;", p4)
+
+        # Test lsctl doctor TLS & ECDHE Hardening checks against mock /etc/angie
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with tempfile.TemporaryDirectory() as td:
+            http_d = os.path.join(td, "http.d")
+            os.makedirs(http_d, exist_ok=True)
+            angie_conf = os.path.join(td, "angie.conf")
+
+            # 1. Incomplete curve and cipher config -> WARN
+            with open(angie_conf, "w") as f:
+                f.write("http {\n    ssl_ecdh_curve X25519MLKEM768:x25519:secp384r1;\n    ssl_ciphers TLS_AES_256_GCM_SHA384;\n}\n")
+            env = os.environ.copy()
+            env["LEANSTACK_ANGIE_DIR"] = td
+            res_warn = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertIn("Angie ssl_ecdh_curve missing prime256v1 or x25519", res_warn.stdout)
+            self.assertIn("Angie ssl_ciphers missing full TLS 1.2 ECDHE AEAD suites", res_warn.stdout)
+
+            # 2. Hardened curve and cipher config -> PASS
+            with open(angie_conf, "w") as f:
+                f.write(
+                    "http {\n"
+                    "    ssl_ecdh_curve X25519MLKEM768:x25519:prime256v1:secp384r1;\n"
+                    "    ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;\n"
+                    "}\n"
+                )
+            res_pass = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertIn("[PASS] TLS ECDHE curves hardened", res_pass.stdout)
+            self.assertIn("[PASS] TLS 1.2/1.3 ECDHE AEAD cipher suite hardened", res_pass.stdout)
+
+            # 3. Duplicate directives in 00-optimization.conf -> WARN
+            with open(os.path.join(http_d, "00-optimization.conf"), "w") as f:
+                f.write("ssl_ciphers HIGH:!aNULL:!MD5;\n")
+            res_dup = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
+            self.assertIn("Duplicate TLS directives detected in both angie.conf and 00-optimization.conf", res_dup.stdout)
 
 if __name__ == "__main__":
     unittest.main()

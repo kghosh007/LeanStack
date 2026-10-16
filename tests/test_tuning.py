@@ -88,5 +88,35 @@ class TestHardwareTuning(unittest.TestCase):
                 self.assertIn(sort_buf, ["256K", "512K"])
                 self.assertNotEqual(sort_buf, "16M")
 
+    def test_angie_tls_ecdhe_and_pqc_probing(self):
+        """Verify Angie tuning profile and check_pqc_and_tls13 include TLS 1.2 ECDHE AEAD ciphers, prime256v1, and HTTP/2."""
+        from probe import check_pqc_and_tls13
+        p = self.get_profile_for(ram_mb=4096, cores=4)
+        a = p["angie"]
+
+        self.assertEqual(a["pqc_curve"], "X25519MLKEM768:x25519:prime256v1:secp384r1")
+        self.assertEqual(a["ecdh_fallback_curve"], "x25519:prime256v1:secp384r1")
+        self.assertIn("prime256v1", a["pqc_curve"])
+        self.assertIn("TLS_AES_256_GCM_SHA384", a["ssl_ciphers"])
+        self.assertIn("TLS_CHACHA20_POLY1305_SHA256", a["ssl_ciphers"])
+        self.assertIn("ECDHE-ECDSA-AES256-GCM-SHA384", a["ssl_ciphers"])
+        self.assertIn("ECDHE-RSA-AES256-GCM-SHA384", a["ssl_ciphers"])
+        self.assertIn("ECDHE-ECDSA-CHACHA20-POLY1305", a["ssl_ciphers"])
+        self.assertIn("ECDHE-RSA-CHACHA20-POLY1305", a["ssl_ciphers"])
+        self.assertIn("ECDHE-ECDSA-AES128-GCM-SHA256", a["ssl_ciphers"])
+        self.assertIn("ECDHE-RSA-AES128-GCM-SHA256", a["ssl_ciphers"])
+        self.assertEqual(a["ssl_protocols"], "TLSv1.2 TLSv1.3")
+        self.assertTrue(a["tls12_ecdhe_enabled"])
+        self.assertTrue(a["http2_enabled"])
+        self.assertTrue(a["http3_enabled"])
+
+        tls_info = check_pqc_and_tls13()
+        self.assertTrue(tls_info["tls13_supported"])
+        self.assertTrue(tls_info["tls12_ecdhe_supported"])
+        self.assertTrue(tls_info["prime256v1_supported"])
+        self.assertTrue(tls_info["x25519_supported"])
+        self.assertIn("prime256v1", tls_info["recommended_ecdh_curve"])
+        self.assertIn("ECDHE-ECDSA-AES128-GCM-SHA256", tls_info["recommended_ciphers"])
+
 if __name__ == "__main__":
     unittest.main()

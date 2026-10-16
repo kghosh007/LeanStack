@@ -488,5 +488,186 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         self.assertIn("php{v_str}-fpm", content)
         self.assertIn("reload", content)
 
+    def test_ssl_chmod_not_nested_in_php_ini_loop(self):
+        """Verify os.chmod(default.key, 0o600) is not nested inside the PHP ini glob loop."""
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            lines = f.readlines()
+
+        for_ini_indent = None
+        if_key_indent = None
+        for line in lines:
+            if "for ini_path in glob.glob" in line:
+                for_ini_indent = len(line) - len(line.lstrip())
+            elif 'if os.path.exists(f"{ssl_dir}/default.key"):' in line and for_ini_indent is not None:
+                if_key_indent = len(line) - len(line.lstrip())
+                break
+
+        self.assertIsNotNone(for_ini_indent)
+        self.assertIsNotNone(if_key_indent)
+        self.assertEqual(
+            if_key_indent,
+            for_ini_indent,
+            "if os.path.exists(default.key) must be at the same indentation level as the PHP ini loop, not nested inside it"
+        )
+
+    def test_reconcile_angie_tls_split_brain_and_vhost_http2(self):
+        """Verify reconcile_angie_tls fixes duplicate directives, upgrades ciphers/curves, and adds http2 on to vhosts."""
+        upgrader = self.upgrader
+        test_angie = tempfile.mkdtemp(prefix="ls_test_angie_tls_")
+        try:
+            http_d = os.path.join(test_angie, "http.d")
+            sites_avail = os.path.join(test_angie, "sites-available")
+            os.makedirs(http_d, exist_ok=True)
+            os.makedirs(sites_avail, exist_ok=True)
+
+            # Case 1: angie.conf owns ssl_*, 00-optimization.conf has duplicate ssl_*/http2 directives
+            angie_conf_path = os.path.join(test_angie, "angie.conf")
+            with open(angie_conf_path, "w") as f:
+                f.write("""user www-data;
+worker_processes auto;
+http {
+    sendfile on;
+    ssl_protocols TLSv1.3;
+    ssl_ecdh_curve X25519MLKEM768:x25519;
+    ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256;
+    ssl_prefer_server_ciphers off;
+    include /etc/angie/http.d/*.conf;
+}
+""")
+            opt_conf_path = os.path.join(http_d, "00-optimization.conf")
+            with open(opt_conf_path, "w") as f:
+                f.write("""# LeanStack Angie Tuning
+worker_connections_limit 4096;
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers HIGH:!aNULL:!MD5;
+ssl_ecdh_curve prime256v1;
+http2 on;
+quic_gso on;
+""")
+            vhost_path = os.path.join(http_d, "tenant.example.com.conf")
+            with open(vhost_path, "w") as f:
+                f.write("""server {
+    listen 80;
+    server_name tenant.example.com;
+}
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    listen 443 quic;
+    listen [::]:443 quic;
+    server_name tenant.example.com;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    root /var/www/tenant/public;
+}
+""")
+            avail_vhost_path = os.path.join(sites_avail, "avail.example.com.conf")
+            with open(avail_vhost_path, "w") as f:
+                f.write("""server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name avail.example.com;
+}
+""")
+
+            ok = upgrader.reconcile_angie_tls(angie_dir=test_angie, check_syntax=False)
+            self.assertTrue(ok)
+
+            with open(angie_conf_path, "r") as f:
+                new_angie = f.read()
+            self.assertIn("ssl_protocols TLSv1.2 TLSv1.3;", new_angie)
+            self.assertIn("prime256v1", new_angie)
+            self.assertIn("ECDHE-ECDSA-AES128-GCM-SHA256", new_angie)
+            self.assertIn("ssl_prefer_server_ciphers on;", new_angie)
+            self.assertIn("http2 on;", new_angie)
+            self.assertIn("ssl_session_tickets off;", new_angie)
+
+            with open(opt_conf_path, "r") as f:
+                new_opt = f.read()
+            self.assertNotIn("ssl_protocols", new_opt)
+            self.assertNotIn("ssl_ciphers", new_opt)
+            self.assertNotIn("ssl_ecdh_curve", new_opt)
+            self.assertNotIn("http2 on;", new_opt)
+            self.assertNotIn("quic_gso", new_opt)
+            self.assertIn("worker_connections_limit 4096;", new_opt)
+
+            with open(vhost_path, "r") as f:
+                new_vhost = f.read()
+            self.assertIn("http2 on;", new_vhost)
+            self.assertEqual(new_vhost.count("http2 on;"), 1)
+            self.assertNotIn("HIGH:!aNULL:!MD5", new_vhost)
+
+            with open(avail_vhost_path, "r") as f:
+                new_avail = f.read()
+            self.assertIn("http2 on;", new_avail)
+
+            # Idempotency check: running a second time should not duplicate http2 on;
+            ok2 = upgrader.reconcile_angie_tls(angie_dir=test_angie, check_syntax=False)
+            self.assertTrue(ok2)
+            with open(vhost_path, "r") as f:
+                self.assertEqual(f.read().count("http2 on;"), 1)
+        finally:
+            shutil.rmtree(test_angie, ignore_errors=True)
+
+    def test_reconcile_angie_tls_opt_owner_and_rollback(self):
+        """Verify reconcile_angie_tls updates 00-optimization.conf when it owns ssl_* and rolls back on syntax failure."""
+        from unittest.mock import patch, MagicMock
+        upgrader = self.upgrader
+        test_angie = tempfile.mkdtemp(prefix="ls_test_angie_opt_")
+        try:
+            http_d = os.path.join(test_angie, "http.d")
+            os.makedirs(http_d, exist_ok=True)
+            angie_conf_path = os.path.join(test_angie, "angie.conf")
+            orig_angie = """user www-data;
+http {
+    sendfile on;
+    include /etc/angie/http.d/*.conf;
+}
+"""
+            with open(angie_conf_path, "w") as f:
+                f.write(orig_angie)
+
+            opt_conf_path = os.path.join(http_d, "00-optimization.conf")
+            orig_opt = """ssl_protocols TLSv1.3;
+ssl_ciphers TLS_AES_256_GCM_SHA384;
+ssl_ecdh_curve X25519MLKEM768:x25519;
+"""
+            with open(opt_conf_path, "w") as f:
+                f.write(orig_opt)
+
+            # Test 1: 00-optimization.conf owns ssl_*, first angie -t fails (PQC unsupported), fallback angie -t succeeds
+            call_results = [
+                MagicMock(returncode=1, stderr="SSL_CTX_set1_curves_list failed"),
+                MagicMock(returncode=0, stderr="syntax is ok"),
+                MagicMock(returncode=0, stderr=""),  # systemctl reload angie
+            ]
+            with patch("subprocess.run", side_effect=call_results):
+                ok = upgrader.reconcile_angie_tls(angie_dir=test_angie, check_syntax=True)
+                self.assertTrue(ok)
+
+            with open(opt_conf_path, "r") as f:
+                updated_opt = f.read()
+            self.assertIn("ssl_ecdh_curve x25519:prime256v1:secp384r1;", updated_opt)
+            self.assertNotIn("X25519MLKEM768", updated_opt)
+            self.assertIn("ECDHE-ECDSA-AES128-GCM-SHA256", updated_opt)
+
+            # Test 2: Both angie -t calls fail -> rollback restores exact original files
+            with open(opt_conf_path, "w") as f:
+                f.write(orig_opt)
+            fail_results = [
+                MagicMock(returncode=1, stderr="emerg: invalid config"),
+                MagicMock(returncode=1, stderr="emerg: still invalid"),
+            ]
+            with patch("subprocess.run", side_effect=fail_results):
+                ok_fail = upgrader.reconcile_angie_tls(angie_dir=test_angie, check_syntax=True)
+                self.assertFalse(ok_fail)
+
+            with open(opt_conf_path, "r") as f:
+                rolled_back = f.read()
+            self.assertEqual(rolled_back, orig_opt)
+        finally:
+            shutil.rmtree(test_angie, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main()
+

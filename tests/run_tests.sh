@@ -25,11 +25,13 @@ run_pillar() {
     local cmd="$3"
     
     echo -n "  Pillar ${num}: ${name}... "
-    if eval "$cmd" >/dev/null 2>&1; then
+    local out
+    if out=$(eval "$cmd" 2>&1); then
         echo -e "${GREEN}${BOLD}[10/10 PASS]${RESET}"
         TOTAL_SCORE=$((TOTAL_SCORE + 10))
     else
         echo -e "\033[31m${BOLD}[FAILED]${RESET}"
+        echo "$out"
     fi
 }
 
@@ -51,15 +53,18 @@ run_pillar 3 "Hardware-Aware Auto-Tuning" "
     python3 '${BASE_DIR}/tests/test_tuning.py'
 "
 
-# Pillar 4: Web & Caching Tier (Angie, HTTP/3, Valkey Unix Socket, FastCGI & SSI)
+# Pillar 4: Web & Caching Tier (Angie, HTTP/3, HTTP/2, Valkey Unix Socket, FastCGI & SSI)
 run_pillar 4 "Web & Caching Tier" "
     grep -q 'listen 443 quic;' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
+    grep -q 'http2 on;' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
+    grep -q 'http2 on;' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
     grep -q 'quic default_server reuseport' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
     grep -q 'angie-module-cache-purge' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
     grep -q '{{PURGE_DIRECTIVE}}' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
     grep -q 'unixsocket /run/valkey/valkey.sock' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
     grep -q 'port 0' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
-    python3 '${BASE_DIR}/tests/test_cache_invalidation.py'
+    python3 '${BASE_DIR}/tests/test_cache_invalidation.py' && \
+    python3 '${BASE_DIR}/tests/test_redis_acl.py'
 "
 
 # Pillar 5: Database Tier (High-QPS, Gap-Lock Elimination)
@@ -77,12 +82,14 @@ run_pillar 6 "PHP Multi-Tenant Isolation" "
     grep -q 'chmod 750 \"/home/\${USER_NAME}\"' '${BASE_DIR}/core/bin/lsctl'
 "
 
-# Pillar 7: Multi-Layer Security & Hardening (8G WAF, CrowdSec, Upload PHP Block)
+# Pillar 7: Multi-Layer Security & Hardening (8G WAF, CrowdSec, Upload PHP Block, TLS/ECDHE)
 run_pillar 7 "Multi-Layer Security & Hardening" "
     [ -f '${BASE_DIR}/core/snippets/8g-firewall.conf' ] && \
     grep -q 'PURGE' '${BASE_DIR}/core/snippets/8g-firewall.conf' && \
     [ -f '${BASE_DIR}/core/snippets/ssl-headers.conf' ] && \
-    grep -q 'wp-content/uploads' '${BASE_DIR}/core/templates/vhost.conf.tpl'
+    grep -q 'wp-content/uploads' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
+    grep -q 'prime256v1' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
+    grep -q 'ECDHE-ECDSA-AES128-GCM-SHA256' '${BASE_DIR}/scripts/phase4_angie_waf.sh'
 "
 
 # Pillar 8: CLI Engine & Profiles

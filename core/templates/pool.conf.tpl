@@ -37,3 +37,4 @@ php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,p
 php_admin_value[max_input_vars] = 5000
 php_admin_flag[allow_url_include] = off
 php_admin_flag[expose_php] = off
+php_admin_flag[apc.enabled] = on

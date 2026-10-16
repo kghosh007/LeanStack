@@ -331,6 +331,59 @@ heal_tenant_permissions() {
     done
 }
 
+# 8b. FastCGI Cache Permissions & Multi-Tenant Access Self-Healing
+heal_cache_permissions() {
+    [ ! -d "/var/cache/angie/sites" ] && return 0
+    chmod 755 /var/cache/angie /var/cache/angie/sites 2>/dev/null || true
+
+    for site_cache in /var/cache/angie/sites/*; do
+        [ -d "$site_cache" ] || continue
+        local domain
+        domain=$(basename "$site_cache")
+
+        local tenant_user=""
+        if [ -f "$DB_FILE" ] && command -v sqlite3 &>/dev/null; then
+            tenant_user=$(sqlite3 "$DB_FILE" "SELECT user FROM sites WHERE domain='$domain' LIMIT 1;" 2>/dev/null || true)
+        fi
+        if [ -z "$tenant_user" ]; then
+            for h in /home/*; do
+                if [ -d "$h/nginx" ] && grep -q "$domain" "$h/nginx"/*.conf 2>/dev/null; then
+                    tenant_user=$(basename "$h")
+                    break
+                fi
+            done
+        fi
+
+        if [ -n "$tenant_user" ] && id "$tenant_user" &>/dev/null; then
+            # Ensure tenant is member of www-data group
+            if ! id -nG "$tenant_user" 2>/dev/null | grep -qw "www-data"; then
+                usermod -a -G www-data "$tenant_user" 2>/dev/null || true
+                for v in 8.5 8.4 8.3 8.2 8.1; do
+                    if systemctl is-active --quiet "php${v}-fpm" 2>/dev/null; then
+                        systemctl reload "php${v}-fpm" 2>/dev/null || true
+                    fi
+                done
+            fi
+
+            # Pre-scaffold full 2-level hex hierarchy if missing
+            for h1 in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+                mkdir -p "${site_cache}/${h1}"/{0,1,2,3,4,5,6,7,8,9,a,b,c,d,e,f}{0,1,2,3,4,5,6,7,8,9,a,b,c,d,e,f} 2>/dev/null || true
+            done
+
+            # Self-heal permissions across cache hierarchy
+            chown -R "${tenant_user}:www-data" "$site_cache" 2>/dev/null || true
+            chmod 2770 "$site_cache" 2>/dev/null || true
+            find "$site_cache" -type d -exec chmod 2770 {} + 2>/dev/null || true
+            find "$site_cache" -type f -exec chmod 660 {} + 2>/dev/null || true
+
+            if command -v setfacl &>/dev/null; then
+                setfacl -R -m "u:${tenant_user}:rwx,g:www-data:rwx,m::rwx" "$site_cache" 2>/dev/null || true
+                setfacl -R -d -m "u:${tenant_user}:rwx,g:www-data:rwx,m::rwx" "$site_cache" 2>/dev/null || true
+            fi
+        fi
+    done
+}
+
 # 9. Disk & Inode Cleanup
 cleanup_disk_and_inodes() {
     local disk_usage inode_usage
@@ -368,6 +421,7 @@ main() {
     check_valkey
     check_php_fpm_pools
     heal_tenant_permissions
+    heal_cache_permissions
     cleanup_disk_and_inodes
     check_cron_queue
 }

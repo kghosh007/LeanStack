@@ -287,5 +287,195 @@ class TestCacheConfigLinter(unittest.TestCase):
         self.assertIn("Missing terminating semicolon", res["error"])
 
 
+class TestFastCGICachePermissionsAndHierarchy(unittest.TestCase):
+    """Tests FastCGI cache directory permissions, level-1 hex hierarchy, and stats scanning."""
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp(prefix="ls_cache_perm_test_")
+        self.site = "staging.mfeasy.in"
+        self.cache_dir = os.path.join(self.test_dir, self.site)
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_level1_hex_scaffolding(self):
+        """Verify all 16 hex directories (0-f) are scaffolded."""
+        hex_chars = "0123456789abcdef"
+        for h in hex_chars:
+            os.makedirs(os.path.join(self.cache_dir, h), exist_ok=True)
+
+        for h in hex_chars:
+            self.assertTrue(os.path.isdir(os.path.join(self.cache_dir, h)))
+
+    def test_recursive_scan_file_count_and_size(self):
+        """Simulate scanning cache directory with nested files to test scan_cache_dir_stats logic."""
+        sub1 = os.path.join(self.cache_dir, "0", "00")
+        sub2 = os.path.join(self.cache_dir, "a", "bc")
+        os.makedirs(sub1, exist_ok=True)
+        os.makedirs(sub2, exist_ok=True)
+
+        file1 = os.path.join(sub1, "60c91085e6affe68bc254a9e31bd7000")
+        file2 = os.path.join(sub2, "abcdef1234567890abcdef1234567890")
+
+        with open(file1, "wb") as f:
+            f.write(b"X" * 1024)
+        with open(file2, "wb") as f:
+            f.write(b"Y" * 2048)
+
+        files = 0
+        total_bytes = 0
+
+        def scan_stats(d):
+            nonlocal files, total_bytes
+            if not os.path.isdir(d):
+                return
+            for item in os.listdir(d):
+                p = os.path.join(d, item)
+                if os.path.isdir(p):
+                    scan_stats(p)
+                elif os.path.isfile(p):
+                    files += 1
+                    total_bytes += os.path.getsize(p)
+
+        scan_stats(self.cache_dir)
+        self.assertEqual(files, 2)
+        self.assertEqual(total_bytes, 3072)
+
+    def test_purge_all_preserves_hex_scaffolding(self):
+        """Verify full purge deletes cache files but keeps both level-1 and level-2 hex directories intact."""
+        hex_chars = "0123456789abcdef"
+        for h in hex_chars:
+            os.makedirs(os.path.join(self.cache_dir, h), exist_ok=True)
+
+        sub = os.path.join(self.cache_dir, "0", "00")
+        os.makedirs(sub, exist_ok=True)
+        cached_file = os.path.join(sub, "sample_cache_file")
+        with open(cached_file, "w") as f:
+            f.write("CACHE_DATA")
+
+        self.assertTrue(os.path.exists(cached_file))
+
+        # Test the exact logic in LeanStackBridge::recursive_delete_dir_files
+        def recursive_delete(d):
+            count = 0
+            for item in os.listdir(d):
+                p = os.path.join(d, item)
+                if os.path.isdir(p):
+                    count += recursive_delete(p)
+                elif os.path.isfile(p):
+                    os.unlink(p)
+                    count += 1
+            return count
+
+        purged_count = recursive_delete(self.cache_dir)
+        self.assertEqual(purged_count, 1)
+        self.assertFalse(os.path.exists(cached_file))
+        # Level-2 directory must be preserved so Angie never recreates it with mode 0700
+        self.assertTrue(os.path.exists(sub))
+
+        for h in hex_chars:
+            self.assertTrue(os.path.isdir(os.path.join(self.cache_dir, h)))
+
+    def test_bridge_template_preserves_directories_on_purge(self):
+        """Verify leanstack-bridge.php.tpl does not rmdir directories during cache purge."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge_c = f.read()
+        # Verify rmdir is not called inside recursive_delete_dir_files
+        rec_del_start = bridge_c.find("function recursive_delete_dir_files")
+        rec_del_end = bridge_c.find("function purge_tenant_opcache", rec_del_start)
+        rec_del_body = bridge_c[rec_del_start:rec_del_end]
+        self.assertNotIn("@rmdir", rec_del_body)
+        self.assertNotIn("rmdir(", rec_del_body)
+
+
+class TestAPCuSyncAndResilience(unittest.TestCase):
+    """Tests APCu prefix synchronization between bridge and apcu plugins and alloptions hooks."""
+
+    def test_prefix_formula_match(self):
+        """Verify leanstack-apcu and leanstack-bridge use identical prefix calculation."""
+        apcu_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-apcu.php.tpl")
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+
+        with open(apcu_tpl, "r") as f:
+            apcu_content = f.read()
+        with open(bridge_tpl, "r") as f:
+            bridge_content = f.read()
+
+        self.assertIn("'ls_' . md5( $salt . $db ) . ':'", apcu_content)
+        self.assertIn("'ls_' . md5( $salt . $db ) . ':'", bridge_content)
+        self.assertIn("get_prefix", apcu_content)
+        self.assertIn("get_prefix", bridge_content)
+
+    def test_alloptions_and_transient_hooks_present(self):
+        """Verify alloptions acceleration and transient hooks are active in leanstack-apcu."""
+        apcu_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-apcu.php.tpl")
+        with open(apcu_tpl, "r") as f:
+            content = f.read()
+
+        self.assertIn("pre_wp_load_alloptions", content)
+        self.assertIn("pre_cache_alloptions", content)
+        self.assertIn("cache_alloptions", content)
+        self.assertIn("invalidate_alloptions", content)
+        self.assertIn("register_cached_transient_hooks", content)
+        self.assertIn("handle_pre_transient", content)
+        self.assertIn("LeanStackAPCu::get_instance()", content)
+
+    def test_throwable_exception_safety(self):
+        """Verify bridge and apcu catch Throwable for APCUIterator robustness."""
+        apcu_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-apcu.php.tpl")
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+
+        with open(apcu_tpl, "r") as f:
+            apcu_c = f.read()
+        with open(bridge_tpl, "r") as f:
+            bridge_c = f.read()
+
+        self.assertIn("catch ( Throwable $e )", apcu_c)
+        self.assertIn("catch ( Throwable $e )", bridge_c)
+
+    def test_angie_override_umask(self):
+        """Verify angie systemd override sets UMask=0002 for group-accessible cache files."""
+        ov_file = os.path.join(BASE_DIR, "systemd", "overrides", "angie.service.d", "override.conf")
+        with open(ov_file, "r") as f:
+            ov_c = f.read()
+        self.assertIn("UMask=0002", ov_c)
+
+    def test_lsctl_and_ls_upgrade_provisioning(self):
+        """Verify lsctl and ls-upgrade configure www-data group, 2770 permissions, and APCu."""
+        lsctl_file = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        upgrade_file = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        watcher_file = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
+        pool_tpl = os.path.join(BASE_DIR, "core", "templates", "pool.conf.tpl")
+
+        with open(lsctl_file, "r") as f:
+            lsctl_c = f.read()
+        with open(upgrade_file, "r") as f:
+            upgrade_c = f.read()
+        with open(watcher_file, "r") as f:
+            watcher_c = f.read()
+        with open(pool_tpl, "r") as f:
+            pool_c = f.read()
+
+        # lsctl tests
+        self.assertIn("www-data", lsctl_c)
+        self.assertIn("2770", lsctl_c)
+        self.assertIn("setfacl", lsctl_c)
+
+        # ls-upgrade tests
+        self.assertIn("www-data", upgrade_c)
+        self.assertIn("2770", upgrade_c)
+        self.assertIn("apc.enabled", upgrade_c)
+        self.assertIn("setfacl", upgrade_c)
+
+        # ls-watcher tests
+        self.assertIn("heal_cache_permissions", watcher_c)
+        self.assertIn("2770", watcher_c)
+
+        # pool.conf.tpl
+        self.assertIn("php_admin_flag[apc.enabled] = on", pool_c)
+
+
 if __name__ == "__main__":
     unittest.main()

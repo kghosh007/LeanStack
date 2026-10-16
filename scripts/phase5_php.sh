@@ -121,6 +121,18 @@ opcache.jit_buffer_size = 64M
 EOF
         fi
 
+        # APCu High-Speed In-Memory Cache Tuning (64MB SHM, enable_cli=0)
+        APCU_INI="/etc/php/${VER}/mods-available/apcu.ini"
+        if [ -f "$APCU_INI" ]; then
+            grep -q "^apc.enabled" "$APCU_INI" || echo "apc.enabled = 1" >> "$APCU_INI"
+            grep -q "^apc.shm_size" "$APCU_INI" || echo "apc.shm_size = 64M" >> "$APCU_INI"
+            grep -q "^apc.enable_cli" "$APCU_INI" || echo "apc.enable_cli = 0" >> "$APCU_INI"
+            sed -i 's/^;*apc.enabled\s*=.*/apc.enabled = 1/' "$APCU_INI"
+            sed -i 's/^;*apc.shm_size\s*=.*/apc.shm_size = 64M/' "$APCU_INI"
+            sed -i 's/^;*apc.enable_cli\s*=.*/apc.enable_cli = 0/' "$APCU_INI"
+        fi
+        phpenmod -v "${VER}" apcu 2>/dev/null || true
+
         # Remove default www pool to prevent memory leaks / port conflicts
         mkdir -p "/etc/php/${VER}/fpm/pool.d"
         rm -f "/etc/php/${VER}/fpm/pool.d/www.conf"

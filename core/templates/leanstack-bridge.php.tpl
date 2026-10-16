@@ -509,7 +509,38 @@ class LeanStackBridge {
     }
 
     public function get_cache_dir() {
-        return '/var/cache/angie/sites/' . $this->get_domain();
+        $primary = '/var/cache/angie/sites/' . $this->get_domain();
+        if ( is_dir( $primary ) ) {
+            return $primary;
+        }
+
+        // Fallback domain candidate checking from WordPress site/home options
+        $candidates = array();
+        if ( function_exists( 'get_option' ) ) {
+            $site_url = get_option( 'siteurl' );
+            $home_url = get_option( 'home' );
+            if ( $site_url ) {
+                $h = parse_url( $site_url, PHP_URL_HOST );
+                if ( $h ) {
+                    $candidates[] = strtolower( $h );
+                }
+            }
+            if ( $home_url ) {
+                $h = parse_url( $home_url, PHP_URL_HOST );
+                if ( $h ) {
+                    $candidates[] = strtolower( $h );
+                }
+            }
+        }
+
+        foreach ( array_unique( $candidates ) as $cand_domain ) {
+            $cand_path = '/var/cache/angie/sites/' . $cand_domain;
+            if ( is_dir( $cand_path ) ) {
+                return $cand_path;
+            }
+        }
+
+        return $primary;
     }
 
     public function get_cache_config_file() {
@@ -585,6 +616,9 @@ class LeanStackBridge {
 
         $domain = strtolower( $host );
         $cache_dir = '/var/cache/angie/sites/' . $domain;
+        if ( ! is_dir( $cache_dir ) ) {
+            $cache_dir = $this->get_cache_dir();
+        }
 
         $schemes = array( 'https', 'http' );
         $variants = array( $path );
@@ -643,7 +677,7 @@ class LeanStackBridge {
 
     public function recursive_delete_dir_files( $dir ) {
         $count = 0;
-        if ( ! is_dir( $dir ) ) {
+        if ( ! is_dir( $dir ) || ! is_readable( $dir ) ) {
             return 0;
         }
         $items = @scandir( $dir );
@@ -657,7 +691,6 @@ class LeanStackBridge {
             $path = $dir . '/' . $item;
             if ( is_dir( $path ) ) {
                 $count += $this->recursive_delete_dir_files( $path );
-                @rmdir( $path );
             } elseif ( is_file( $path ) ) {
                 if ( @unlink( $path ) ) {
                     $count++;
@@ -687,21 +720,59 @@ class LeanStackBridge {
     }
 
     public function purge_tenant_apcu() {
+        if ( class_exists( 'LeanStackAPCu' ) && method_exists( 'LeanStackAPCu', 'get_instance' ) ) {
+            $apcu_inst = LeanStackAPCu::get_instance();
+            if ( method_exists( $apcu_inst, 'flush_tenant_cache' ) ) {
+                return $apcu_inst->flush_tenant_cache();
+            }
+        }
+
         $deleted = 0;
-        if ( function_exists( 'apcu_delete' ) && class_exists( 'APCUIterator' ) ) {
-            $salt = defined( 'AUTH_SALT' ) ? AUTH_SALT : 'leanstack_salt';
-            $db = defined( 'DB_NAME' ) ? DB_NAME : 'leanstack_db';
-            $prefix = 'ls_' . md5( $salt . $db ) . ':';
-            $regex = '/^' . preg_quote( $prefix, '/' ) . '/';
-            try {
-                $iterator = new APCUIterator( $regex );
-                foreach ( $iterator as $item ) {
-                    if ( isset( $item['key'] ) && @apcu_delete( $item['key'] ) ) {
-                        $deleted++;
+        $salt = ( defined( 'AUTH_SALT' ) && '' !== AUTH_SALT ) ? AUTH_SALT : 'leanstack';
+        $db = ( defined( 'DB_NAME' ) && '' !== DB_NAME ) ? DB_NAME : 'leanstack';
+        $prefix = 'ls_' . md5( $salt . $db ) . ':';
+
+        if ( function_exists( 'apcu_delete' ) ) {
+            if ( class_exists( 'APCUIterator' ) ) {
+                $regex = '/^' . preg_quote( $prefix, '/' ) . '/';
+                try {
+                    $iterator = new APCUIterator( $regex );
+                    $keys_to_delete = array();
+                    foreach ( $iterator as $item ) {
+                        if ( isset( $item['key'] ) ) {
+                            $keys_to_delete[] = $item['key'];
+                        }
                     }
+                    foreach ( $keys_to_delete as $k ) {
+                        if ( @apcu_delete( $k ) ) {
+                            $deleted++;
+                        }
+                    }
+                } catch ( Throwable $e ) {
+                    // Fallback to cache_info below
                 }
-            } catch ( Exception $e ) {
-                // Ignore iterator exceptions
+            }
+
+            if ( 0 === $deleted && function_exists( 'apcu_cache_info' ) ) {
+                try {
+                    $cinfo = @apcu_cache_info();
+                    if ( ! empty( $cinfo['cache_list'] ) && is_array( $cinfo['cache_list'] ) ) {
+                        $keys_to_delete = array();
+                        foreach ( $cinfo['cache_list'] as $entry ) {
+                            $k = isset( $entry['info'] ) ? $entry['info'] : ( isset( $entry['key'] ) ? $entry['key'] : '' );
+                            if ( 0 === strpos( $k, $prefix ) ) {
+                                $keys_to_delete[] = $k;
+                            }
+                        }
+                        foreach ( $keys_to_delete as $k ) {
+                            if ( @apcu_delete( $k ) ) {
+                                $deleted++;
+                            }
+                        }
+                    }
+                } catch ( Throwable $e ) {
+                    // Ignore
+                }
             }
         }
         return $deleted;
@@ -1169,32 +1240,64 @@ class LeanStackBridge {
         }
 
         // 3. APCu Tenant Analytics
-        if ( function_exists( 'apcu_sma_info' ) && function_exists( 'apcu_fetch' ) ) {
+        if ( ( function_exists( 'apcu_enabled' ) && apcu_enabled() ) || ( function_exists( 'apcu_sma_info' ) && function_exists( 'apcu_fetch' ) ) ) {
             $data['apcu']['enabled'] = true;
-            $sma = @apcu_sma_info( true );
-            $total_apcu = isset( $sma['num_seg'], $sma['seg_size'] ) ? ( $sma['num_seg'] * $sma['seg_size'] ) : 0;
-            $data['apcu']['total_memory_formatted'] = function_exists( 'size_format' ) ? size_format( $total_apcu, 2 ) : ( $total_apcu . ' B' );
+            if ( function_exists( 'apcu_sma_info' ) ) {
+                $sma = @apcu_sma_info( true );
+                $total_apcu = isset( $sma['num_seg'], $sma['seg_size'] ) ? ( $sma['num_seg'] * $sma['seg_size'] ) : 0;
+                $data['apcu']['total_memory_formatted'] = function_exists( 'size_format' ) ? size_format( $total_apcu, 2 ) : ( $total_apcu . ' B' );
+            }
+
+            $prefix = '';
+            if ( class_exists( 'LeanStackAPCu' ) && method_exists( 'LeanStackAPCu', 'get_instance' ) ) {
+                $apcu_inst = LeanStackAPCu::get_instance();
+                if ( method_exists( $apcu_inst, 'get_prefix' ) ) {
+                    $prefix = $apcu_inst->get_prefix();
+                }
+            }
+            if ( empty( $prefix ) ) {
+                $salt = ( defined( 'AUTH_SALT' ) && '' !== AUTH_SALT ) ? AUTH_SALT : 'leanstack';
+                $db = ( defined( 'DB_NAME' ) && '' !== DB_NAME ) ? DB_NAME : 'leanstack';
+                $prefix = 'ls_' . md5( $salt . $db ) . ':';
+            }
+
+            $keys = 0;
+            $mem = 0;
 
             if ( class_exists( 'APCUIterator' ) ) {
-                $salt = defined( 'AUTH_SALT' ) ? AUTH_SALT : 'leanstack_salt';
-                $db = defined( 'DB_NAME' ) ? DB_NAME : 'leanstack_db';
-                $prefix = 'ls_' . md5( $salt . $db ) . ':';
                 $regex = '/^' . preg_quote( $prefix, '/' ) . '/';
                 try {
                     $iterator = new APCUIterator( $regex );
-                    $keys = 0;
-                    $mem = 0;
                     foreach ( $iterator as $item ) {
                         $keys++;
                         $mem += isset( $item['mem_size'] ) ? $item['mem_size'] : 0;
                     }
-                    $data['apcu']['tenant_keys'] = $keys;
-                    $data['apcu']['tenant_memory'] = $mem;
-                    $data['apcu']['tenant_memory_formatted'] = function_exists( 'size_format' ) ? size_format( $mem, 2 ) : ( $mem . ' B' );
-                } catch ( Exception $e ) {
-                    // Ignore iterator error
+                } catch ( Throwable $e ) {
+                    // Fall through to cache_info fallback
                 }
             }
+
+            // Resilient fallback using apcu_cache_info if iterator returned 0 or threw an exception
+            if ( 0 === $keys && function_exists( 'apcu_cache_info' ) ) {
+                try {
+                    $cinfo = @apcu_cache_info();
+                    if ( ! empty( $cinfo['cache_list'] ) && is_array( $cinfo['cache_list'] ) ) {
+                        foreach ( $cinfo['cache_list'] as $entry ) {
+                            $k = isset( $entry['info'] ) ? $entry['info'] : ( isset( $entry['key'] ) ? $entry['key'] : '' );
+                            if ( 0 === strpos( $k, $prefix ) ) {
+                                $keys++;
+                                $mem += isset( $entry['mem_size'] ) ? $entry['mem_size'] : 0;
+                            }
+                        }
+                    }
+                } catch ( Throwable $e ) {
+                    // Ignore
+                }
+            }
+
+            $data['apcu']['tenant_keys'] = $keys;
+            $data['apcu']['tenant_memory'] = $mem;
+            $data['apcu']['tenant_memory_formatted'] = function_exists( 'size_format' ) ? size_format( $mem, 2 ) : ( $mem . ' B' );
         }
 
         // 4. System & Tenant CPU / Memory from /proc
@@ -1258,7 +1361,7 @@ class LeanStackBridge {
     }
 
     public function scan_cache_dir_stats( $dir, &$files, &$bytes ) {
-        if ( ! is_dir( $dir ) ) {
+        if ( ! is_dir( $dir ) || ! is_readable( $dir ) ) {
             return;
         }
         $items = @scandir( $dir );
@@ -1274,7 +1377,10 @@ class LeanStackBridge {
                 $this->scan_cache_dir_stats( $p, $files, $bytes );
             } elseif ( is_file( $p ) ) {
                 $files++;
-                $bytes += (int) @filesize( $p );
+                $sz = @filesize( $p );
+                if ( false !== $sz ) {
+                    $bytes += (int) $sz;
+                }
             }
         }
     }

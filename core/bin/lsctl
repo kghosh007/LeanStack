@@ -1120,7 +1120,8 @@ PY
 
         groupadd -f tenants
         groupadd -f valkey
-        useradd -m -s /bin/false -U -G tenants,valkey -d "/home/${USER_NAME}" "$USER_NAME"
+        useradd -m -s /bin/false -U -G tenants,valkey,www-data -d "/home/${USER_NAME}" "$USER_NAME"
+        usermod -a -G www-data "$USER_NAME" 2>/dev/null || true
         grep -q " ${DOMAIN}" /etc/hosts || echo "127.0.0.1 ${DOMAIN}" >> /etc/hosts
 
         mkdir -p "$WEB_ROOT" "$LOG_DIR" "/home/${USER_NAME}/tmp"
@@ -1307,9 +1308,19 @@ EOF
         # Scaffold Per-Site Dedicated FastCGI Cache Directory & Angie Zone
         ZONE_KEY=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g')
         SITE_CACHE_DIR="/var/cache/angie/sites/${DOMAIN}"
-        mkdir -p "$SITE_CACHE_DIR" /etc/angie/cache-zones
+        mkdir -p /var/cache/angie/sites /etc/angie/cache-zones
+        chmod 755 /var/cache/angie /var/cache/angie/sites 2>/dev/null || true
+        mkdir -p "$SITE_CACHE_DIR"
+        for hex in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
+            mkdir -p "${SITE_CACHE_DIR}/${hex}"/{0,1,2,3,4,5,6,7,8,9,a,b,c,d,e,f}{0,1,2,3,4,5,6,7,8,9,a,b,c,d,e,f}
+        done
         chown -R "${USER_NAME}:www-data" "$SITE_CACHE_DIR"
-        chmod 770 "$SITE_CACHE_DIR"
+        chmod 2770 "$SITE_CACHE_DIR"
+        find "$SITE_CACHE_DIR" -type d -exec chmod 2770 {} + 2>/dev/null || chmod -R 2770 "$SITE_CACHE_DIR"
+        if command -v setfacl &>/dev/null; then
+            setfacl -R -m "u:${USER_NAME}:rwx,g:www-data:rwx,m::rwx" "$SITE_CACHE_DIR" 2>/dev/null || true
+            setfacl -R -d -m "u:${USER_NAME}:rwx,g:www-data:rwx,m::rwx" "$SITE_CACHE_DIR" 2>/dev/null || true
+        fi
 
         cat > "/etc/angie/cache-zones/${DOMAIN}.conf" << EOF
 fastcgi_cache_path ${SITE_CACHE_DIR} levels=1:2 keys_zone=CACHE_${ZONE_KEY}:20m inactive=7d max_size=512m use_temp_path=off;

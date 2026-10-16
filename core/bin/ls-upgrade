@@ -544,16 +544,60 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                     elif not os.path.exists(prod_sec_hdr):
                         shutil.copy2(sec_hdr, prod_sec_hdr)
 
-                # 3. Ensure Dedicated Cache Directory & Angie Zone Exist
+                # 3. Ensure Dedicated Cache Directory, Group Access & Angie Zone Exist
+                try:
+                    import grp
+                    w_grp = grp.getgrnam("www-data")
+                    if user not in w_grp.gr_mem:
+                        subprocess.run(["usermod", "-a", "-G", "www-data", user], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        php_reloaded_needed = True
+                        self.log(f"Added tenant {user} to www-data group", Colors.GREEN, prefix="  ✔")
+                except Exception:
+                    try:
+                        subprocess.run(["usermod", "-a", "-G", "www-data", user], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
                 site_cache_dir = f"/var/cache/angie/sites/{domain}"
                 if os.path.isdir("/var/cache/angie"):
+                    try:
+                        os.chmod("/var/cache/angie", 0o755)
+                        os.makedirs("/var/cache/angie/sites", exist_ok=True)
+                        os.chmod("/var/cache/angie/sites", 0o755)
+                    except Exception:
+                        pass
                     os.makedirs(site_cache_dir, exist_ok=True)
+                    hex_chars = "0123456789abcdef"
+                    for h1 in hex_chars:
+                        h1_path = os.path.join(site_cache_dir, h1)
+                        os.makedirs(h1_path, exist_ok=True)
+                        for c1 in hex_chars:
+                            for c2 in hex_chars:
+                                os.makedirs(os.path.join(h1_path, c1 + c2), exist_ok=True)
                     try:
                         import pwd, grp
                         u_info = pwd.getpwnam(user)
                         w_info = grp.getgrnam("www-data")
+                        for root, dirs, files in os.walk(site_cache_dir):
+                            for d in dirs:
+                                dp = os.path.join(root, d)
+                                os.chown(dp, u_info.pw_uid, w_info.gr_gid)
+                                os.chmod(dp, 0o2770)
+                            for f in files:
+                                fp = os.path.join(root, f)
+                                os.chown(fp, u_info.pw_uid, w_info.gr_gid)
+                                os.chmod(fp, 0o660)
                         os.chown(site_cache_dir, u_info.pw_uid, w_info.gr_gid)
-                        os.chmod(site_cache_dir, 0o770)
+                        os.chmod(site_cache_dir, 0o2770)
+                    except Exception:
+                        pass
+                    try:
+                        subprocess.run([
+                            "setfacl", "-R", "-m", f"u:{user}:rwx,g:www-data:rwx,m::rwx", site_cache_dir
+                        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.run([
+                            "setfacl", "-R", "-d", "-m", f"u:{user}:rwx,g:www-data:rwx,m::rwx", site_cache_dir
+                        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
 
@@ -563,7 +607,7 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                     with open(zone_conf, "w") as f:
                         f.write(f"fastcgi_cache_path {site_cache_dir} levels=1:2 keys_zone=CACHE_{zone_key}:20m inactive=7d max_size=512m use_temp_path=off;\n")
 
-                # 3b. Reconcile PHP-FPM Pool open_basedir Permissions
+                # 3b. Reconcile PHP-FPM Pool open_basedir & APCu Permissions
                 php_ver = s["php_version"] if "php_version" in s.keys() else "8.5"
                 pool_paths = [
                     f"/etc/php/{php_ver}/fpm/pool.d/{user}.conf",
@@ -603,6 +647,11 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                                     p_content = re.sub(r"php_admin_value\[max_input_vars\]\s*=\s*\d+", "php_admin_value[max_input_vars] = 5000", p_content)
                                     p_changed = True
                                     self.log(f"Increased max_input_vars to 5000 for {user} ({pp})", Colors.GREEN, prefix="  ✔")
+
+                            if "apc.enabled" not in p_content:
+                                p_content = p_content.strip() + "\nphp_admin_flag[apc.enabled] = on\n"
+                                p_changed = True
+                                self.log(f"Enabled APCu accelerator flag for {user} ({pp})", Colors.GREEN, prefix="  ✔")
 
                             if p_changed:
                                 with open(pp, "w") as f_pf:
@@ -1009,6 +1058,40 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                 self.sync_templates_and_profiles()
             except Exception:
                 pass
+
+            # Reconcile APCu system configuration across installed PHP versions
+            for p_ver in ["8.5", "8.4", "8.3", "8.2", "8.1"]:
+                apcu_ini = f"/etc/php/{p_ver}/mods-available/apcu.ini"
+                if os.path.isfile(apcu_ini):
+                    try:
+                        with open(apcu_ini, "r") as f_ap:
+                            ap_data = f_ap.read()
+                        ap_mod = False
+                        if not re.search(r"^apc\.enabled\s*=\s*1", ap_data, re.M):
+                            if re.search(r"^;*apc\.enabled\s*=.*", ap_data, re.M):
+                                ap_data = re.sub(r"^;*apc\.enabled\s*=.*", "apc.enabled = 1", ap_data, flags=re.M)
+                            else:
+                                ap_data += "\napc.enabled = 1\n"
+                            ap_mod = True
+                        if not re.search(r"^apc\.shm_size\s*=\s*64M", ap_data, re.M):
+                            if re.search(r"^;*apc\.shm_size\s*=.*", ap_data, re.M):
+                                ap_data = re.sub(r"^;*apc\.shm_size\s*=.*", "apc.shm_size = 64M", ap_data, flags=re.M)
+                            else:
+                                ap_data += "\napc.shm_size = 64M\n"
+                            ap_mod = True
+                        if not re.search(r"^apc\.enable_cli\s*=\s*0", ap_data, re.M):
+                            if re.search(r"^;*apc\.enable_cli\s*=.*", ap_data, re.M):
+                                ap_data = re.sub(r"^;*apc\.enable_cli\s*=.*", "apc.enable_cli = 0", ap_data, flags=re.M)
+                            else:
+                                ap_data += "\napc.enable_cli = 0\n"
+                            ap_mod = True
+                        if ap_mod:
+                            with open(apcu_ini, "w") as f_ap:
+                                f_ap.write(ap_data)
+                            php_reloaded_needed = True
+                            self.log(f"Reconciled APCu 64MB shared memory in {apcu_ini}", Colors.GREEN, prefix="  ✔")
+                    except Exception as e:
+                        self.log(f"Notice: APCu config reconciliation: {e}", Colors.DIM, prefix="  ℹ")
 
         if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl") and os.path.isdir("/run/systemd/system"):
             if php_reloaded_needed:

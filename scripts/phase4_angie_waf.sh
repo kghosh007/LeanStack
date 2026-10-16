@@ -272,6 +272,7 @@ if [ ! -f /etc/angie/ssl/default.crt ] || [ ! -f /etc/angie/ssl/default.key ]; t
 fi
 
 mkdir -p /etc/angie/cache-zones /var/cache/angie/sites
+chmod 755 /var/cache/angie /var/cache/angie/sites 2>/dev/null || true
 
 # Stop and disable competing web servers if present
 systemctl stop apache2 2>/dev/null || true

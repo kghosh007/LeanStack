@@ -43,6 +43,7 @@ server {
     listen [::]:443 ssl;
     listen 443 quic;
     listen [::]:443 quic;
+    http2 on;
 
     server_name {{DOMAIN}};
     root {{WEB_ROOT}};

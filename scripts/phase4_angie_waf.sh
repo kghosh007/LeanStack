@@ -213,19 +213,24 @@ http {
     # ==============================================================================
     # SSL Labs A+ (100% Score) Global TLS Configuration
     # ==============================================================================
-    # 1. Session Resumption (Shared Cache + Multi-Worker Ticket Key)
+    # 1. Session Resumption (Shared Cache + Forward Secrecy)
     ssl_session_timeout 1d;
     ssl_session_cache shared:SSL:50m;
-    ssl_session_tickets on;
+    ssl_session_tickets off;
     ssl_session_ticket_key /etc/angie/tls_session_ticket.key;
 
-    # 2. Maximum Cipher Strength: Pure 256-Bit AEAD Modern Ciphers
+    # 2. Maximum Cipher Strength: TLS 1.3 + Full TLS 1.2 ECDHE AEAD Ciphers
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
     ssl_prefer_server_ciphers on;
 
-    # 3. Post-Quantum Cryptography (PQC) Auto-Negotiation (X25519MLKEM768)
-    ssl_ecdh_curve X25519MLKEM768:x25519:secp384r1;
+    # 3. Post-Quantum Cryptography (PQC) Auto-Negotiation (X25519MLKEM768) + ECDHE Curves
+    ssl_ecdh_curve X25519MLKEM768:x25519:prime256v1:secp384r1;
+
+    # 3b. HTTP/2 & HTTP/3 QUIC Transport Optimization
+    http2 on;
+    quic_gso on;
+    quic_retry on;
 
     # 4. OCSP Stapling (Faster Handshakes & Enhanced Trust)
     ssl_stapling on;
@@ -279,6 +284,16 @@ systemctl stop apache2 2>/dev/null || true
 systemctl disable apache2 2>/dev/null || true
 systemctl stop nginx 2>/dev/null || true
 systemctl disable nginx 2>/dev/null || true
+
+# Detect OpenSSL PQC (X25519MLKEM768) support and fallback gracefully if needed
+if ! (openssl list -kem-algorithms 2>/dev/null | grep -qiE "ML-KEM-768|X25519MLKEM768" || openssl ecparam -list_curves 2>/dev/null | grep -qi "X25519MLKEM768"); then
+    if ! angie -t 2>/dev/null; then
+        sed -i 's/ssl_ecdh_curve X25519MLKEM768:x25519:prime256v1:secp384r1;/ssl_ecdh_curve x25519:prime256v1:secp384r1;/' /etc/angie/angie.conf
+    fi
+fi
+if ! angie -t 2>/dev/null; then
+    sed -i 's/ssl_ecdh_curve X25519MLKEM768:x25519:prime256v1:secp384r1;/ssl_ecdh_curve x25519:prime256v1:secp384r1;/' /etc/angie/angie.conf
+fi
 
 # Validate syntax and reload
 angie -t

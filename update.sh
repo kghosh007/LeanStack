@@ -100,6 +100,10 @@ if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/core/bin" ]; then
     if [ -d "${INSTALL_DIR}/core/templates" ]; then
         cp -a "${INSTALL_DIR}/core/templates/"* /etc/lsctl/templates/ 2>/dev/null || true
     fi
+    if [ -d "${INSTALL_DIR}/core/snippets" ] && [ -d "/etc/angie" ]; then
+        mkdir -p /etc/angie/snippets
+        cp -a "${INSTALL_DIR}/core/snippets/"*.conf /etc/angie/snippets/ 2>/dev/null || true
+    fi
     if [ -d "${INSTALL_DIR}/systemd" ] && [ -d "/etc/systemd/system" ]; then
         for u in "${INSTALL_DIR}/systemd/"*.service "${INSTALL_DIR}/systemd/"*.timer; do
             [ -f "$u" ] || continue

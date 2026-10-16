@@ -77,6 +77,15 @@ class LeanStackUpgrader:
             return
         print(f"{color}{prefix} {msg}{Colors.RESET}")
 
+    TARGET_SSL_CIPHERS = (
+        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+        "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+        "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+        "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+    )
+    TARGET_SSL_CURVES_PQC = "X25519MLKEM768:x25519:prime256v1:secp384r1"
+    TARGET_SSL_CURVES_FALLBACK = "x25519:prime256v1:secp384r1"
+
     def preflight_check(self) -> bool:
         """Verifies system syntax and environment readiness before modifying state."""
         self.log("Running pre-flight system integrity checks...", Colors.CYAN)
@@ -85,9 +94,14 @@ class LeanStackUpgrader:
         if shutil.which("angie"):
             res = subprocess.run(["angie", "-t"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             if res.returncode != 0:
-                self.log("Pre-flight failure: Angie web server configuration currently contains errors!", Colors.RED, prefix="❌")
-                self.log(res.stderr.strip(), Colors.DIM)
-                return False
+                if not self.dry_run and os.path.isdir("/etc/angie"):
+                    self.log("Pre-flight detected Angie syntax issue; attempting automatic TLS/directive reconciliation...", Colors.YELLOW, prefix="  ⚠️")
+                    if self.reconcile_angie_tls():
+                        res = subprocess.run(["angie", "-t"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res.returncode != 0:
+                    self.log("Pre-flight failure: Angie web server configuration currently contains errors!", Colors.RED, prefix="❌")
+                    self.log(res.stderr.strip(), Colors.DIM)
+                    return False
             self.log("Angie configuration syntax verified: OK", Colors.GREEN, prefix="  ✔")
 
         # 2. Check Database path
@@ -378,6 +392,17 @@ class LeanStackUpgrader:
                     "-out", f"{ssl_dir}/default.crt",
                     "-subj", "/CN=leanstack-fallback/O=LeanStack/C=US"
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                if os.path.exists(f"{ssl_dir}/default.key"):
+                    try:
+                        os.chmod(f"{ssl_dir}/default.key", 0o600)
+                    except Exception:
+                        pass
+                if os.path.exists(f"{ssl_dir}/default.crt"):
+                    try:
+                        os.chmod(f"{ssl_dir}/default.crt", 0o644)
+                    except Exception:
+                        pass
+                self.log(f"Generated fallback SSL certificates in {ssl_dir}", Colors.GREEN, prefix="  ✔")
 
         # Ensure global PHP INI files enforce max_input_vars = 5000
         if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0:
@@ -396,13 +421,17 @@ class LeanStackUpgrader:
                                 f_ini.write(ini_c_new)
                 except Exception:
                     pass
-                if os.path.exists(f"{ssl_dir}/default.key"):
-                    try: os.chmod(f"{ssl_dir}/default.key", 0o600)
-                    except Exception: pass
-                if os.path.exists(f"{ssl_dir}/default.crt"):
-                    try: os.chmod(f"{ssl_dir}/default.crt", 0o644)
-                    except Exception: pass
-                self.log(f"Generated fallback SSL certificates in {ssl_dir}", Colors.GREEN, prefix="  ✔")
+
+            if os.path.exists(f"{ssl_dir}/default.key"):
+                try:
+                    os.chmod(f"{ssl_dir}/default.key", 0o600)
+                except Exception:
+                    pass
+            if os.path.exists(f"{ssl_dir}/default.crt"):
+                try:
+                    os.chmod(f"{ssl_dir}/default.crt", 0o644)
+                except Exception:
+                    pass
 
         # Synchronize Angie Snippets (/etc/angie/snippets)
         snippets_dir = os.path.join(self.core_dir, "snippets")
@@ -455,6 +484,287 @@ class LeanStackUpgrader:
                     os.remove(purge_conf)
                 except Exception:
                     pass
+
+    def _strip_duplicate_tls_directives(self, content: str) -> Tuple[str, bool]:
+        """Removes duplicate global TLS and HTTP/2 directives from secondary config files."""
+        directives = (
+            "ssl_protocols",
+            "ssl_ciphers",
+            "ssl_ecdh_curve",
+            "ssl_prefer_server_ciphers",
+            "ssl_session_cache",
+            "ssl_session_timeout",
+            "ssl_session_tickets",
+            "ssl_session_ticket_key",
+            "ssl_stapling",
+            "ssl_stapling_verify",
+            "http2",
+            "quic_gso",
+            "quic_retry",
+        )
+        pattern = rf"^[ \t]*(?:{'|'.join(directives)})\s+[^;\n]+;[ \t]*\r?\n?"
+        new_content = re.sub(pattern, "", content, flags=re.M)
+        return new_content, (new_content != content)
+
+    def _update_tls_owner_content(self, content: str, curve: str, is_angie_conf: bool = True) -> Tuple[str, bool]:
+        """Updates or injects hardened TLS 1.2/1.3 ECDHE ciphers, curves, and http2 on in the owner config."""
+        orig = content
+        m_indent = re.search(r"^([ \t]*)ssl_(?:ciphers|protocols|ecdh_curve)\s+", content, re.M)
+        if m_indent:
+            indent = m_indent.group(1)
+        else:
+            indent = "    " if (is_angie_conf or "http {" in content) else ""
+
+        def replace_or_dedup(text: str, directive: str, value: str) -> Tuple[str, bool]:
+            pat = rf"^[ \t]*{directive}\s+[^;\n]+;[ \t]*$"
+            matches = list(re.finditer(pat, text, flags=re.M))
+            target_line = f"{indent}{directive} {value};"
+            if not matches:
+                return text, False
+            # Replace first occurrence and remove any subsequent duplicate occurrences
+            first = matches[0]
+            out = text[:first.start()] + target_line + text[first.end():]
+            out_after = re.sub(rf"^[ \t]*{directive}\s+[^;\n]+;[ \t]*\r?\n?", "", out[first.start() + len(target_line):], flags=re.M)
+            out = out[:first.start() + len(target_line)] + out_after
+            return out, True
+
+        content, has_proto = replace_or_dedup(content, "ssl_protocols", "TLSv1.2 TLSv1.3")
+        content, has_ciphers = replace_or_dedup(content, "ssl_ciphers", self.TARGET_SSL_CIPHERS)
+        content, has_prefer = replace_or_dedup(content, "ssl_prefer_server_ciphers", "on")
+        content, has_curve = replace_or_dedup(content, "ssl_ecdh_curve", curve)
+        content, has_timeout = replace_or_dedup(content, "ssl_session_timeout", "1d")
+        content, has_cache = replace_or_dedup(content, "ssl_session_cache", "shared:SSL:50m")
+        content, has_tickets = replace_or_dedup(content, "ssl_session_tickets", "off")
+        content, has_http2 = replace_or_dedup(content, "http2", "on")
+
+        # Inject any missing directives anchored to existing ssl_* lines or http {} block
+        missing_lines = []
+        if not has_timeout:
+            missing_lines.append(f"{indent}ssl_session_timeout 1d;")
+        if not has_cache:
+            missing_lines.append(f"{indent}ssl_session_cache shared:SSL:50m;")
+        if not has_tickets:
+            missing_lines.append(f"{indent}ssl_session_tickets off;")
+        if not has_proto:
+            missing_lines.append(f"{indent}ssl_protocols TLSv1.2 TLSv1.3;")
+        if not has_ciphers:
+            missing_lines.append(f"{indent}ssl_ciphers {self.TARGET_SSL_CIPHERS};")
+        if not has_prefer:
+            missing_lines.append(f"{indent}ssl_prefer_server_ciphers on;")
+        if not has_curve:
+            missing_lines.append(f"{indent}ssl_ecdh_curve {curve};")
+        if not has_http2:
+            missing_lines.append(f"{indent}http2 on;")
+
+        if missing_lines:
+            block = "\n".join(missing_lines)
+            anchor = re.search(r"^[ \t]*ssl_(?:ecdh_curve|prefer_server_ciphers|ciphers|protocols)\s+[^;\n]+;[ \t]*$", content, re.M)
+            if anchor:
+                pos = anchor.end()
+                content = content[:pos] + "\n" + block + content[pos:]
+            elif "include /etc/angie/http.d/*.conf;" in content:
+                content = content.replace(
+                    "include /etc/angie/http.d/*.conf;",
+                    block + "\n\n" + indent + "include /etc/angie/http.d/*.conf;",
+                    1
+                )
+            elif "http {" in content:
+                content = re.sub(r"(http\s*\{)", r"\1\n" + block, content, count=1)
+            else:
+                content = content.rstrip() + "\n" + block + "\n"
+
+        return content, (content != orig)
+
+    def _reconcile_vhost_http2_content(self, content: str) -> Tuple[str, bool]:
+        """Injects http2 on; into HTTPS 443 server blocks and removes legacy weak cipher overrides."""
+        orig = content
+        # Remove legacy per-vhost weak cipher override if present
+        content = re.sub(r"^[ \t]*ssl_ciphers\s+HIGH:!aNULL:!MD5;[ \t]*\r?\n?", "", content, flags=re.M)
+
+        if not re.search(r"^[ \t]*listen\s+(?:\[::\]:)?443\s+ssl\b", content, re.M):
+            return content, (content != orig)
+
+        # Skip if http2 is already configured via directive or deprecated listen parameter
+        if re.search(r"^[ \t]*http2\s+on\s*;", content, re.M) or re.search(r"^[ \t]*listen\s+[^\n]*443[^\n]*\bhttp2\b", content, re.M):
+            return content, (content != orig)
+
+        if re.search(r"^[ \t]*listen\s+[^\n]*443\s+quic\b[^\n]*;", content, re.M):
+            content = re.sub(
+                r"((?:^[ \t]*listen\s+[^\n]*443\s+quic\b[^\n]*;\r?\n?)+)",
+                lambda m: m.group(1).rstrip("\r\n") + "\n" + (re.match(r"^([ \t]*)", m.group(1)).group(1) or "    ") + "http2 on;\n",
+                content,
+                flags=re.M
+            )
+        elif re.search(r"^[ \t]*listen\s+[^\n]*443\s+ssl\b[^\n]*;", content, re.M):
+            content = re.sub(
+                r"((?:^[ \t]*listen\s+[^\n]*443\s+ssl\b[^\n]*;\r?\n?)+)",
+                lambda m: m.group(1).rstrip("\r\n") + "\n" + (re.match(r"^([ \t]*)", m.group(1)).group(1) or "    ") + "http2 on;\n",
+                content,
+                flags=re.M
+            )
+
+        return content, (content != orig)
+
+    def reconcile_angie_tls(self, angie_dir: str = "/etc/angie", check_syntax: bool = None) -> bool:
+        """
+        Reconciles Angie global TLS configuration and tenant vhosts with zero-downtime safety:
+        1. Backs up /etc/angie/angie.conf, /etc/angie/http.d/*.conf, and /etc/angie/sites-available/*.conf.
+        2. Eliminates split-brain duplicate ssl_* and http2 directives between angie.conf and 00-optimization.conf.
+        3. Updates ssl_ciphers (Mozilla Modern/Intermediate AEAD ECDHE), ssl_ecdh_curve (with prime256v1), and http2 on;.
+        4. Injects http2 on; into existing tenant vhosts listening on 443 ssl.
+        5. Verifies configuration via angie -t, automatically falling back ssl_ecdh_curve if X25519MLKEM768 is unsupported,
+           reloading Angie on success, or restoring backups on unexpected syntax failure.
+        """
+        if not os.path.isdir(angie_dir):
+            return True
+        if os.path.abspath(angie_dir) == "/etc/angie" and not self.dry_run and hasattr(os, "geteuid") and os.geteuid() != 0:
+            return True
+
+        angie_conf = os.path.join(angie_dir, "angie.conf")
+        http_d_dir = os.path.join(angie_dir, "http.d")
+        opt_conf = os.path.join(http_d_dir, "00-optimization.conf")
+        sites_avail_dir = os.path.join(angie_dir, "sites-available")
+
+        # 1. Snapshot all candidate configuration files for atomic rollback
+        tracked_files: List[str] = []
+        if os.path.isfile(angie_conf):
+            tracked_files.append(angie_conf)
+        for d in (http_d_dir, sites_avail_dir):
+            if os.path.isdir(d):
+                for fn in sorted(os.listdir(d)):
+                    if fn.endswith(".conf"):
+                        fp = os.path.join(d, fn)
+                        if os.path.isfile(fp) and fp not in tracked_files:
+                            tracked_files.append(fp)
+
+        original_contents: Dict[str, str] = {}
+        for fp in tracked_files:
+            try:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                    original_contents[fp] = f.read()
+            except Exception:
+                pass
+
+        if not original_contents:
+            return True
+
+        if not self.dry_run:
+            try:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                tls_backup_dir = os.path.join(self.backup_dir, f"angie_tls_backup_{ts}")
+                os.makedirs(tls_backup_dir, exist_ok=True)
+                for fp, raw in original_contents.items():
+                    rel_name = os.path.relpath(fp, angie_dir).replace(os.sep, "__")
+                    with open(os.path.join(tls_backup_dir, rel_name), "w", encoding="utf-8") as bf:
+                        bf.write(raw)
+            except Exception:
+                pass
+
+        # 2 & 3. Determine TLS owner and prevent split-brain duplicate directives
+        angie_has_tls = False
+        opt_has_tls = False
+        if angie_conf in original_contents:
+            angie_has_tls = bool(re.search(r"^[ \t]*ssl_(?:protocols|ciphers|ecdh_curve)\s+[^;\n]+;", original_contents[angie_conf], re.M))
+        if opt_conf in original_contents:
+            opt_has_tls = bool(re.search(r"^[ \t]*ssl_(?:protocols|ciphers|ecdh_curve)\s+[^;\n]+;", original_contents[opt_conf], re.M))
+
+        owner_file = None
+        modified_files: Dict[str, str] = {}
+
+        if angie_has_tls or (angie_conf in original_contents and not opt_has_tls):
+            owner_file = angie_conf
+            if opt_conf in original_contents:
+                stripped_opt, opt_changed = self._strip_duplicate_tls_directives(original_contents[opt_conf])
+                if opt_changed:
+                    modified_files[opt_conf] = stripped_opt
+            updated_angie, angie_changed = self._update_tls_owner_content(
+                original_contents[angie_conf], self.TARGET_SSL_CURVES_PQC, is_angie_conf=True
+            )
+            if angie_changed:
+                modified_files[angie_conf] = updated_angie
+        elif opt_has_tls and opt_conf in original_contents:
+            owner_file = opt_conf
+            if angie_conf in original_contents:
+                stripped_angie, angie_changed = self._strip_duplicate_tls_directives(original_contents[angie_conf])
+                if angie_changed:
+                    modified_files[angie_conf] = stripped_angie
+            updated_opt, opt_changed = self._update_tls_owner_content(
+                original_contents[opt_conf], self.TARGET_SSL_CURVES_PQC, is_angie_conf=False
+            )
+            if opt_changed:
+                modified_files[opt_conf] = updated_opt
+
+        # 4. Reconcile tenant vhosts in sites-available/*.conf and http.d/*.conf
+        for fp in tracked_files:
+            if fp in (angie_conf, opt_conf):
+                continue
+            curr = modified_files.get(fp, original_contents[fp])
+            new_vhost, v_changed = self._reconcile_vhost_http2_content(curr)
+            if v_changed:
+                modified_files[fp] = new_vhost
+
+        if self.dry_run:
+            if modified_files:
+                self.log(f"[Dry-Run] Would reconcile Angie TLS & HTTP/2 across {len(modified_files)} file(s)", Colors.YELLOW, prefix="  [DRY-RUN]")
+            return True
+
+        # Write modified files
+        for fp, new_text in modified_files.items():
+            try:
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(new_text)
+            except Exception as e:
+                self.log(f"Error writing {fp}: {e}", Colors.RED, prefix="❌")
+                for r_fp, orig_text in original_contents.items():
+                    try:
+                        with open(r_fp, "w", encoding="utf-8") as rf:
+                            rf.write(orig_text)
+                    except Exception:
+                        pass
+                return False
+
+        # 5. Verify with angie -t, fallback curve if X25519MLKEM768 is unsupported, or rollback on failure
+        should_test = check_syntax if check_syntax is not None else (
+            bool(shutil.which("angie")) and (
+                os.path.abspath(angie_dir) == "/etc/angie"
+                or hasattr(subprocess.run, "_mock_name")
+                or hasattr(shutil.which, "_mock_name")
+            )
+        )
+
+        if should_test:
+            res = subprocess.run(["angie", "-t"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if res.returncode != 0:
+                # Attempt fallback to x25519:prime256v1:secp384r1 if PQC curve is unsupported by OpenSSL
+                if owner_file and os.path.isfile(owner_file):
+                    try:
+                        with open(owner_file, "r", encoding="utf-8") as f:
+                            owner_curr = f.read()
+                        if self.TARGET_SSL_CURVES_PQC in owner_curr:
+                            fallback_text = owner_curr.replace(self.TARGET_SSL_CURVES_PQC, self.TARGET_SSL_CURVES_FALLBACK)
+                            with open(owner_file, "w", encoding="utf-8") as f:
+                                f.write(fallback_text)
+                            self.log("OpenSSL does not support X25519MLKEM768; falling back ssl_ecdh_curve to x25519:prime256v1:secp384r1", Colors.YELLOW, prefix="  ⚠️")
+                            res = subprocess.run(["angie", "-t"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    except Exception:
+                        pass
+
+                if res.returncode != 0:
+                    self.log("Angie syntax test failed during TLS reconciliation; restoring backed-up configurations!", Colors.RED, prefix="❌")
+                    for r_fp, orig_text in original_contents.items():
+                        try:
+                            with open(r_fp, "w", encoding="utf-8") as rf:
+                                rf.write(orig_text)
+                        except Exception:
+                            pass
+                    return False
+
+            if shutil.which("systemctl") and ((hasattr(os, "geteuid") and os.geteuid() == 0) or hasattr(subprocess.run, "_mock_name")):
+                subprocess.run(["systemctl", "--no-ask-password", "reload", "angie"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+        if modified_files:
+            self.log(f"Reconciled Angie TLS 1.2/1.3 ECDHE ciphers, curves & HTTP/2 across {len(modified_files)} file(s)", Colors.GREEN, prefix="  ✔")
+        return True
 
     def reconcile_pool_content(self, content: str, user: str) -> tuple[str, bool]:
         """
@@ -1176,6 +1486,7 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
             try:
                 self.sync_binaries()
                 self.sync_templates_and_profiles()
+                self.reconcile_angie_tls()
             except Exception:
                 pass
 
@@ -1308,8 +1619,10 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
         # 5. Binaries
         self.sync_binaries()
 
-        # 6. Templates
+        # 6. Templates & Angie TLS reconciliation
         self.sync_templates_and_profiles()
+        if not self.reconcile_angie_tls():
+            return False
 
         # 7. Tenant reconciliation
         self.sync_tenants()

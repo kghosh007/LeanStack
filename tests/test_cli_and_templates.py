@@ -10,6 +10,7 @@ import yaml
 import sqlite3
 import tempfile
 import json
+import re
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -83,14 +84,81 @@ class TestProfilesAndTemplates(unittest.TestCase):
             content = f.read()
 
         self.assertIn("php_admin_value[open_basedir]", content)
+        self.assertIn("php_admin_value[open_basedir] = /home/{{USER_NAME}}", content)
         self.assertNotIn(":/tmp", content)  # Global /tmp must not be in open_basedir
         self.assertIn("php_admin_value[disable_functions]", content)
-        self.assertIn("dl,symlink,link", content)
+        self.assertIn("dl,opcache_reset", content)
+        self.assertNotIn("symlink", content)
+        self.assertNotIn("link,", content)
         self.assertIn("php_admin_value[upload_tmp_dir]", content)
         self.assertIn("listen.mode = 0660", content)
         self.assertIn("/run/valkey", content)
         self.assertIn("/run/mysqld", content)
         self.assertIn("php_admin_value[max_input_vars] = 5000", content)
+
+    def test_bridge_logs_manager(self):
+        """Verify leanstack-bridge.php.tpl registers Tools > Logs, enforces strict sandboxing, and secures wp-config."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        self.assertTrue(os.path.exists(bridge_tpl))
+        with open(bridge_tpl, "r") as f:
+            content = f.read()
+
+        # Menu and actions
+        self.assertIn("leanstack-logs", content)
+        self.assertIn("save_log_settings", content)
+        self.assertIn("handle_clear_log", content)
+        self.assertIn("handle_download_log", content)
+        self.assertIn("ajax_get_log_tail", content)
+        self.assertIn("WP_DEBUG", content)
+        self.assertIn("WP_DEBUG_LOG", content)
+        self.assertIn("WP_DEBUG_DISPLAY", content)
+        self.assertIn("read_log_tail", content)
+        self.assertIn("get_available_logs", content)
+
+        # Security & sandboxing assertions
+        self.assertIn("is_valid_log_path", content)
+        self.assertNotIn("'/var/log/angie/error.log'", content)
+        self.assertNotIn("'/var/log/angie/access.log'", content)
+        self.assertNotIn("'/var/log/php-slow.log'", content)
+        self.assertIn("@chmod( $temp_file, 0600 );", content)
+        self.assertIn("ob_end_clean()", content)
+
+    def test_wp_config_debug_settings_regex(self):
+        """Verify regex correctly parses and updates wp-config.php with nested parens, comments, and CRLF without duplicates."""
+        sample_config = (
+            "<?php\r\n"
+            "define( 'DB_NAME', 'sample_db' );\r\n"
+            "define( 'WP_DEBUG', false ); // master debug\r\n"
+            "define( 'WP_DEBUG_LOG', dirname(__FILE__) . '/logs/wp-debug.log' );\r\n"
+            "define( 'WP_DEBUG_DISPLAY', false );\r\n"
+            "@ini_set( 'display_errors', '0' );\r\n"
+            "require_once ABSPATH . 'wp-settings.php';\r\n"
+        )
+
+        # 1. Test parsing with nested parentheses in WP_DEBUG_LOG
+        m_debug = re.search(r"^[ \t]*define\s*\(\s*['\"]WP_DEBUG['\"]\s*,\s*(true|false|1|0)", sample_config, re.M | re.I)
+        self.assertTrue(m_debug)
+        self.assertEqual(m_debug.group(1).lower(), "false")
+
+        m_log = re.search(r"^[ \t]*define\s*\(\s*['\"]WP_DEBUG_LOG['\"]\s*,\s*(.+?)\s*\)\s*;", sample_config, re.M | re.I)
+        self.assertTrue(m_log)
+        self.assertEqual(m_log.group(1).strip(), "dirname(__FILE__) . '/logs/wp-debug.log'")
+
+        # 2. Test regex update of WP_DEBUG_LOG to a new path
+        new_path = "'/home/staging_mfeasy_4809/logs/wp-debug.log'"
+        re_log = r"^[ \t]*(?://|#)?[ \t]*define\s*\(\s*(['\"])WP_DEBUG_LOG\1\s*,.*?\)\s*;.*$"
+        updated_config = re.sub(re_log, f"define( 'WP_DEBUG_LOG', {new_path} );", sample_config, count=1, flags=re.M | re.I)
+
+        self.assertIn(f"define( 'WP_DEBUG_LOG', {new_path} );", updated_config)
+        self.assertNotIn("dirname(__FILE__)", updated_config)
+        # Ensure only 1 instance of WP_DEBUG_LOG exists (no duplicate injection)
+        self.assertEqual(len(re.findall(r"WP_DEBUG_LOG", updated_config)), 1)
+
+        # 3. Test commented-out WP_DEBUG update
+        commented_config = "<?php\n// define( 'WP_DEBUG', false );\n"
+        re_debug = r"^[ \t]*(?://|#)?[ \t]*define\s*\(\s*(['\"])WP_DEBUG\1\s*,.*?\)\s*;.*$"
+        uncommented = re.sub(re_debug, "define( 'WP_DEBUG', true );", commented_config, count=1, flags=re.M | re.I)
+        self.assertEqual(uncommented, "<?php\ndefine( 'WP_DEBUG', true );\n")
 
     def test_wp_config_template_socket_and_proxy(self):
         """Verify wp-config.php.tpl configures Valkey ACL socket, database, and reverse-proxy SSL."""

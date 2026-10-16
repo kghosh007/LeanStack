@@ -456,6 +456,73 @@ class LeanStackUpgrader:
                 except Exception:
                     pass
 
+    def reconcile_pool_content(self, content: str, user: str) -> tuple[str, bool]:
+        """
+        Reconciles PHP-FPM pool configuration for tenant sandboxing:
+        1. Updates open_basedir to allow /home/{user} directly while retaining sockets, Angie cache, and /proc
+        2. Removes symlink and link from disable_functions for Query Monitor drop-in support
+        3. Configures max_input_vars = 5000
+        4. Enables APCu accelerator flag
+        """
+        p_changed = False
+        p_content = content
+
+        # 1. Reconcile open_basedir to allow /home/{user} directly and include sockets
+        ob_match = re.search(r"php_admin_value\[open_basedir\]\s*=\s*([^\n]+)", p_content)
+        if ob_match:
+            ob_val = ob_match.group(1).strip()
+            parts = [p.strip() for p in ob_val.split(":") if p.strip()]
+            u_home = f"/home/{user}"
+            if u_home not in parts or any(p.startswith(u_home + "/") for p in parts):
+                new_parts = [u_home]
+                for p in parts:
+                    if p == u_home or p.startswith(u_home + "/"):
+                        continue
+                    if p not in new_parts:
+                        new_parts.append(p)
+                for req_path in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc"]:
+                    if req_path not in new_parts:
+                        new_parts.append(req_path)
+                new_ob_line = f"php_admin_value[open_basedir] = {':'.join(new_parts)}"
+                if new_ob_line != ob_match.group(0):
+                    p_content = p_content.replace(ob_match.group(0), new_ob_line)
+                    p_changed = True
+            else:
+                needed = [req for req in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc"] if req not in parts]
+                if needed:
+                    new_parts = list(parts) + needed
+                    new_ob_line = f"php_admin_value[open_basedir] = {':'.join(new_parts)}"
+                    p_content = p_content.replace(ob_match.group(0), new_ob_line)
+                    p_changed = True
+
+        # 2. Reconcile disable_functions (remove symlink,link for Query Monitor compatibility)
+        df_match = re.search(r"php_admin_value\[disable_functions\]\s*=\s*([^\n]+)", p_content)
+        if df_match:
+            df_val = df_match.group(1).strip()
+            funcs = [f.strip() for f in df_val.split(",") if f.strip()]
+            if "symlink" in funcs or "link" in funcs:
+                funcs = [f for f in funcs if f not in ("symlink", "link")]
+                new_df_line = f"php_admin_value[disable_functions] = {','.join(funcs)}"
+                p_content = p_content.replace(df_match.group(0), new_df_line)
+                p_changed = True
+
+        # 3. max_input_vars
+        if "max_input_vars" not in p_content:
+            p_content = p_content.strip() + "\nphp_admin_value[max_input_vars] = 5000\n"
+            p_changed = True
+        elif re.search(r"php_admin_value\[max_input_vars\]\s*=\s*(\d+)", p_content):
+            m_vars = re.search(r"php_admin_value\[max_input_vars\]\s*=\s*(\d+)", p_content)
+            if int(m_vars.group(1)) < 3000:
+                p_content = re.sub(r"php_admin_value\[max_input_vars\]\s*=\s*\d+", "php_admin_value[max_input_vars] = 5000", p_content)
+                p_changed = True
+
+        # 4. APCu flag
+        if "apc.enabled" not in p_content:
+            p_content = p_content.strip() + "\nphp_admin_flag[apc.enabled] = on\n"
+            p_changed = True
+
+        return p_content, p_changed
+
     def sync_tenants(self) -> int:
         """
         Synchronizes all existing active tenant sites:
@@ -622,40 +689,11 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         try:
                             with open(pp, "r") as f_pf:
                                 p_content = f_pf.read()
-                            p_changed = False
-                            if "/run/valkey" not in p_content or "/run/mysqld" not in p_content:
-                                def _update_ob(m):
-                                    line = m.group(0)
-                                    if "/run/valkey" not in line:
-                                        line += ":/run/valkey"
-                                    if "/run/mysqld" not in line:
-                                        line += ":/run/mysqld"
-                                    return line
-                                p_new = re.sub(r"php_admin_value\[open_basedir\]\s*=\s*[^\n]+", _update_ob, p_content)
-                                if p_new != p_content:
-                                    p_content = p_new
-                                    p_changed = True
-                                    self.log(f"Updated PHP-FPM open_basedir with Valkey/MariaDB sockets for {user} ({pp})", Colors.GREEN, prefix="  ✔")
-
-                            if "max_input_vars" not in p_content:
-                                p_content = p_content.strip() + "\nphp_admin_value[max_input_vars] = 5000\n"
-                                p_changed = True
-                                self.log(f"Configured max_input_vars = 5000 for {user} ({pp})", Colors.GREEN, prefix="  ✔")
-                            elif re.search(r"php_admin_value\[max_input_vars\]\s*=\s*(\d+)", p_content):
-                                m_vars = re.search(r"php_admin_value\[max_input_vars\]\s*=\s*(\d+)", p_content)
-                                if int(m_vars.group(1)) < 3000:
-                                    p_content = re.sub(r"php_admin_value\[max_input_vars\]\s*=\s*\d+", "php_admin_value[max_input_vars] = 5000", p_content)
-                                    p_changed = True
-                                    self.log(f"Increased max_input_vars to 5000 for {user} ({pp})", Colors.GREEN, prefix="  ✔")
-
-                            if "apc.enabled" not in p_content:
-                                p_content = p_content.strip() + "\nphp_admin_flag[apc.enabled] = on\n"
-                                p_changed = True
-                                self.log(f"Enabled APCu accelerator flag for {user} ({pp})", Colors.GREEN, prefix="  ✔")
-
+                            p_new, p_changed = self.reconcile_pool_content(p_content, user)
                             if p_changed:
                                 with open(pp, "w") as f_pf:
-                                    f_pf.write(p_content)
+                                    f_pf.write(p_new)
+                                self.log(f"Reconciled PHP-FPM pool for {user} ({pp})", Colors.GREEN, prefix="  ✔")
                                 php_reloaded_needed = True
                         except Exception as e:
                             self.log(f"Notice: Pool update for {user}: {e}", Colors.DIM, prefix="  ℹ")

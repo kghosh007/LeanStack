@@ -62,7 +62,7 @@ run_site_cron() {
 
     if [ -d "$site_path" ] && [ -n "$php_bin" ] && [ -n "$wp_bin" ]; then
         # Open basedir must permit WP-CLI execution, temporary directories, socket paths, SSL certs, and tenant roots
-        local allowed_paths="${site_path}:/home/${user}/nginx:/home/${user}/tmp:/home/${user}/logs:/home/${user}/.wp-cli:/home/${user}/.cache:/usr/local/bin:/usr/bin:/usr/share/php:/tmp:/run/valkey:/run/mysqld:/proc:/etc/ssl/certs:/usr/share/ca-certificates:/etc/pki:/etc/resolv.conf"
+        local allowed_paths="/home/${user}:/usr/local/bin:/usr/bin:/usr/share/php:/tmp:/run/valkey:/run/mysqld:/proc:/etc/ssl/certs:/usr/share/ca-certificates:/etc/pki:/etc/resolv.conf"
 
         # WP-CLI relies on proc_open / proc_close for process management.
         # Restrict dangerous functions while allowing proc_open for WP-CLI execution.

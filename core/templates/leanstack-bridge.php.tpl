@@ -16,6 +16,7 @@ class LeanStackBridge {
     private $nginx_dir = null;
     private $status_file = null;
     private $cron_status_file = null;
+    private $logs_dir = null;
 
     public static function get_instance() {
         if ( null === self::$instance ) {
@@ -46,6 +47,12 @@ class LeanStackBridge {
         add_action( 'admin_bar_menu', array( $this, 'register_admin_bar_node' ), 100 );
         add_action( 'admin_notices', array( $this, 'render_cron_admin_notices' ) );
 
+        // In-Dashboard Logs Manager & Debug Handlers
+        add_action( 'admin_post_leanstack_save_log_settings', array( $this, 'save_log_settings' ) );
+        add_action( 'admin_post_leanstack_clear_log', array( $this, 'handle_clear_log' ) );
+        add_action( 'admin_post_leanstack_download_log', array( $this, 'handle_download_log' ) );
+        add_action( 'wp_ajax_leanstack_get_log_tail', array( $this, 'ajax_get_log_tail' ) );
+
         // Automated Invalidation Triggers on Post/Page Updates
         add_action( 'save_post', array( $this, 'on_post_change' ), 10, 2 );
         add_action( 'deleted_post', array( $this, 'on_post_change' ), 10, 2 );
@@ -72,6 +79,13 @@ class LeanStackBridge {
             $this->cron_status_file = $candidate_nginx . '/.cron_status.json';
         } else {
             $this->cron_status_file = $this->nginx_dir . '/.cron_status.json';
+        }
+
+        $candidate_logs = $parent_dir . '/logs';
+        if ( is_dir( $candidate_logs ) ) {
+            $this->logs_dir = $candidate_logs;
+        } else {
+            $this->logs_dir = $candidate_logs;
         }
     }
 
@@ -110,6 +124,15 @@ class LeanStackBridge {
             'manage_options',
             'leanstack-cron',
             array( $this, 'render_cron_page' )
+        );
+
+        // 5. Tools > Logs
+        add_management_page(
+            __( 'LeanStack Logs & Debug Manager', 'leanstack' ),
+            __( 'Logs', 'leanstack' ),
+            'manage_options',
+            'leanstack-logs',
+            array( $this, 'render_logs_page' )
         );
     }
 
@@ -1826,6 +1849,857 @@ class LeanStackBridge {
                     <?php endif; ?>
                 </tbody>
             </table>
+        </div>
+        <?php
+    }
+
+    // =========================================================================
+    // UI: Tools > Logs Manager & Debug Control Center
+    // =========================================================================
+
+    public function is_valid_log_path( $path ) {
+        if ( empty( $path ) || ! is_string( $path ) ) {
+            return false;
+        }
+
+        // Prevent path traversal
+        if ( false !== strpos( $path, '..' ) ) {
+            return false;
+        }
+
+        $doc_root = rtrim( ABSPATH, '/' );
+        $parent_dir = dirname( $doc_root );
+
+        // Strict sandboxing verification: must reside inside tenant parent_dir (/home/<user>/) or WP_CONTENT_DIR
+        $real = realpath( $path );
+        $check_path = $real ? $real : $path;
+
+        if ( 0 === strpos( $check_path, $parent_dir . '/' ) || 0 === strpos( $check_path, WP_CONTENT_DIR . '/' ) || $check_path === ( WP_CONTENT_DIR . '/debug.log' ) ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function get_logs_dir() {
+        if ( null !== $this->logs_dir && is_dir( $this->logs_dir ) ) {
+            return $this->logs_dir;
+        }
+        $doc_root = rtrim( ABSPATH, '/' );
+        $parent_dir = dirname( $doc_root );
+        $candidate = $parent_dir . '/logs';
+        if ( is_dir( $candidate ) ) {
+            $this->logs_dir = $candidate;
+            return $candidate;
+        }
+        if ( is_dir( $parent_dir ) && is_writable( $parent_dir ) ) {
+            @mkdir( $candidate, 0750, true );
+            if ( is_dir( $candidate ) ) {
+                $this->logs_dir = $candidate;
+                return $candidate;
+            }
+        }
+        $this->logs_dir = WP_CONTENT_DIR;
+        return $this->logs_dir;
+    }
+
+    public function get_wp_config_file() {
+        if ( file_exists( ABSPATH . 'wp-config.php' ) ) {
+            return ABSPATH . 'wp-config.php';
+        }
+        $parent_cfg = dirname( rtrim( ABSPATH, '/' ) ) . '/wp-config.php';
+        if ( file_exists( $parent_cfg ) && ! file_exists( dirname( rtrim( ABSPATH, '/' ) ) . '/wp-settings.php' ) ) {
+            return $parent_cfg;
+        }
+        return false;
+    }
+
+    public function get_default_debug_log_path() {
+        $dir = $this->get_logs_dir();
+        if ( is_dir( $dir ) && is_writable( $dir ) ) {
+            return $dir . '/wp-debug.log';
+        }
+        return WP_CONTENT_DIR . '/debug.log';
+    }
+
+    public function get_available_logs() {
+        $logs_dir = $this->get_logs_dir();
+        $logs = array();
+
+        // 1. WordPress Debug Log
+        $wp_debug_path = '';
+        if ( defined( 'WP_DEBUG_LOG' ) && is_string( WP_DEBUG_LOG ) && ! in_array( strtolower( WP_DEBUG_LOG ), array( '1', 'true' ), true ) ) {
+            $wp_debug_path = WP_DEBUG_LOG;
+        } elseif ( file_exists( $logs_dir . '/wp-debug.log' ) ) {
+            $wp_debug_path = $logs_dir . '/wp-debug.log';
+        } else {
+            $wp_debug_path = WP_CONTENT_DIR . '/debug.log';
+        }
+
+        if ( $this->is_valid_log_path( $wp_debug_path ) ) {
+            $logs['wp-debug'] = array(
+                'id'          => 'wp-debug',
+                'name'        => __( 'WordPress Debug Log', 'leanstack' ),
+                'path'        => $wp_debug_path,
+                'filename'    => basename( $wp_debug_path ),
+                'description' => __( 'Errors, warnings, notices, and exceptions logged by WordPress core, active plugins, and themes.', 'leanstack' ),
+                'exists'      => file_exists( $wp_debug_path ),
+                'readable'    => is_readable( $wp_debug_path ),
+                'writable'    => is_writable( $wp_debug_path ) || ( ! file_exists( $wp_debug_path ) && is_writable( dirname( $wp_debug_path ) ) ),
+                'size'        => ( file_exists( $wp_debug_path ) && is_readable( $wp_debug_path ) ) ? (int) filesize( $wp_debug_path ) : 0,
+                'size_human'  => ( file_exists( $wp_debug_path ) && is_readable( $wp_debug_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $wp_debug_path ), 2 ) : ( filesize( $wp_debug_path ) . ' B' ) ) : '0 B',
+                'modified'    => ( file_exists( $wp_debug_path ) && is_readable( $wp_debug_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $wp_debug_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+            );
+        }
+
+        // 2. PHP Slow Log
+        $php_slow_path = $logs_dir . '/php-slow.log';
+        if ( $this->is_valid_log_path( $php_slow_path ) ) {
+            $logs['php-slow'] = array(
+                'id'          => 'php-slow',
+                'name'        => __( 'PHP Slow Log', 'leanstack' ),
+                'path'        => $php_slow_path,
+                'filename'    => basename( $php_slow_path ),
+                'description' => __( 'PHP-FPM execution backtraces for slow requests exceeding the slowlog execution threshold.', 'leanstack' ),
+                'exists'      => file_exists( $php_slow_path ),
+                'readable'    => is_readable( $php_slow_path ),
+                'writable'    => is_writable( $php_slow_path ) || ( ! file_exists( $php_slow_path ) && is_writable( dirname( $php_slow_path ) ) ),
+                'size'        => ( file_exists( $php_slow_path ) && is_readable( $php_slow_path ) ) ? (int) filesize( $php_slow_path ) : 0,
+                'size_human'  => ( file_exists( $php_slow_path ) && is_readable( $php_slow_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $php_slow_path ), 2 ) : ( filesize( $php_slow_path ) . ' B' ) ) : '0 B',
+                'modified'    => ( file_exists( $php_slow_path ) && is_readable( $php_slow_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $php_slow_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+            );
+        }
+
+        // 3. Angie Web Error Log
+        $angie_err_path = $logs_dir . '/error.log';
+        if ( $this->is_valid_log_path( $angie_err_path ) ) {
+            $logs['angie-error'] = array(
+                'id'          => 'angie-error',
+                'name'        => __( 'Angie Web Error Log', 'leanstack' ),
+                'path'        => $angie_err_path,
+                'filename'    => basename( $angie_err_path ),
+                'description' => __( 'HTTP server errors, upstream connection timeouts, 502/504 gateways, and web server notices.', 'leanstack' ),
+                'exists'      => file_exists( $angie_err_path ),
+                'readable'    => is_readable( $angie_err_path ),
+                'writable'    => is_writable( $angie_err_path ) || ( ! file_exists( $angie_err_path ) && is_writable( dirname( $angie_err_path ) ) ),
+                'size'        => ( file_exists( $angie_err_path ) && is_readable( $angie_err_path ) ) ? (int) filesize( $angie_err_path ) : 0,
+                'size_human'  => ( file_exists( $angie_err_path ) && is_readable( $angie_err_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $angie_err_path ), 2 ) : ( filesize( $angie_err_path ) . ' B' ) ) : '0 B',
+                'modified'    => ( file_exists( $angie_err_path ) && is_readable( $angie_err_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $angie_err_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+            );
+        }
+
+        // 4. Angie Web Access Log
+        $angie_acc_path = $logs_dir . '/access.log';
+        if ( $this->is_valid_log_path( $angie_acc_path ) ) {
+            $logs['angie-access'] = array(
+                'id'          => 'angie-access',
+                'name'        => __( 'Angie Web Access Log', 'leanstack' ),
+                'path'        => $angie_acc_path,
+                'filename'    => basename( $angie_acc_path ),
+                'description' => __( 'Live visitor traffic, HTTP response status codes, cache hits/misses, and request latencies.', 'leanstack' ),
+                'exists'      => file_exists( $angie_acc_path ),
+                'readable'    => is_readable( $angie_acc_path ),
+                'writable'    => is_writable( $angie_acc_path ) || ( ! file_exists( $angie_acc_path ) && is_writable( dirname( $angie_acc_path ) ) ),
+                'size'        => ( file_exists( $angie_acc_path ) && is_readable( $angie_acc_path ) ) ? (int) filesize( $angie_acc_path ) : 0,
+                'size_human'  => ( file_exists( $angie_acc_path ) && is_readable( $angie_acc_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $angie_acc_path ), 2 ) : ( filesize( $angie_acc_path ) . ' B' ) ) : '0 B',
+                'modified'    => ( file_exists( $angie_acc_path ) && is_readable( $angie_acc_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $angie_acc_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+            );
+        }
+
+        return $logs;
+    }
+
+    public function read_log_tail( $file_path, $max_lines = 300, $max_bytes = 262144 ) {
+        if ( ! $this->is_valid_log_path( $file_path ) || ! file_exists( $file_path ) || ! is_readable( $file_path ) ) {
+            return '';
+        }
+        $size = (int) filesize( $file_path );
+        if ( 0 === $size ) {
+            return '';
+        }
+
+        $fp = @fopen( $file_path, 'rb' );
+        if ( ! $fp ) {
+            return '';
+        }
+
+        $offset = max( 0, $size - $max_bytes );
+        if ( $offset > 0 ) {
+            fseek( $fp, $offset );
+        }
+
+        $buffer = fread( $fp, $max_bytes );
+        fclose( $fp );
+
+        if ( false === $buffer || '' === $buffer ) {
+            return '';
+        }
+
+        $buffer = str_replace( "\r\n", "\n", $buffer );
+        $lines = explode( "\n", $buffer );
+        if ( $offset > 0 && count( $lines ) > 1 ) {
+            array_shift( $lines );
+        }
+
+        if ( count( $lines ) > $max_lines ) {
+            $lines = array_slice( $lines, -$max_lines );
+        }
+
+        return implode( "\n", $lines );
+    }
+
+    public function parse_wp_config_debug_settings() {
+        $settings = array(
+            'wp_debug'         => defined( 'WP_DEBUG' ) ? (bool) WP_DEBUG : false,
+            'wp_debug_log'     => defined( 'WP_DEBUG_LOG' ) ? (bool) WP_DEBUG_LOG : false,
+            'wp_debug_log_val' => defined( 'WP_DEBUG_LOG' ) ? WP_DEBUG_LOG : false,
+            'wp_debug_display' => defined( 'WP_DEBUG_DISPLAY' ) ? (bool) WP_DEBUG_DISPLAY : false,
+            'config_file'      => $this->get_wp_config_file(),
+            'is_writable'      => false,
+        );
+
+        $cfg = $settings['config_file'];
+        if ( $cfg && file_exists( $cfg ) ) {
+            $settings['is_writable'] = is_writable( $cfg );
+            $content = @file_get_contents( $cfg );
+            if ( $content ) {
+                if ( preg_match( "/^[ \t]*define\s*\(\s*['\"]WP_DEBUG['\"]\s*,\s*(true|false|1|0)/mi", $content, $m ) ) {
+                    $settings['wp_debug'] = in_array( strtolower( $m[1] ), array( 'true', '1' ), true );
+                }
+                if ( preg_match( "/^[ \t]*define\s*\(\s*['\"]WP_DEBUG_LOG['\"]\s*,\s*(.+?)\s*\)\s*;/mi", $content, $m ) ) {
+                    $raw_val = trim( $m[1] );
+                    if ( in_array( strtolower( $raw_val ), array( 'false', '0' ), true ) ) {
+                        $settings['wp_debug_log'] = false;
+                        $settings['wp_debug_log_val'] = false;
+                    } elseif ( in_array( strtolower( $raw_val ), array( 'true', '1' ), true ) ) {
+                        $settings['wp_debug_log'] = true;
+                        $settings['wp_debug_log_val'] = true;
+                    } else {
+                        $settings['wp_debug_log'] = true;
+                        $settings['wp_debug_log_val'] = trim( $raw_val, "'\"" );
+                    }
+                }
+                if ( preg_match( "/^[ \t]*define\s*\(\s*['\"]WP_DEBUG_DISPLAY['\"]\s*,\s*(true|false|1|0)/mi", $content, $m ) ) {
+                    $settings['wp_debug_display'] = in_array( strtolower( $m[1] ), array( 'true', '1' ), true );
+                }
+            }
+        }
+        return $settings;
+    }
+
+    public function save_log_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_save_log_settings_action', 'leanstack_nonce' );
+
+        $wp_config_file = $this->get_wp_config_file();
+        if ( ! $wp_config_file || ! file_exists( $wp_config_file ) || ! is_writable( $wp_config_file ) ) {
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-logs', 'tab' => 'settings', 'error' => 'not_writable' ), admin_url( 'tools.php' ) ) );
+            exit;
+        }
+
+        $wp_debug = ! empty( $_POST['wp_debug'] ) ? 1 : 0;
+        $wp_debug_log = ! empty( $_POST['wp_debug_log'] ) ? 1 : 0;
+        $log_dest = isset( $_POST['wp_debug_log_destination'] ) ? sanitize_text_field( $_POST['wp_debug_log_destination'] ) : 'tenant_logs';
+        $wp_debug_display = ! empty( $_POST['wp_debug_display'] ) ? 1 : 0;
+
+        $content = @file_get_contents( $wp_config_file );
+        if ( false === $content || empty( $content ) ) {
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-logs', 'tab' => 'settings', 'error' => 'read_failed' ), admin_url( 'tools.php' ) ) );
+            exit;
+        }
+
+        // 1. Create an atomic timestamped backup
+        $backup_file = $wp_config_file . '.bak.' . time();
+        @copy( $wp_config_file, $backup_file );
+        @chmod( $backup_file, 0600 );
+
+        // Keep maximum of 3 historical backups
+        $dir = dirname( $wp_config_file );
+        $base = basename( $wp_config_file );
+        $existing_baks = glob( $dir . '/' . $base . '.bak.*' );
+        if ( $existing_baks && count( $existing_baks ) > 3 ) {
+            sort( $existing_baks );
+            $to_remove = array_slice( $existing_baks, 0, count( $existing_baks ) - 3 );
+            foreach ( $to_remove as $ob ) {
+                @unlink( $ob );
+            }
+        }
+
+        // 2. Prepare Replacement Tokens
+        $val_debug = $wp_debug ? 'true' : 'false';
+
+        if ( ! $wp_debug_log ) {
+            $val_log = 'false';
+        } elseif ( 'wp_content' === $log_dest ) {
+            $val_log = 'true';
+        } else {
+            $target_log = $this->get_default_debug_log_path();
+            $val_log = "'" . addcslashes( $target_log, "'\\" ) . "'";
+        }
+
+        $val_display = $wp_debug_display ? 'true' : 'false';
+        $val_ini_display = $wp_debug_display ? "'1'" : "'0'";
+
+        // 3. Regex Replacement: WP_DEBUG
+        $re_debug = "/^[ \t]*(?:\/\/|#)?[ \t]*define\s*\(\s*(['\"])WP_DEBUG\\1\s*,.*?\)\s*;.*$/mi";
+        if ( preg_match( $re_debug, $content ) ) {
+            $content = preg_replace( $re_debug, "define( 'WP_DEBUG', {$val_debug} );", $content, 1 );
+        } else {
+            $insert = "define( 'WP_DEBUG', {$val_debug} );\n";
+            $content = preg_replace( "/(\/\* That's all, stop editing!|require(?:_once)?\s*\(?.*wp-settings\.php|require(?:_once)?\s+ABSPATH)/i", $insert . "$1", $content, 1 );
+        }
+
+        // 4. Regex Replacement: WP_DEBUG_LOG
+        $re_log = "/^[ \t]*(?:\/\/|#)?[ \t]*define\s*\(\s*(['\"])WP_DEBUG_LOG\\1\s*,.*?\)\s*;.*$/mi";
+        if ( preg_match( $re_log, $content ) ) {
+            $content = preg_replace( $re_log, "define( 'WP_DEBUG_LOG', {$val_log} );", $content, 1 );
+        } else {
+            $insert = "define( 'WP_DEBUG_LOG', {$val_log} );\n";
+            $content = preg_replace( "/(^[ \t]*define\s*\(\s*['\"]WP_DEBUG['\"]\s*,.*?\)\s*;.*$)/mi", "$1\n" . $insert, $content, 1 );
+        }
+
+        // 5. Regex Replacement: WP_DEBUG_DISPLAY
+        $re_display = "/^[ \t]*(?:\/\/|#)?[ \t]*define\s*\(\s*(['\"])WP_DEBUG_DISPLAY\\1\s*,.*?\)\s*;.*$/mi";
+        if ( preg_match( $re_display, $content ) ) {
+            $content = preg_replace( $re_display, "define( 'WP_DEBUG_DISPLAY', {$val_display} );", $content, 1 );
+        } else {
+            $insert = "define( 'WP_DEBUG_DISPLAY', {$val_display} );\n";
+            $content = preg_replace( "/(^[ \t]*define\s*\(\s*['\"]WP_DEBUG_LOG['\"]\s*,.*?\)\s*;.*$)/mi", "$1\n" . $insert, $content, 1 );
+        }
+
+        // 6. Regex Replacement: @ini_set('display_errors', ...)
+        $re_ini = "/^[ \t]*(?:\/\/|#)?[ \t]*@?ini_set\s*\(\s*(['\"])display_errors\\1\s*,.*?\)\s*;.*$/mi";
+        if ( preg_match( $re_ini, $content ) ) {
+            $content = preg_replace( $re_ini, "@ini_set( 'display_errors', {$val_ini_display} );", $content, 1 );
+        } else {
+            $insert = "@ini_set( 'display_errors', {$val_ini_display} );\n";
+            $content = preg_replace( "/(^[ \t]*define\s*\(\s*['\"]WP_DEBUG_DISPLAY['\"]\s*,.*?\)\s*;.*$)/mi", "$1\n" . $insert, $content, 1 );
+        }
+
+        // 7. Atomic Safe Write with Temp File (Lock down permissions BEFORE rename)
+        $temp_file = $wp_config_file . '.tmp.' . uniqid();
+        $written = @file_put_contents( $temp_file, $content );
+        if ( false === $written || $written < 50 ) {
+            @unlink( $temp_file );
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-logs', 'tab' => 'settings', 'error' => 'write_failed' ), admin_url( 'tools.php' ) ) );
+            exit;
+        }
+
+        @chmod( $temp_file, 0600 );
+        @rename( $temp_file, $wp_config_file );
+        @chmod( $wp_config_file, 0600 );
+
+        if ( function_exists( 'opcache_invalidate' ) ) {
+            @opcache_invalidate( $wp_config_file, true );
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-logs', 'tab' => 'settings', 'saved' => '1' ), admin_url( 'tools.php' ) ) );
+        exit;
+    }
+
+    public function handle_clear_log() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_clear_log_action', 'leanstack_nonce' );
+
+        $log_id = isset( $_POST['log_id'] ) ? sanitize_key( $_POST['log_id'] ) : ( isset( $_GET['log_id'] ) ? sanitize_key( $_GET['log_id'] ) : 'wp-debug' );
+        $available = $this->get_available_logs();
+
+        if ( ! isset( $available[ $log_id ] ) ) {
+            wp_die( __( 'Invalid log identifier.', 'leanstack' ) );
+        }
+
+        $target = $available[ $log_id ]['path'];
+
+        if ( ! $this->is_valid_log_path( $target ) ) {
+            wp_die( __( 'Access denied to target log path.', 'leanstack' ) );
+        }
+
+        if ( file_exists( $target ) ) {
+            @file_put_contents( $target, '' );
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-logs', 'tab' => 'viewer', 'log_id' => $log_id, 'cleared' => '1' ), admin_url( 'tools.php' ) ) );
+        exit;
+    }
+
+    public function handle_download_log() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_download_log_action', 'leanstack_nonce' );
+
+        $log_id = isset( $_GET['log_id'] ) ? sanitize_key( $_GET['log_id'] ) : 'wp-debug';
+        $available = $this->get_available_logs();
+
+        if ( ! isset( $available[ $log_id ] ) ) {
+            wp_die( __( 'Invalid log identifier.', 'leanstack' ) );
+        }
+
+        $target = $available[ $log_id ]['path'];
+
+        if ( ! $this->is_valid_log_path( $target ) || ! file_exists( $target ) || ! is_readable( $target ) ) {
+            wp_die( __( 'Log file not accessible or does not exist.', 'leanstack' ) );
+        }
+
+        while ( ob_get_level() ) {
+            ob_end_clean();
+        }
+
+        header( 'Content-Description: File Transfer' );
+        header( 'Content-Type: text/plain; charset=utf-8' );
+        header( 'Content-Disposition: attachment; filename="' . esc_attr( basename( $target ) ) . '"' );
+        header( 'Expires: 0' );
+        header( 'Cache-Control: must-revalidate, post-check=0, pre-check=0' );
+        header( 'Pragma: public' );
+        header( 'Content-Length: ' . filesize( $target ) );
+        readfile( $target );
+        exit;
+    }
+
+    public function ajax_get_log_tail() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Unauthorized access.', 'leanstack' ) ) );
+        }
+        check_ajax_referer( 'leanstack_log_ajax_nonce', 'nonce' );
+
+        $log_id = isset( $_GET['log_id'] ) ? sanitize_key( $_GET['log_id'] ) : 'wp-debug';
+        $available = $this->get_available_logs();
+
+        if ( ! isset( $available[ $log_id ] ) ) {
+            wp_send_json_error( array( 'message' => __( 'Invalid log identifier.', 'leanstack' ) ) );
+        }
+
+        $target = $available[ $log_id ]['path'];
+        if ( ! $this->is_valid_log_path( $target ) ) {
+            wp_send_json_error( array( 'message' => __( 'Access denied to target log path.', 'leanstack' ) ) );
+        }
+
+        $exists = file_exists( $target ) && is_readable( $target );
+        $content = $exists ? $this->read_log_tail( $target, 300 ) : '';
+        $size = $exists ? (int) filesize( $target ) : 0;
+        $size_human = $exists ? ( function_exists( 'size_format' ) ? size_format( $size, 2 ) : ( $size . ' B' ) ) : '0 B';
+        $mod = $exists ? date_i18n( 'Y-m-d H:i:s', filemtime( $target ) ) : __( 'Never / Not Created', 'leanstack' );
+
+        wp_send_json_success( array(
+            'log_id'         => $log_id,
+            'filename'       => basename( $target ),
+            'path'           => $target,
+            'exists'         => $exists,
+            'size'           => $size,
+            'size_human'     => $size_human,
+            'modified'       => $mod,
+            'lines'          => ! empty( $content ) ? substr_count( $content, "\n" ) + 1 : 0,
+            'content'        => $content,
+        ) );
+    }
+
+    public function render_logs_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+
+        $active_tab = isset( $_GET['tab'] ) && 'settings' === $_GET['tab'] ? 'settings' : 'viewer';
+        $available_logs = $this->get_available_logs();
+        $selected_log_id = isset( $_GET['log_id'] ) && isset( $available_logs[ sanitize_key( $_GET['log_id'] ) ] ) ? sanitize_key( $_GET['log_id'] ) : 'wp-debug';
+        $current_log = $available_logs[ $selected_log_id ];
+        $debug_settings = $this->parse_wp_config_debug_settings();
+        $ajax_nonce = wp_create_nonce( 'leanstack_log_ajax_nonce' );
+
+        $initial_content = $current_log['exists'] ? $this->read_log_tail( $current_log['path'], 300 ) : '';
+
+        ?>
+        <div class="wrap">
+            <h1 style="display: flex; align-items: center; gap: 8px;">
+                <span class="dashicons dashicons-text-page" style="font-size: 28px; width: 28px; height: 28px; color: #2271b1;"></span>
+                <?php _e( 'LeanStack Logs &amp; Debug Manager', 'leanstack' ); ?>
+            </h1>
+            <p><?php _e( 'Inspect, stream, download, and clear server and WordPress logs directly from the dashboard, and manage debug modes safely.', 'leanstack' ); ?></p>
+
+            <?php if ( isset( $_GET['saved'] ) ) : ?>
+                <div class="notice notice-success is-dismissible">
+                    <p><strong><span class="dashicons dashicons-yes-alt" style="color: #46b450; vertical-align: middle;"></span> <?php _e( 'Debug Configuration Saved:', 'leanstack' ); ?></strong> <?php _e( 'wp-config.php was atomically updated with an automatic backup.', 'leanstack' ); ?></p>
+                </div>
+            <?php endif; ?>
+
+            <?php if ( isset( $_GET['cleared'] ) ) : ?>
+                <div class="notice notice-success is-dismissible">
+                    <p><strong><span class="dashicons dashicons-trash" style="color: #2271b1; vertical-align: middle;"></span> <?php _e( 'Log Cleared:', 'leanstack' ); ?></strong> <?php _e( 'Target log file was truncated to 0 bytes successfully.', 'leanstack' ); ?></p>
+                </div>
+            <?php endif; ?>
+
+            <?php if ( isset( $_GET['error'] ) ) : ?>
+                <div class="notice notice-error is-dismissible">
+                    <p><strong><span class="dashicons dashicons-warning" style="color: #dc3232; vertical-align: middle;"></span> <?php _e( 'Error:', 'leanstack' ); ?></strong> 
+                        <?php
+                        if ( 'not_writable' === $_GET['error'] ) {
+                            _e( 'wp-config.php is not writable by PHP-FPM. Please check file permissions (0600) and ownership.', 'leanstack' );
+                        } else {
+                            _e( 'Could not safely update wp-config.php. File was left intact.', 'leanstack' );
+                        }
+                        ?>
+                    </p>
+                </div>
+            <?php endif; ?>
+
+            <h2 class="nav-tab-wrapper" style="margin-bottom: 20px;">
+                <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-logs&tab=viewer&log_id=' . $selected_log_id ) ); ?>" class="nav-tab <?php echo 'viewer' === $active_tab ? 'nav-tab-active' : ''; ?>">
+                    <span class="dashicons dashicons-visibility" style="vertical-align: text-bottom;"></span> <?php _e( 'Interactive Log Viewer', 'leanstack' ); ?>
+                </a>
+                <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-logs&tab=settings' ) ); ?>" class="nav-tab <?php echo 'settings' === $active_tab ? 'nav-tab-active' : ''; ?>">
+                    <span class="dashicons dashicons-admin-generic" style="vertical-align: text-bottom;"></span> <?php _e( 'Debug Settings &amp; Toggles', 'leanstack' ); ?>
+                    <?php if ( $debug_settings['wp_debug'] ) : ?>
+                        <span class="badge" style="background: #e7f5ea; color: #007017; padding: 2px 6px; border-radius: 8px; font-size: 11px; margin-left: 5px; font-weight: bold;">DEBUG ON</span>
+                    <?php endif; ?>
+                </a>
+            </h2>
+
+            <?php if ( 'viewer' === $active_tab ) : ?>
+                <!-- Sub-nav Pills for Log Types -->
+                <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;">
+                    <?php foreach ( $available_logs as $lid => $linfo ) : ?>
+                        <?php $is_selected = ( $lid === $selected_log_id ); ?>
+                        <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-logs&tab=viewer&log_id=' . $lid ) ); ?>"
+                           style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 6px; text-decoration: none; font-weight: 500; font-size: 13px; border: 1px solid <?php echo $is_selected ? '#2271b1' : '#ccd0d4'; ?>; background: <?php echo $is_selected ? '#f0f6fc' : '#ffffff'; ?>; color: <?php echo $is_selected ? '#0c528d' : '#2c3338'; ?>;">
+                            <span class="dashicons <?php echo 'wp-debug' === $lid ? 'dashicons-wordpress' : ( 'php-slow' === $lid ? 'dashicons-performance' : ( 'angie-error' === $lid ? 'dashicons-warning' : 'dashicons-networking' ) ); ?>" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                            <?php echo esc_html( $linfo['name'] ); ?>
+                            <span style="background: <?php echo $is_selected ? '#2271b1' : '#e0e0e0'; ?>; color: <?php echo $is_selected ? '#ffffff' : '#50575e'; ?>; font-size: 11px; padding: 1px 6px; border-radius: 10px; font-family: monospace;">
+                                <?php echo esc_html( $linfo['size_human'] ); ?>
+                            </span>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
+
+                <!-- Log Metadata Card -->
+                <div style="background: #ffffff; border: 1px solid #c3c4c7; border-left: 4px solid #2271b1; padding: 16px 20px; border-radius: 4px; margin-bottom: 20px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px;">
+                    <div>
+                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                            <h3 style="margin: 0; font-size: 16px; color: #1d2327;"><?php echo esc_html( $current_log['name'] ); ?></h3>
+                            <?php if ( $current_log['exists'] ) : ?>
+                                <span class="badge" style="background: #e7f5ea; color: #007017; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;"><?php _e( 'Active on disk', 'leanstack' ); ?></span>
+                            <?php else : ?>
+                                <span class="badge" style="background: #fcf0f0; color: #d63638; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;"><?php _e( 'Clean / File not created', 'leanstack' ); ?></span>
+                            <?php endif; ?>
+                        </div>
+                        <p style="margin: 0 0 6px 0; color: #646970; font-size: 13px;"><?php echo esc_html( $current_log['description'] ); ?></p>
+                        <p style="margin: 0; font-size: 12px; color: #50575e;">
+                            <strong><?php _e( 'Path:', 'leanstack' ); ?></strong> <code id="ls-log-path"><?php echo esc_html( $current_log['path'] ); ?></code>
+                            <span style="margin: 0 8px; color: #ccc;">|</span>
+                            <strong><?php _e( 'Size:', 'leanstack' ); ?></strong> <span id="ls-log-size"><?php echo esc_html( $current_log['size_human'] ); ?></span>
+                            <span style="margin: 0 8px; color: #ccc;">|</span>
+                            <strong><?php _e( 'Last Updated:', 'leanstack' ); ?></strong> <span id="ls-log-mod"><?php echo esc_html( $current_log['modified'] ); ?></span>
+                        </p>
+                    </div>
+
+                    <!-- Toolbar Actions -->
+                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+                        <label style="display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 500; margin-right: 8px; cursor: pointer;">
+                            <input type="checkbox" id="ls-auto-refresh">
+                            <span class="dashicons dashicons-update" style="font-size: 15px; width: 15px; height: 15px;"></span> <?php _e( 'Live Tail (5s)', 'leanstack' ); ?>
+                        </label>
+
+                        <button type="button" id="ls-refresh-btn" class="button button-secondary">
+                            <span class="dashicons dashicons-update" style="vertical-align: text-bottom;"></span> <?php _e( 'Refresh', 'leanstack' ); ?>
+                        </button>
+
+                        <?php if ( $current_log['exists'] && $current_log['readable'] ) : ?>
+                            <a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=leanstack_download_log&log_id=' . $selected_log_id ), 'leanstack_download_log_action', 'leanstack_nonce' ) ); ?>" class="button button-secondary">
+                                <span class="dashicons dashicons-download" style="vertical-align: text-bottom;"></span> <?php _e( 'Download', 'leanstack' ); ?>
+                            </a>
+                        <?php endif; ?>
+
+                        <?php if ( $current_log['exists'] && $current_log['writable'] ) : ?>
+                            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin: 0;" onsubmit="return confirm(<?php echo esc_attr( json_encode( __( 'Are you sure you want to clear and truncate this log file to 0 bytes?', 'leanstack' ) ) ); ?>);">
+                                <?php wp_nonce_field( 'leanstack_clear_log_action', 'leanstack_nonce' ); ?>
+                                <input type="hidden" name="action" value="leanstack_clear_log">
+                                <input type="hidden" name="log_id" value="<?php echo esc_attr( $selected_log_id ); ?>">
+                                <button type="submit" class="button button-link-delete" style="padding: 4px 10px; color: #b32d2e; text-decoration: none; border: 1px solid #f0b849; border-radius: 4px; background: #fff8e5;">
+                                    <span class="dashicons dashicons-trash" style="vertical-align: text-bottom;"></span> <?php _e( 'Clear Log', 'leanstack' ); ?>
+                                </button>
+                            </form>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Filter Search Box -->
+                <div style="margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between;">
+                    <div style="position: relative; width: 320px;">
+                        <input type="text" id="ls-log-filter" placeholder="<?php esc_attr_e( 'Filter lines (e.g. Fatal, Warning, SQL)...', 'leanstack' ); ?>" style="width: 100%; padding-left: 28px; border-radius: 4px;">
+                        <span class="dashicons dashicons-search" style="position: absolute; left: 6px; top: 7px; color: #8c8f94; font-size: 16px;"></span>
+                    </div>
+                    <div style="color: #646970; font-size: 12px;">
+                        <span id="ls-lines-count"><?php echo ! empty( $initial_content ) ? substr_count( $initial_content, "\n" ) + 1 : 0; ?></span> <?php _e( 'lines displayed (tail: max 300)', 'leanstack' ); ?>
+                    </div>
+                </div>
+
+                <!-- Terminal Log Viewer Window -->
+                <div style="position: relative; background: #1e1e24; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); border: 1px solid #2e2e38; overflow: hidden;">
+                    <div style="background: #272730; padding: 8px 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #363642;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="width: 10px; height: 10px; border-radius: 50%; background: #ff5f56; display: inline-block;"></span>
+                            <span style="width: 10px; height: 10px; border-radius: 50%; background: #ffbd2e; display: inline-block;"></span>
+                            <span style="width: 10px; height: 10px; border-radius: 50%; background: #27c93f; display: inline-block;"></span>
+                            <span style="color: #9999a8; font-family: monospace; font-size: 12px; margin-left: 8px;"><?php echo esc_html( basename( $current_log['path'] ) ); ?></span>
+                        </div>
+                        <div id="ls-poll-indicator" style="display: none; align-items: center; gap: 6px; color: #4ade80; font-size: 11px; font-family: monospace;">
+                            <span class="spinner is-active" style="float: none; margin: 0; width: 14px; height: 14px;"></span> <?php _e( 'Live streaming...', 'leanstack' ); ?>
+                        </div>
+                    </div>
+
+                    <pre id="ls-terminal" style="margin: 0; padding: 16px; height: 500px; overflow-y: scroll; font-family: Consolas, 'Liberation Mono', Menlo, Monaco, Courier, monospace; font-size: 12.5px; line-height: 1.5; color: #d4d4d8; background: #18181b; white-space: pre-wrap; word-break: break-all; scroll-behavior: smooth;"><?php
+                        if ( ! empty( $initial_content ) ) {
+                            echo esc_html( $initial_content );
+                        } else {
+                            echo esc_html( __( 'Log is currently empty or no entries recorded yet.', 'leanstack' ) );
+                        }
+                    ?></pre>
+                </div>
+
+                <script>
+                (function() {
+                    var selectedLog = <?php echo json_encode( $selected_log_id ); ?>;
+                    var ajaxUrl = <?php echo json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+                    var ajaxNonce = <?php echo json_encode( $ajax_nonce ); ?>;
+                    var terminal = document.getElementById('ls-terminal');
+                    var filterInput = document.getElementById('ls-log-filter');
+                    var autoRefresh = document.getElementById('ls-auto-refresh');
+                    var refreshBtn = document.getElementById('ls-refresh-btn');
+                    var pollIndicator = document.getElementById('ls-poll-indicator');
+                    var linesCountEl = document.getElementById('ls-lines-count');
+                    var timer = null;
+                    var emptyPlaceholder = <?php echo json_encode( __( 'Log is currently empty or no entries recorded yet.', 'leanstack' ) ); ?>;
+                    var rawContent = <?php echo json_encode( ! empty( $initial_content ) ? $initial_content : '' ); ?>;
+
+                    function scrollToBottom() {
+                        if (terminal) {
+                            terminal.scrollTop = terminal.scrollHeight;
+                        }
+                    }
+                    scrollToBottom();
+
+                    function renderTerminal(text, count) {
+                        if (!terminal) return;
+                        if (!text) {
+                            terminal.innerText = emptyPlaceholder;
+                            if (linesCountEl) linesCountEl.innerText = '0';
+                            return;
+                        }
+                        terminal.innerText = text;
+                        if (linesCountEl) linesCountEl.innerText = count !== undefined ? count : (text.split("\n").length);
+                    }
+
+                    function applyFilter() {
+                        var term = filterInput ? filterInput.value.toLowerCase().trim() : '';
+                        if (!rawContent) {
+                            renderTerminal('', 0);
+                            return;
+                        }
+                        if (!term) {
+                            renderTerminal(rawContent);
+                            return;
+                        }
+                        var allLines = rawContent.split("\n");
+                        var matched = allLines.filter(function(line) {
+                            return line.toLowerCase().indexOf(term) !== -1;
+                        });
+                        renderTerminal(matched.length > 0 ? matched.join("\n") : (<?php echo json_encode( __( 'No matching log entries found.', 'leanstack' ) ); ?>), matched.length);
+                    }
+
+                    if (filterInput) {
+                        filterInput.addEventListener('input', applyFilter);
+                    }
+
+                    function fetchLogTail() {
+                        if (pollIndicator) pollIndicator.style.display = 'inline-flex';
+                        var url = ajaxUrl + '?action=leanstack_get_log_tail&log_id=' + encodeURIComponent(selectedLog) + '&nonce=' + encodeURIComponent(ajaxNonce) + '&_t=' + Date.now();
+                        fetch(url)
+                            .then(function(r) { return r.json(); })
+                            .then(function(res) {
+                                if (pollIndicator) pollIndicator.style.display = 'none';
+                                if (res && res.success && res.data) {
+                                    rawContent = res.data.content || '';
+                                    applyFilter();
+                                    scrollToBottom();
+                                    if (document.getElementById('ls-log-size')) {
+                                        document.getElementById('ls-log-size').innerText = res.data.size_human;
+                                    }
+                                    if (document.getElementById('ls-log-mod')) {
+                                        document.getElementById('ls-log-mod').innerText = res.data.modified;
+                                    }
+                                }
+                            })
+                            .catch(function(err) {
+                                if (pollIndicator) pollIndicator.style.display = 'none';
+                            });
+                    }
+
+                    if (refreshBtn) {
+                        refreshBtn.addEventListener('click', function() {
+                            fetchLogTail();
+                        });
+                    }
+
+                    if (autoRefresh) {
+                        autoRefresh.addEventListener('change', function() {
+                            if (this.checked) {
+                                fetchLogTail();
+                                timer = setInterval(fetchLogTail, 5000);
+                            } else {
+                                if (timer) clearInterval(timer);
+                            }
+                        });
+                    }
+                })();
+                </script>
+
+            <?php else : ?>
+                <!-- Settings Tab -->
+                <div style="max-width: 900px; margin-top: 20px;">
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_save_log_settings_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_save_log_settings">
+
+                        <!-- Debug Mode Master Toggle -->
+                        <div style="background: #ffffff; border: 1px solid #ccd0d4; border-radius: 6px; padding: 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;">
+                                <div>
+                                    <h3 style="margin: 0 0 8px 0; color: #1d2327; font-size: 16px;">
+                                        <span class="dashicons dashicons-admin-tools" style="color: #2271b1; vertical-align: middle;"></span>
+                                        <?php _e( '1. WordPress Core Debugging (WP_DEBUG)', 'leanstack' ); ?>
+                                    </h3>
+                                    <p style="margin: 0; color: #646970; font-size: 13px; line-height: 1.5;">
+                                        <?php _e( 'Controls the master PHP debugging mode across WordPress. When enabled, all PHP errors, notices, warnings, and deprecations are caught by the runtime engine.', 'leanstack' ); ?>
+                                    </p>
+                                </div>
+                                <label style="position: relative; display: inline-block; width: 48px; height: 26px; flex-shrink: 0;">
+                                    <input type="checkbox" name="wp_debug" value="1" <?php checked( $debug_settings['wp_debug'], true ); ?> style="opacity: 0; width: 0; height: 0;">
+                                    <span class="ls-slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: <?php echo $debug_settings['wp_debug'] ? '#2271b1' : '#ccc'; ?>; border-radius: 26px; transition: .3s;">
+                                        <span style="position: absolute; content: ''; height: 20px; width: 20px; left: <?php echo $debug_settings['wp_debug'] ? '24px' : '3px'; ?>; bottom: 3px; background-color: white; border-radius: 50%; transition: .3s;"></span>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Debug Log Destination Toggle -->
+                        <div style="background: #ffffff; border: 1px solid #ccd0d4; border-radius: 6px; padding: 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 16px;">
+                                <div>
+                                    <h3 style="margin: 0 0 8px 0; color: #1d2327; font-size: 16px;">
+                                        <span class="dashicons dashicons-media-document" style="color: #007017; vertical-align: middle;"></span>
+                                        <?php _e( '2. Save Errors to Debug Log (WP_DEBUG_LOG)', 'leanstack' ); ?>
+                                    </h3>
+                                    <p style="margin: 0; color: #646970; font-size: 13px; line-height: 1.5;">
+                                        <?php _e( 'Directs caught PHP errors, warnings, and fatal traces into a log file for offline review without displaying them to visitors.', 'leanstack' ); ?>
+                                    </p>
+                                </div>
+                                <label style="position: relative; display: inline-block; width: 48px; height: 26px; flex-shrink: 0;">
+                                    <input type="checkbox" name="wp_debug_log" value="1" <?php checked( $debug_settings['wp_debug_log'], true ); ?> style="opacity: 0; width: 0; height: 0;">
+                                    <span class="ls-slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: <?php echo $debug_settings['wp_debug_log'] ? '#2271b1' : '#ccc'; ?>; border-radius: 26px; transition: .3s;">
+                                        <span style="position: absolute; content: ''; height: 20px; width: 20px; left: <?php echo $debug_settings['wp_debug_log'] ? '24px' : '3px'; ?>; bottom: 3px; background-color: white; border-radius: 50%; transition: .3s;"></span>
+                                    </span>
+                                </label>
+                            </div>
+
+                            <hr style="margin: 16px 0; border: 0; border-top: 1px solid #f0f0f1;">
+
+                            <h4 style="margin: 0 0 10px 0;"><?php _e( 'Log File Storage Location:', 'leanstack' ); ?></h4>
+                            <?php
+                            $is_custom_path = ( is_string( $debug_settings['wp_debug_log_val'] ) && '1' !== $debug_settings['wp_debug_log_val'] && 'true' !== strtolower( $debug_settings['wp_debug_log_val'] ) );
+                            $is_wp_content = ( true === $debug_settings['wp_debug_log_val'] || ( is_string( $debug_settings['wp_debug_log_val'] ) && false !== strpos( $debug_settings['wp_debug_log_val'], 'wp-content/debug.log' ) ) );
+                            ?>
+                            <div style="display: flex; flex-direction: column; gap: 10px;">
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                    <input type="radio" name="wp_debug_log_destination" value="tenant_logs" <?php checked( ! $is_wp_content, true ); ?>>
+                                    <span>
+                                        <strong><?php _e( 'Secured Tenant Log Directory (Recommended):', 'leanstack' ); ?></strong>
+                                        <code><?php echo esc_html( $this->get_default_debug_log_path() ); ?></code>
+                                        <br><small style="color: #646970;"><?php _e( 'Stored outside public webroot. Immune to direct browser downloads by unauthorized visitors.', 'leanstack' ); ?></small>
+                                    </span>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                                    <input type="radio" name="wp_debug_log_destination" value="wp_content" <?php checked( $is_wp_content, true ); ?>>
+                                    <span>
+                                        <strong><?php _e( 'Standard WordPress Webroot:', 'leanstack' ); ?></strong>
+                                        <code>wp-content/debug.log</code>
+                                        <br><small style="color: #646970;"><?php _e( 'Default WordPress convention. Protected by Angie 8G/WAF rules blocking *.log files.', 'leanstack' ); ?></small>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Debug Display Toggle -->
+                        <div style="background: #ffffff; border: 1px solid #ccd0d4; border-radius: 6px; padding: 22px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                            <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;">
+                                <div>
+                                    <h3 style="margin: 0 0 8px 0; color: #1d2327; font-size: 16px;">
+                                        <span class="dashicons dashicons-desktop" style="color: #d63638; vertical-align: middle;"></span>
+                                        <?php _e( '3. Display Errors on Web Pages (WP_DEBUG_DISPLAY)', 'leanstack' ); ?>
+                                    </h3>
+                                    <p style="margin: 0 0 8px 0; color: #646970; font-size: 13px; line-height: 1.5;">
+                                        <?php _e( 'Controls whether errors and warnings are printed directly into the HTML response rendered in the visitor\'s browser. When toggled on, sets display_errors to 1.', 'leanstack' ); ?>
+                                    </p>
+                                    <div style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: #fff8e5; border-left: 3px solid #dba617; border-radius: 2px; font-size: 12px; color: #61460b;">
+                                        <span class="dashicons dashicons-info" style="font-size: 16px; width: 16px; height: 16px;"></span>
+                                        <strong><?php _e( 'Production Security Notice:', 'leanstack' ); ?></strong> <?php _e( 'Keep this toggle OFF on live sites to prevent leaking database schemas, API keys, and internal system paths to web visitors.', 'leanstack' ); ?>
+                                    </div>
+                                </div>
+                                <label style="position: relative; display: inline-block; width: 48px; height: 26px; flex-shrink: 0;">
+                                    <input type="checkbox" name="wp_debug_display" value="1" <?php checked( $debug_settings['wp_debug_display'], true ); ?> style="opacity: 0; width: 0; height: 0;">
+                                    <span class="ls-slider" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: <?php echo $debug_settings['wp_debug_display'] ? '#2271b1' : '#ccc'; ?>; border-radius: 26px; transition: .3s;">
+                                        <span style="position: absolute; content: ''; height: 20px; width: 20px; left: <?php echo $debug_settings['wp_debug_display'] ? '24px' : '3px'; ?>; bottom: 3px; background-color: white; border-radius: 50%; transition: .3s;"></span>
+                                    </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Diagnostics & Permissions Card -->
+                        <div style="background: #f6f7f7; border: 1px solid #dcdcde; border-radius: 6px; padding: 18px; margin-bottom: 25px;">
+                            <h4 style="margin: 0 0 10px 0;"><?php _e( 'Configuration File Diagnostics', 'leanstack' ); ?></h4>
+                            <table class="widefat striped" style="background: #fff;">
+                                <tbody>
+                                    <tr>
+                                        <td style="width: 200px;"><strong><?php _e( 'Configuration Target', 'leanstack' ); ?></strong></td>
+                                        <td><code><?php echo esc_html( $debug_settings['config_file'] ? $debug_settings['config_file'] : 'wp-config.php (not found)' ); ?></code></td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong><?php _e( 'Write Permissions', 'leanstack' ); ?></strong></td>
+                                        <td>
+                                            <?php if ( $debug_settings['is_writable'] ) : ?>
+                                                <span class="dashicons dashicons-yes-alt" style="color: #007017;"></span>
+                                                <span style="color: #007017; font-weight: bold;"><?php _e( 'Writable (Atomic updates enabled)', 'leanstack' ); ?></span>
+                                            <?php else : ?>
+                                                <span class="dashicons dashicons-warning" style="color: #d63638;"></span>
+                                                <span style="color: #d63638; font-weight: bold;"><?php _e( 'Read-Only (Manual edit required or update permissions)', 'leanstack' ); ?></span>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong><?php _e( 'Runtime display_errors', 'leanstack' ); ?></strong></td>
+                                        <td><code><?php echo esc_html( ini_get( 'display_errors' ) ? '1 (Active)' : '0 (Hidden)' ); ?></code></td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong><?php _e( 'Runtime log_errors', 'leanstack' ); ?></strong></td>
+                                        <td><code><?php echo esc_html( ini_get( 'log_errors' ) ? '1 (Active)' : '0 (Off)' ); ?></code></td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong><?php _e( 'Runtime error_log Path', 'leanstack' ); ?></strong></td>
+                                        <td><code><?php echo esc_html( ini_get( 'error_log' ) ? ini_get( 'error_log' ) : 'System Default' ); ?></code></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <p class="submit" style="margin: 0;">
+                            <button type="submit" class="button button-primary button-large" <?php disabled( ! $debug_settings['is_writable'], true ); ?>>
+                                <span class="dashicons dashicons-saved" style="vertical-align: text-bottom;"></span> <?php _e( 'Save Debug Settings', 'leanstack' ); ?>
+                            </button>
+                        </p>
+                    </form>
+                </div>
+            <?php endif; ?>
         </div>
         <?php
     }

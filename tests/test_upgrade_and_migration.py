@@ -388,6 +388,32 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
             low_vars_pool = re.sub(r"php_admin_value\[max_input_vars\]\s*=\s*\d+", "php_admin_value[max_input_vars] = 5000", low_vars_pool)
         self.assertIn("php_admin_value[max_input_vars] = 5000", low_vars_pool)
 
+    def test_pool_open_basedir_and_disable_functions_reconciliation(self):
+        """Verify ls-upgrade reconciles open_basedir to /home/{user} and removes symlink,link from disable_functions."""
+        sample_pool = (
+            "[staging_mfeasy_4809]\n"
+            "user = staging_mfeasy_4809\n"
+            "php_admin_value[open_basedir] = /home/staging_mfeasy_4809/htdocs:/home/staging_mfeasy_4809/nginx:/home/staging_mfeasy_4809/tmp:/var/cache/angie/sites:/proc:/run/valkey:/run/mysqld\n"
+            "php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,symlink,link,opcache_reset\n"
+        )
+        user = "staging_mfeasy_4809"
+
+        # Test actual upgrader.reconcile_pool_content method
+        reconciled, changed = self.upgrader.reconcile_pool_content(sample_pool, user)
+        self.assertTrue(changed)
+        self.assertIn("php_admin_value[open_basedir] = /home/staging_mfeasy_4809", reconciled)
+        self.assertNotIn("/home/staging_mfeasy_4809/htdocs", reconciled)
+        self.assertNotIn("symlink", reconciled)
+        self.assertNotIn("link,", reconciled)
+        self.assertIn("dl,opcache_reset", reconciled)
+        self.assertIn("php_admin_value[max_input_vars] = 5000", reconciled)
+        self.assertIn("php_admin_flag[apc.enabled] = on", reconciled)
+
+        # Test idempotency (running second time makes no changes)
+        reconciled_again, changed_again = self.upgrader.reconcile_pool_content(reconciled, user)
+        self.assertFalse(changed_again)
+        self.assertEqual(reconciled, reconciled_again)
+
 
 if __name__ == "__main__":
     unittest.main()

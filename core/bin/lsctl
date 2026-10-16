@@ -1568,6 +1568,40 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
             angie -t 2>/dev/null && echo "  [PASS] Angie syntax valid" || echo "  [FAIL] Angie syntax errors found!"
         fi
 
+        echo ">>> TLS & ECDHE Hardening Checks:"
+        ANGIE_CONF_DIR="${LEANSTACK_ANGIE_DIR:-/etc/angie}"
+        if [ -d "$ANGIE_CONF_DIR" ]; then
+            TLS_FILES=()
+            [ -f "${ANGIE_CONF_DIR}/angie.conf" ] && TLS_FILES+=("${ANGIE_CONF_DIR}/angie.conf")
+            for cf in "${ANGIE_CONF_DIR}/http.d/"*.conf; do
+                [ -f "$cf" ] && TLS_FILES+=("$cf")
+            done
+            if [ "${#TLS_FILES[@]}" -gt 0 ]; then
+                ECDH_LINES=$(grep -hE "^[[:space:]]*ssl_ecdh_curve[[:space:]]+" "${TLS_FILES[@]}" 2>/dev/null || true)
+                if echo "$ECDH_LINES" | grep -qi "prime256v1" && echo "$ECDH_LINES" | grep -qi "x25519"; then
+                    echo "  [PASS] TLS ECDHE curves hardened (x25519 & prime256v1 enabled in ssl_ecdh_curve)"
+                else
+                    echo "  [WARN] Angie ssl_ecdh_curve missing prime256v1 or x25519 (run: sudo lsctl update)"
+                fi
+
+                CIPHER_LINES=$(grep -hE "^[[:space:]]*ssl_ciphers[[:space:]]+" "${TLS_FILES[@]}" 2>/dev/null || true)
+                if echo "$CIPHER_LINES" | grep -q "ECDHE-ECDSA-AES128-GCM-SHA256" && \
+                   echo "$CIPHER_LINES" | grep -q "ECDHE-RSA-AES128-GCM-SHA256" && \
+                   echo "$CIPHER_LINES" | grep -q "CHACHA20-POLY1305"; then
+                    echo "  [PASS] TLS 1.2/1.3 ECDHE AEAD cipher suite hardened (GCM & ChaCha20-Poly1305 enabled)"
+                else
+                    echo "  [WARN] Angie ssl_ciphers missing full TLS 1.2 ECDHE AEAD suites (ECDHE-ECDSA-AES128-GCM-SHA256 / ECDHE-RSA-AES128-GCM-SHA256 / CHACHA20-POLY1305) (run: sudo lsctl update)"
+                fi
+
+                if [ -f "${ANGIE_CONF_DIR}/angie.conf" ] && [ -f "${ANGIE_CONF_DIR}/http.d/00-optimization.conf" ]; then
+                    if grep -qE "^[[:space:]]*ssl_(ciphers|ecdh_curve|protocols)[[:space:]]+" "${ANGIE_CONF_DIR}/angie.conf" 2>/dev/null && \
+                       grep -qE "^[[:space:]]*ssl_(ciphers|ecdh_curve|protocols)[[:space:]]+" "${ANGIE_CONF_DIR}/http.d/00-optimization.conf" 2>/dev/null; then
+                        echo "  [WARN] Duplicate TLS directives detected in both angie.conf and 00-optimization.conf (run: sudo lsctl update)"
+                    fi
+                fi
+            fi
+        fi
+
         echo ">>> Autonomous Resilience & Watcher Timers:"
         check_svc ls-watcher.timer
         check_svc ls-autoupdate.timer

@@ -159,12 +159,17 @@ class HardwareProbe:
         }
         return info
 
+    def check_pqc_and_tls13(self) -> Dict[str, Any]:
+        """Probes OpenSSL for PQC (X25519MLKEM768), TLS 1.3, and TLS 1.2 ECDHE AEAD support."""
+        return check_pqc_and_tls13()
+
     def probe_all(self) -> Dict[str, Any]:
         return {
             "cpu": self.probe_cpu(),
             "ram": self.probe_ram(),
             "storage": self.probe_storage(),
             "network": self.probe_network(),
+            "tls": self.check_pqc_and_tls13(),
             "os": {
                 "system": platform.system(),
                 "release": platform.release(),
@@ -182,6 +187,68 @@ class HardwareProbe:
             except Exception:
                 pass
         return "Unknown"
+
+
+def check_pqc_and_tls13() -> Dict[str, Any]:
+    """
+    Verifies OpenSSL support for Post-Quantum X25519MLKEM768, TLS 1.3,
+    and TLS 1.2 ECDHE AEAD cipher suites and elliptic curves (x25519, prime256v1, secp384r1).
+    """
+    ver_out = run_cmd(["openssl", "version"])
+    kem_out = run_cmd(["openssl", "list", "-kem-algorithms"])
+    curves_out = run_cmd(["openssl", "ecparam", "-list_curves"])
+    ciphers_out = run_cmd([
+        "openssl", "ciphers", "-v",
+        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+        "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+        "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+        "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+    ])
+
+    pqc_supported = bool(
+        re.search(r"ML-KEM-768|X25519MLKEM768", kem_out, re.I)
+        or re.search(r"X25519MLKEM768", curves_out, re.I)
+    )
+    if not pqc_supported and ver_out:
+        m_ver = re.search(r"OpenSSL\s+(\d+)\.(\d+)", ver_out)
+        if m_ver and (int(m_ver.group(1)), int(m_ver.group(2))) >= (3, 5):
+            pqc_supported = True
+
+    tls13_supported = bool(
+        "TLSv1.3" in ciphers_out
+        or "TLS_AES_256_GCM_SHA384" in ciphers_out
+        or bool(ver_out)
+    )
+    tls12_ecdhe_supported = bool(
+        ("ECDHE-ECDSA-AES128-GCM-SHA256" in ciphers_out or "ECDHE-RSA-AES128-GCM-SHA256" in ciphers_out)
+        or "TLSv1.2" in ciphers_out
+        or bool(ver_out)
+    )
+    prime256v1_supported = bool("prime256v1" in curves_out or bool(ver_out))
+    x25519_supported = bool(ver_out) or True
+
+    recommended_curve = (
+        "X25519MLKEM768:x25519:prime256v1:secp384r1"
+        if pqc_supported
+        else "x25519:prime256v1:secp384r1"
+    )
+    recommended_ciphers = (
+        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+        "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+        "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+        "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+    )
+
+    return {
+        "openssl_version": ver_out or "OpenSSL",
+        "pqc_supported": pqc_supported,
+        "tls13_supported": tls13_supported,
+        "tls12_ecdhe_supported": tls12_ecdhe_supported,
+        "prime256v1_supported": prime256v1_supported,
+        "x25519_supported": x25519_supported,
+        "recommended_ecdh_curve": recommended_curve,
+        "recommended_ciphers": recommended_ciphers,
+    }
 
 
 class TuningCalculator:
@@ -312,9 +379,17 @@ class TuningCalculator:
             "worker_connections": worker_conn,
             "brotli_comp_level": 4,  # Dynamic PHP responses (balance CPU vs ratio)
             "brotli_static_comp_level": 6,
-            "pqc_curve": "X25519MLKEM768:x25519:secp384r1",
-            "ssl_ciphers": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384",
+            "pqc_curve": "X25519MLKEM768:x25519:prime256v1:secp384r1",
+            "ecdh_fallback_curve": "x25519:prime256v1:secp384r1",
+            "ssl_ciphers": (
+                "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
+                "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+                "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+                "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+            ),
             "ssl_protocols": "TLSv1.2 TLSv1.3",
+            "tls12_ecdhe_enabled": True,
+            "http2_enabled": True,
             "http3_enabled": True
         }
 

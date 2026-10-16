@@ -62,3 +62,38 @@ add_filter( 'mime_types', function( $mimes ) {
     $mimes['webp'] = 'image/webp';
     return $mimes;
 } );
+
+// 6. Suppress Benign open_basedir Path Resolution Warnings
+// Prevents log bloat from third-party plugins (e.g. wp-file-manager) and core block lookups
+// attempting to traverse parent roots outside the POSIX tenant jail.
+if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
+    function leanstack_suppress_benign_open_basedir_warnings() {
+        static $registered = false;
+        if ( $registered ) {
+            return;
+        }
+        $registered = true;
+
+        $prev_handler = set_error_handler( function( $errno, $errstr, $errfile = '', $errline = 0 ) use ( &$prev_handler ) {
+            if ( E_WARNING === $errno && false !== strpos( $errstr, 'open_basedir restriction in effect' ) ) {
+                // Benign parent directory traversal by plugins (e.g. wp-file-manager checking /home or /)
+                // or WordPress core / WP-CLI relative block or template checks
+                if ( false !== strpos( $errstr, 'File(/home)' ) ||
+                     false !== strpos( $errstr, 'File(/)' ) ||
+                     false !== strpos( $errstr, 'File(core/' ) ||
+                     false !== strpos( $errstr, 'File(man-params.mustache)' ) ||
+                     ( $errfile && false !== strpos( $errfile, 'backup-storage.php' ) ) ||
+                     ( $errfile && false !== strpos( $errfile, 'blocks.php' ) ) ||
+                     ( $errfile && false !== strpos( $errfile, 'utils.php' ) ) ) {
+                    return true; // Suppress warning from debug.log and output
+                }
+            }
+            if ( is_callable( $prev_handler ) ) {
+                return call_user_func( $prev_handler, $errno, $errstr, $errfile, $errline );
+            }
+            return false;
+        }, E_WARNING );
+    }
+    leanstack_suppress_benign_open_basedir_warnings();
+}
+

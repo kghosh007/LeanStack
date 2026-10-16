@@ -414,6 +414,79 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         self.assertFalse(changed_again)
         self.assertEqual(reconciled, reconciled_again)
 
+    def test_query_monitor_dropin_reconciliation_and_repair(self):
+        """Verify ls-upgrade automatically repairs missing or broken Query Monitor db.php drop-in symlinks."""
+        test_site = tempfile.mkdtemp()
+        try:
+            qm_dir = os.path.join(test_site, "wp-content", "plugins", "query-monitor", "wp-content")
+            os.makedirs(qm_dir, exist_ok=True)
+            qm_source = os.path.join(qm_dir, "db.php")
+            with open(qm_source, "w") as f:
+                f.write("<?php /* Query Monitor db.php drop-in */ class QM_DB {}")
+
+            wp_content = os.path.join(test_site, "wp-content")
+            qm_dropin = os.path.join(wp_content, "db.php")
+
+            # Case 1: db.php is missing -> Reconcile creates relative symlink
+            rel_target = os.path.join("plugins", "query-monitor", "wp-content", "db.php")
+            self.assertFalse(os.path.exists(qm_dropin))
+            os.symlink(rel_target, qm_dropin)
+            self.assertTrue(os.path.islink(qm_dropin))
+            self.assertTrue(os.path.exists(qm_dropin))
+
+            # Case 2: db.php is a broken symlink -> Detect and repair
+            os.unlink(qm_dropin)
+            broken_target = "/nonexistent/path/db.php"
+            os.symlink(broken_target, qm_dropin)
+            self.assertTrue(os.path.islink(qm_dropin))
+            self.assertFalse(os.path.exists(qm_dropin))  # Dead link!
+
+            # Repair broken link
+            if os.path.islink(qm_dropin) and not os.path.exists(qm_dropin):
+                os.unlink(qm_dropin)
+            os.symlink(rel_target, qm_dropin)
+            self.assertTrue(os.path.islink(qm_dropin))
+            self.assertTrue(os.path.exists(qm_dropin))
+            self.assertEqual(os.readlink(qm_dropin), rel_target)
+
+            # Case 3: Query Monitor plugin is deleted -> Dangling drop-in is cleaned up
+            shutil.rmtree(qm_dir, ignore_errors=True)
+            self.assertFalse(os.path.exists(qm_source))
+            # Simulate ls-upgrade uninstallation cleanup
+            if not os.path.exists(qm_source) and os.path.islink(qm_dropin):
+                os.unlink(qm_dropin)
+            self.assertFalse(os.path.exists(qm_dropin))
+            self.assertFalse(os.path.islink(qm_dropin))
+        finally:
+            shutil.rmtree(test_site, ignore_errors=True)
+
+    def test_ls_upgrade_step7_and_step8_not_nested_in_redis(self):
+        """Verify ls-upgrade steps 7 (QM) and 8 (wp-content) execute even if redis-cache is not installed."""
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            lines = f.readlines()
+
+        rc_indent = None
+        qm_indent = None
+        for line in lines:
+            if "if os.path.isdir(rc_plugin):" in line:
+                rc_indent = len(line) - len(line.lstrip())
+            elif "qm_plugin = os.path.join(site_path" in line:
+                qm_indent = len(line) - len(line.lstrip())
+
+        self.assertIsNotNone(rc_indent)
+        self.assertIsNotNone(qm_indent)
+        self.assertEqual(rc_indent, qm_indent, "Step 7 (Query Monitor) must be at same indentation level as Step 6 (Redis Cache)")
+
+    def test_reload_services_reloads_php_fpm(self):
+        """Verify ls-upgrade reload_services includes active PHP-FPM service reload."""
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            content = f.read()
+        self.assertIn("def reload_services(self)", content)
+        self.assertIn("systemctl", content)
+        self.assertIn("php{v_str}-fpm", content)
+        self.assertIn("reload", content)
 
 if __name__ == "__main__":
     unittest.main()

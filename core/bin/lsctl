@@ -196,6 +196,7 @@ Commands:
   update          Autonomous zero-downtime upgrade & migration engine
   migrate         Run database schema migrations only
   sync-tenants    Reconcile MU-plugins and configs across all sites
+  qm              Manage Query Monitor db.php drop-in (enable|disable|status)
 
 Options for wp:create:
   sudo lsctl wp:create --domain=example.com [options]
@@ -352,6 +353,86 @@ PY
         else
             bash "${SCRIPT_DIR}/cp-upgrade" --sync-tenants-only "$@"
         fi
+        exit 0
+        ;;
+
+    qm|site:qm)
+        require_root
+        shift || true
+        DOMAIN="${1:-}"
+        ACTION="${2:-status}"
+        if [ -z "$DOMAIN" ]; then
+            echo "Usage: sudo lsctl qm <domain> [enable|disable|status]"
+            exit 1
+        fi
+        SITE_ROW=$(python3 -c "
+import sqlite3, sys
+try:
+    conn = sqlite3.connect('$DB_FILE')
+    cur = conn.cursor()
+    cur.execute('SELECT user, site_path, php_version FROM sites WHERE domain = ?', ('$DOMAIN',))
+    row = cur.fetchone()
+    if row:
+        print(f'{row[0]}|{row[1]}|{row[2]}')
+    conn.close()
+except Exception:
+    pass
+" 2>/dev/null || true)
+        if [ -z "$SITE_ROW" ]; then
+            echo "❌ Error: Domain '$DOMAIN' not found in LeanStack database."
+            exit 1
+        fi
+        IFS='|' read -r U_NAME S_PATH P_VER <<< "$SITE_ROW"
+        QM_PLUGIN="${S_PATH}/wp-content/plugins/query-monitor"
+        QM_SOURCE="${QM_PLUGIN}/wp-content/db.php"
+        QM_DROPIN="${S_PATH}/wp-content/db.php"
+
+        case "$ACTION" in
+            status)
+                echo "Query Monitor Drop-in Status for ${DOMAIN}:"
+                if [ ! -d "$QM_PLUGIN" ]; then
+                    echo "  Plugin: Not installed (${QM_PLUGIN})"
+                else
+                    echo "  Plugin: Installed"
+                fi
+                if [ -L "$QM_DROPIN" ]; then
+                    TARGET=$(readlink "$QM_DROPIN" 2>/dev/null || true)
+                    if [ -e "$QM_DROPIN" ]; then
+                        echo "  Drop-in: Active symlink -> ${TARGET}"
+                    else
+                        echo "  Drop-in: Broken symlink -> ${TARGET}"
+                    fi
+                elif [ -f "$QM_DROPIN" ]; then
+                    echo "  Drop-in: Standalone file (${QM_DROPIN})"
+                else
+                    echo "  Drop-in: Not installed"
+                fi
+                ;;
+            enable)
+                if [ ! -f "$QM_SOURCE" ]; then
+                    echo "❌ Error: Query Monitor drop-in source not found at ${QM_SOURCE}."
+                    echo "Ensure Query Monitor plugin is installed in WordPress first."
+                    exit 1
+                fi
+                [ -L "$QM_DROPIN" ] || [ -f "$QM_DROPIN" ] && rm -f "$QM_DROPIN"
+                ln -s "plugins/query-monitor/wp-content/db.php" "$QM_DROPIN" 2>/dev/null || cp "$QM_SOURCE" "$QM_DROPIN"
+                chown -h "${U_NAME}:www-data" "$QM_DROPIN" 2>/dev/null || true
+                chmod 644 "$QM_DROPIN" 2>/dev/null || true
+                echo "✔ Query Monitor db.php drop-in enabled successfully for ${DOMAIN}."
+                ;;
+            disable)
+                if [ -L "$QM_DROPIN" ] || [ -f "$QM_DROPIN" ]; then
+                    rm -f "$QM_DROPIN"
+                    echo "✔ Query Monitor db.php drop-in removed for ${DOMAIN}."
+                else
+                    echo "ℹ Query Monitor db.php drop-in was not active."
+                fi
+                ;;
+            *)
+                echo "Usage: sudo lsctl qm <domain> [enable|disable|status]"
+                exit 1
+                ;;
+        esac
         exit 0
         ;;
 
@@ -1518,12 +1599,19 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
         fi
         if [ -f "$DB_FILE" ]; then
             ( (db_query "SELECT domain, site_path FROM sites;" 2>/dev/null || true) | while IFS='|' read -r dom sp; do
-                if [ -n "$sp" ] && [ -f "${sp}/wp-config.php" ]; then
-                    if grep -q "WP_REDIS_PASSWORD" "${sp}/wp-config.php" && ! grep -q "WP_REDIS_USERNAME" "${sp}/wp-config.php"; then
+                if [ -n "$sp" ] && { [ -f "${sp}/wp-config.php" ] || [ -f "$(dirname "${sp}")/wp-config.php" ]; }; then
+                    if grep -q "WP_REDIS_PASSWORD" "${sp}/wp-config.php" 2>/dev/null && ! grep -q "WP_REDIS_USERNAME" "${sp}/wp-config.php" 2>/dev/null; then
                         echo "  [WARN] Site ${dom} missing WP_REDIS_USERNAME in wp-config.php (run: sudo lsctl sync-tenants)"
                     fi
                     if [ -d "${sp}/wp-content/plugins/redis-cache" ] && [ ! -f "${sp}/wp-content/object-cache.php" ]; then
                         echo "  [WARN] Site ${dom} missing object-cache.php drop-in (run: sudo lsctl sync-tenants)"
+                    fi
+                    if [ -d "${sp}/wp-content/plugins/query-monitor" ]; then
+                        if [ -L "${sp}/wp-content/db.php" ] && [ ! -e "${sp}/wp-content/db.php" ]; then
+                            echo "  [WARN] Site ${dom} has broken Query Monitor db.php symlink (run: sudo lsctl sync-tenants)"
+                        elif [ ! -e "${sp}/wp-content/db.php" ]; then
+                            echo "  [WARN] Site ${dom} missing Query Monitor db.php drop-in (run: sudo lsctl sync-tenants)"
+                        fi
                     fi
                 fi
             done ) || true

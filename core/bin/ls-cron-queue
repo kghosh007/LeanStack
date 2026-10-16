@@ -62,7 +62,11 @@ run_site_cron() {
 
     if [ -d "$site_path" ] && [ -n "$php_bin" ] && [ -n "$wp_bin" ]; then
         # Open basedir must permit WP-CLI execution, temporary directories, socket paths, SSL certs, and tenant roots
-        local allowed_paths="/home/${user}:/usr/local/bin:/usr/bin:/usr/share/php:/tmp:/run/valkey:/run/mysqld:/proc:/etc/ssl/certs:/usr/share/ca-certificates:/etc/pki:/etc/resolv.conf"
+        local allowed_paths="/home/${user}"
+        if [[ "$site_path" != "/home/${user}"* ]]; then
+            allowed_paths="${allowed_paths}:${site_path}"
+        fi
+        allowed_paths="${allowed_paths}:/usr/local/bin:/usr/bin:/usr/share/php:/tmp:/run/valkey:/run/mysqld:/proc:/etc/ssl/certs:/usr/share/ca-certificates:/etc/pki:/etc/resolv.conf"
 
         # WP-CLI relies on proc_open / proc_close for process management.
         # Restrict dangerous functions while allowing proc_open for WP-CLI execution.
@@ -90,11 +94,21 @@ run_site_cron() {
 
         write_cron_status "running"
 
-        # Run WP-CLI cron as tenant user with timeout and strict PHP runtime sandboxing
-        timeout 60 sudo -u "$user" "$php_bin" \
-            -d open_basedir="${allowed_paths}" \
-            -d disable_functions="${disabled_funcs}" \
-            "$wp_bin" cron event run --due-now --path="$site_path" --quiet 2>> "$LOG_FILE" || true
+        # Run WP-CLI cron as tenant user within site root with timeout and strict PHP runtime sandboxing
+        (
+            cd "$site_path" 2>/dev/null || true
+            local sudo_cmd=()
+            if [ "$(id -u)" -eq 0 ]; then
+                sudo_cmd=(sudo -u "$user")
+                if sudo --help 2>&1 | grep -q -- '--chdir'; then
+                    sudo_cmd+=(--chdir="$site_path")
+                fi
+            fi
+            timeout 60 "${sudo_cmd[@]}" "$php_bin" \
+                -d open_basedir="${allowed_paths}" \
+                -d disable_functions="${disabled_funcs}" \
+                "$wp_bin" cron event run --due-now --path="$site_path" --quiet 2>> "$LOG_FILE" || true
+        )
 
         write_cron_status "completed"
     fi

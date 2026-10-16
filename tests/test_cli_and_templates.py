@@ -761,6 +761,60 @@ class TestProfilesAndTemplates(unittest.TestCase):
             i += 1
         self.assertEqual(brace_count, 0, f"Unbalanced braces in {bridge_tpl}: final count {brace_count}")
 
+    def test_cron_queue_chdir_and_working_directory(self):
+        """Verify ls-cron-queue runs WP-CLI within tenant site_path and cp-cron.service sets WorkingDirectory=/tmp."""
+        cron_bin = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
+        with open(cron_bin, "r") as f:
+            content = f.read()
+        self.assertIn('cd "$site_path"', content)
+        self.assertIn('--chdir="$site_path"', content)
+
+        service_file = os.path.join(BASE_DIR, "systemd", "cp-cron.service")
+        with open(service_file, "r") as f:
+            svc_content = f.read()
+        self.assertIn("WorkingDirectory=/tmp", svc_content)
+
+    def test_open_basedir_benign_warning_suppressor(self):
+        """Verify leanstack-shield and leanstack-bridge deploy benign open_basedir warning suppressor."""
+        shield_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-shield.php.tpl")
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+
+        for tpl_path in [shield_tpl, bridge_tpl]:
+            with open(tpl_path, "r") as f:
+                content = f.read()
+            self.assertIn("leanstack_suppress_benign_open_basedir_warnings", content)
+            self.assertIn("open_basedir restriction in effect", content)
+            self.assertIn("File(/home)", content)
+            self.assertIn("File(/)", content)
+            self.assertIn("backup-storage.php", content)
+            self.assertIn("File(core/", content)
+            self.assertIn("File(man-params.mustache)", content)
+
+    def test_query_monitor_bridge_helper_and_reconciler(self):
+        """Verify leanstack-bridge provides Query Monitor drop-in self-healing and drop-in reconciler."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            content = f.read()
+        self.assertIn("maybe_reconcile_qm_dropin", content)
+        self.assertIn("reconcile_qm_dropin", content)
+        self.assertIn("handle_fix_qm_dropin", content)
+        self.assertIn("plugins/query-monitor/wp-content/db.php", content)
+        self.assertIn("Query Monitor plugin is uninstalled, remove any dangling drop-in symlink", content)
+
+    def test_lsctl_qm_command_and_doctor(self):
+        """Verify lsctl has qm command and doctor checks Query Monitor db.php drop-in with proper precedence."""
+        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_bin, "r") as f:
+            content = f.read()
+        self.assertIn("qm|site:qm)", content)
+        self.assertIn("Query Monitor db.php drop-in", content)
+        self.assertIn("missing Query Monitor db.php drop-in", content)
+        self.assertIn("has broken Query Monitor db.php symlink", content)
+        # Verify broken symlink check precedes missing check
+        broken_pos = content.find("has broken Query Monitor db.php symlink")
+        missing_pos = content.find("missing Query Monitor db.php drop-in", broken_pos)
+        self.assertGreater(missing_pos, broken_pos, "Broken symlink check must precede missing file check in doctor")
+
 if __name__ == "__main__":
     unittest.main()
 

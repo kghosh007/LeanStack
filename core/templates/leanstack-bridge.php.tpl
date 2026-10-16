@@ -10,6 +10,40 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+// ==============================================================================
+// Suppress Benign open_basedir Path Resolution Warnings
+// Prevents log bloat from third-party plugins (e.g. wp-file-manager) and core block lookups
+// attempting to traverse parent roots outside the POSIX tenant jail.
+// ==============================================================================
+if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
+    function leanstack_suppress_benign_open_basedir_warnings() {
+        static $registered = false;
+        if ( $registered ) {
+            return;
+        }
+        $registered = true;
+
+        $prev_handler = set_error_handler( function( $errno, $errstr, $errfile = '', $errline = 0 ) use ( &$prev_handler ) {
+            if ( E_WARNING === $errno && false !== strpos( $errstr, 'open_basedir restriction in effect' ) ) {
+                if ( false !== strpos( $errstr, 'File(/home)' ) ||
+                     false !== strpos( $errstr, 'File(/)' ) ||
+                     false !== strpos( $errstr, 'File(core/' ) ||
+                     false !== strpos( $errstr, 'File(man-params.mustache)' ) ||
+                     ( $errfile && false !== strpos( $errfile, 'backup-storage.php' ) ) ||
+                     ( $errfile && false !== strpos( $errfile, 'blocks.php' ) ) ||
+                     ( $errfile && false !== strpos( $errfile, 'utils.php' ) ) ) {
+                    return true;
+                }
+            }
+            if ( is_callable( $prev_handler ) ) {
+                return call_user_func( $prev_handler, $errno, $errstr, $errfile, $errline );
+            }
+            return false;
+        }, E_WARNING );
+    }
+    leanstack_suppress_benign_open_basedir_warnings();
+}
+
 class LeanStackBridge {
 
     private static $instance = null;
@@ -52,6 +86,10 @@ class LeanStackBridge {
         add_action( 'admin_post_leanstack_clear_log', array( $this, 'handle_clear_log' ) );
         add_action( 'admin_post_leanstack_download_log', array( $this, 'handle_download_log' ) );
         add_action( 'wp_ajax_leanstack_get_log_tail', array( $this, 'ajax_get_log_tail' ) );
+
+        // Query Monitor Drop-in Self-Healing Handler
+        add_action( 'admin_init', array( $this, 'maybe_reconcile_qm_dropin' ) );
+        add_action( 'admin_post_leanstack_fix_qm_dropin', array( $this, 'handle_fix_qm_dropin' ) );
 
         // Automated Invalidation Triggers on Post/Page Updates
         add_action( 'save_post', array( $this, 'on_post_change' ), 10, 2 );
@@ -2702,6 +2740,118 @@ class LeanStackBridge {
             <?php endif; ?>
         </div>
         <?php
+    }
+
+    /**
+     * Query Monitor Drop-in Self-Healing Reconciler
+     */
+    public function maybe_reconcile_qm_dropin() {
+        if ( ! current_user_can( 'activate_plugins' ) ) {
+            return;
+        }
+        $qm_plugin = WP_CONTENT_DIR . '/plugins/query-monitor';
+        $qm_source = $qm_plugin . '/wp-content/db.php';
+        $qm_dropin = WP_CONTENT_DIR . '/db.php';
+
+        if ( ! file_exists( $qm_source ) ) {
+            // If Query Monitor plugin is uninstalled, remove any dangling drop-in symlink to prevent fatal crashes
+            if ( is_link( $qm_dropin ) ) {
+                $target = @readlink( $qm_dropin );
+                if ( false !== $target && ( false !== strpos( $target, 'query-monitor' ) || ! file_exists( $qm_dropin ) ) ) {
+                    @unlink( $qm_dropin );
+                }
+            }
+            return;
+        }
+
+        // Safely determine if Query Monitor is active
+        $qm_active = class_exists( 'QueryMonitor' );
+        if ( ! $qm_active && function_exists( 'is_plugin_active' ) ) {
+            $qm_active = is_plugin_active( 'query-monitor/query-monitor.php' );
+        }
+        if ( ! $qm_active ) {
+            $active_plugins = (array) get_option( 'active_plugins', array() );
+            $qm_active = in_array( 'query-monitor/query-monitor.php', $active_plugins, true );
+            if ( ! $qm_active && is_multisite() ) {
+                $network_plugins = (array) get_site_option( 'active_sitewide_plugins', array() );
+                $qm_active = isset( $network_plugins['query-monitor/query-monitor.php'] );
+            }
+        }
+        if ( ! $qm_active ) {
+            return;
+        }
+
+        // Check if db.php is missing or a broken symlink
+        $needs_fix = false;
+        if ( is_link( $qm_dropin ) ) {
+            if ( ! file_exists( $qm_dropin ) ) {
+                $needs_fix = true;
+            }
+        } elseif ( ! file_exists( $qm_dropin ) ) {
+            $needs_fix = true;
+        }
+
+        if ( $needs_fix ) {
+            $this->reconcile_qm_dropin();
+        }
+    }
+
+    public function handle_fix_qm_dropin() {
+        if ( ! current_user_can( 'activate_plugins' ) ) {
+            wp_die( 'Unauthorized', 403 );
+        }
+        check_admin_referer( 'leanstack_fix_qm_dropin' );
+        $result = $this->reconcile_qm_dropin();
+        $referer = wp_get_referer();
+        if ( $referer ) {
+            wp_safe_redirect( add_query_arg( array( 'qm_fixed' => $result ? '1' : '0' ), $referer ) );
+        } else {
+            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-logs', 'qm_fixed' => $result ? '1' : '0' ), admin_url( 'tools.php' ) ) );
+        }
+        exit;
+    }
+
+    public function reconcile_qm_dropin() {
+        $qm_source = WP_CONTENT_DIR . '/plugins/query-monitor/wp-content/db.php';
+        $qm_dropin = WP_CONTENT_DIR . '/db.php';
+
+        if ( ! file_exists( $qm_source ) ) {
+            return false;
+        }
+
+        // Safely inspect existing file/symlink: do not clobber third-party drop-ins
+        if ( is_link( $qm_dropin ) ) {
+            $target = @readlink( $qm_dropin );
+            if ( file_exists( $qm_dropin ) && false !== $target && false === strpos( $target, 'query-monitor' ) ) {
+                return false; // Valid third-party drop-in symlink, do not clobber
+            }
+            @unlink( $qm_dropin );
+        } elseif ( file_exists( $qm_dropin ) ) {
+            if ( is_file( $qm_dropin ) ) {
+                $content = @file_get_contents( $qm_dropin, false, null, 0, 500 );
+                if ( false !== $content && false === strpos( $content, 'Query Monitor' ) ) {
+                    return false; // Third-party drop-in present, do not clobber
+                }
+            }
+            @unlink( $qm_dropin );
+        }
+
+        // Attempt relative symlink first (plugins/query-monitor/wp-content/db.php)
+        $rel_target = 'plugins/query-monitor/wp-content/db.php';
+        $success = false;
+        if ( function_exists( 'symlink' ) ) {
+            $success = @symlink( $rel_target, $qm_dropin );
+        }
+
+        // Fallback to copy if symlink fails or is disabled
+        if ( ! $success && ! file_exists( $qm_dropin ) ) {
+            $success = @copy( $qm_source, $qm_dropin );
+            if ( $success ) {
+                @chmod( $qm_dropin, 0644 );
+            }
+        }
+
+        return $success;
     }
 }
 

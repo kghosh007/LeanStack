@@ -1051,6 +1051,88 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                     except Exception as e:
                         pass
 
+                # 7. Ensure Query Monitor db.php drop-in is properly symlinked/installed if query-monitor plugin exists
+                qm_plugin = os.path.join(site_path, "wp-content", "plugins", "query-monitor")
+                qm_dropin = os.path.join(site_path, "wp-content", "db.php")
+                if os.path.isdir(qm_plugin):
+                    qm_source = os.path.join(qm_plugin, "wp-content", "db.php")
+                    if os.path.isfile(qm_source):
+                        qm_needs_install = False
+                        if os.path.islink(qm_dropin):
+                            if not os.path.exists(qm_dropin):
+                                try:
+                                    os.unlink(qm_dropin)
+                                    qm_needs_install = True
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    target = os.readlink(qm_dropin)
+                                    if "query-monitor" not in target:
+                                        qm_needs_install = False  # Valid third-party symlink, do not clobber
+                                except Exception:
+                                    pass
+                        elif os.path.isfile(qm_dropin):
+                            try:
+                                with open(qm_dropin, "r", errors="ignore") as f_db:
+                                    if "Query Monitor" not in f_db.read(500):
+                                        qm_needs_install = False  # Third-party drop-in present, do not clobber
+                            except Exception:
+                                pass
+                        else:
+                            qm_needs_install = True
+
+                        if qm_needs_install:
+                            try:
+                                if os.path.islink(qm_dropin) or os.path.exists(qm_dropin):
+                                    try:
+                                        os.unlink(qm_dropin)
+                                    except Exception:
+                                        pass
+                                rel_target = os.path.join("plugins", "query-monitor", "wp-content", "db.php")
+                                os.symlink(rel_target, qm_dropin)
+                                import pwd, grp
+                                try:
+                                    u_info = pwd.getpwnam(user)
+                                    w_info = grp.getgrnam("www-data")
+                                    os.lchown(qm_dropin, u_info.pw_uid, w_info.gr_gid)
+                                except Exception:
+                                    pass
+                                self.log(f"Installed Query Monitor db.php drop-in symlink for {domain}", Colors.GREEN, prefix="  ✔")
+                            except Exception as e:
+                                try:
+                                    shutil.copy2(qm_source, qm_dropin)
+                                    import pwd, grp
+                                    u_info = pwd.getpwnam(user)
+                                    w_info = grp.getgrnam("www-data")
+                                    os.chown(qm_dropin, u_info.pw_uid, w_info.gr_gid)
+                                    os.chmod(qm_dropin, 0o644)
+                                    self.log(f"Copied Query Monitor db.php drop-in for {domain}", Colors.GREEN, prefix="  ✔")
+                                except Exception as ex:
+                                    self.log(f"Warning: Query Monitor db.php drop-in install for {domain}: {ex}", Colors.YELLOW, prefix="  ⚠️")
+                else:
+                    # If query-monitor plugin is not present, ensure no dangling dead symlink pointing to QM remains
+                    if os.path.islink(qm_dropin):
+                        try:
+                            target = os.readlink(qm_dropin)
+                            if "query-monitor" in target or not os.path.exists(qm_dropin):
+                                os.unlink(qm_dropin)
+                                self.log(f"Cleaned up dangling Query Monitor db.php drop-in for {domain}", Colors.GREEN, prefix="  ✔")
+                        except Exception:
+                            pass
+
+                # 8. Ensure wp-content directory permissions allow tenant and webserver write access
+                wp_content_dir = os.path.join(site_path, "wp-content")
+                if os.path.isdir(wp_content_dir):
+                    try:
+                        import pwd, grp
+                        u_info = pwd.getpwnam(user)
+                        w_info = grp.getgrnam("www-data")
+                        os.chown(wp_content_dir, u_info.pw_uid, w_info.gr_gid)
+                        os.chmod(wp_content_dir, 0o775)
+                    except Exception:
+                        pass
+
             synced_count += 1
 
         conn.close()
@@ -1159,6 +1241,11 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                 self.log("Angie reloaded with zero downtime.", Colors.GREEN, prefix="  ✔")
 
         if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl"):
+            for v_str in ["8.5", "8.4", "8.3", "8.2", "8.1"]:
+                svc = f"php{v_str}-fpm"
+                if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:
+                    subprocess.run(["systemctl", "--no-ask-password", "reload", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            self.log("PHP-FPM pools reloaded.", Colors.GREEN, prefix="  ✔")
             subprocess.run(["systemctl", "--no-ask-password", "restart", "ls-gatekeeper.service"], check=False)
             self.log("Syntax Gatekeeper restarted.", Colors.GREEN, prefix="  ✔")
             subprocess.run(["systemctl", "--no-ask-password", "enable", "--now", "cp-cron.timer", "ls-watcher.timer", "ls-autoupdate.timer", "ls-gatekeeper.service"], check=False)

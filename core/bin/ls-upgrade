@@ -670,6 +670,34 @@ class LeanStackUpgrader:
             idx = pos
 
         content = "".join(out_parts)
+
+        # 2. Reconcile FastCGI cache parameters (stop caching 404s, keep 200 60m only)
+        content = re.sub(r"^[ \t]*fastcgi_cache_valid\s+200\s+301\s+302\s+60m;[ \t]*(?:#[^\r\n]*)?\r?\n?", lambda m: m.group(0).replace("200 301 302", "200"), content, flags=re.M)
+        content = re.sub(r"^[ \t]*fastcgi_cache_valid\s+404\b[^\n;]*;[ \t]*(?:#[^\r\n]*)?\r?\n?", "", content, flags=re.M)
+
+        # 3. Exclude /wp-json/ from FastCGI cache bypass regex
+        if "/wp-json/" not in content and "/wp-admin/|" in content:
+            content = content.replace("/wp-admin/|", "/wp-admin/|/wp-json/|")
+
+        # 4. Crawlers & AI endpoints (robots.txt & llms.txt try_files)
+        if "location = /robots.txt" not in content:
+            loc_match = re.search(r"^([ \t]*)location\s+/\s*\{", content, re.M)
+            if loc_match:
+                indent = loc_match.group(1) or "    "
+                robots_block = (
+                    f"{indent}location = /robots.txt {{\n"
+                    f"{indent}    try_files $uri /index.php?$args;\n"
+                    f"{indent}    access_log off;\n"
+                    f"{indent}    log_not_found off;\n"
+                    f"{indent}}}\n\n"
+                    f"{indent}location = /llms.txt {{\n"
+                    f"{indent}    try_files $uri /index.php?$args;\n"
+                    f"{indent}    access_log off;\n"
+                    f"{indent}    log_not_found off;\n"
+                    f"{indent}}}\n\n"
+                )
+                content = content[:loc_match.start()] + robots_block + content[loc_match.start():]
+
         return content, (content != orig)
 
     def reconcile_angie_tls(self, angie_dir: str = "/etc/angie", check_syntax: bool = None) -> bool:

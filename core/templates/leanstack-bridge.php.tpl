@@ -3306,7 +3306,9 @@ class LeanStackBridge {
     public function maybe_serve_dynamic_llms() {
         if ( ! empty( $_SERVER['REQUEST_URI'] ) ) {
             $req_path = parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH );
-            if ( '/llms.txt' === $req_path ) {
+            $home_path = (string) parse_url( home_url(), PHP_URL_PATH );
+            $expected_path = rtrim( $home_path, '/' ) . '/llms.txt';
+            if ( '/llms.txt' === $req_path || ( ! empty( $home_path ) && $expected_path === $req_path ) ) {
                 header( 'Content-Type: text/markdown; charset=utf-8' );
                 header( 'X-Robots-Tag: noindex, follow' );
                 $content = get_option( 'leanstack_llms_content', '' );

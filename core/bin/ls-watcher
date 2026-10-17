@@ -454,7 +454,7 @@ check_php_hardening_revert() {
             tenant_user=$(basename "$user_dir")
             log "[AUTOREVERT] Reverting expired benchmark window for tenant '${tenant_user}' to Strict Lockdown..."
             rm -f "$active_file" 2>/dev/null || true
-            local df_strict="exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset"
+            local df_strict="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset"
             for v in 8.1 8.2 8.3 8.4 8.5; do
                 local pconf="/etc/php/${v}/fpm/pool.d/${tenant_user}.conf"
                 if [ -f "$pconf" ]; then

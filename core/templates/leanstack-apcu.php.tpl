@@ -212,6 +212,7 @@ class LeanStackAPCu {
         }
         foreach ( $status_files as $sf ) {
             if ( file_exists( $sf ) ) {
+                clearstatcache( true, $sf );
                 $mtime = filemtime( $sf );
                 $last_mtime_key = $this->key( 'meta', 'cron_mtime' );
                 $success = false;

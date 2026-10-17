@@ -670,6 +670,50 @@ ssl_ecdh_curve X25519MLKEM768:x25519;
         finally:
             shutil.rmtree(test_angie, ignore_errors=True)
 
+    def test_reconcile_vhost_cache_bloat_and_crawlers_endpoints(self):
+        """Verify _reconcile_vhost_http2_content upgrades cache validity, removes 404 cache, adds /wp-json/, and injects robots/llms."""
+        legacy_vhost = """server {
+    listen 80;
+    server_name legacy.example.com;
+}
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name legacy.example.com;
+    root /home/legacy/htdocs;
+
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+
+    location ~ \\.php$ {
+        if ($request_uri ~* "/wp-admin/|/xmlrpc.php|wp-.*.php|/feed/|index.php") {
+            set $skip_cache 1;
+        }
+        fastcgi_cache CACHE_LEGACY;
+        fastcgi_cache_bypass $skip_cache;
+        fastcgi_no_cache $skip_cache;
+        fastcgi_cache_valid 200 301 302 60m;
+        fastcgi_cache_valid 404 1m;
+        fastcgi_pass unix:/run/php/php8.5-fpm-legacy.sock;
+    }
+}
+"""
+        new_vhost, changed = self.upgrader._reconcile_vhost_http2_content(legacy_vhost)
+        self.assertTrue(changed)
+        self.assertIn("fastcgi_cache_valid 200 60m;", new_vhost)
+        self.assertNotIn("fastcgi_cache_valid 404", new_vhost)
+        self.assertNotIn("301 302", new_vhost)
+        self.assertIn("/wp-admin/|/wp-json/|/xmlrpc.php", new_vhost)
+        self.assertIn("location = /robots.txt {", new_vhost)
+        self.assertIn("location = /llms.txt {", new_vhost)
+        self.assertIn("http2 on;", new_vhost)
+
+        # Idempotency check: running again produces no further changes
+        vhost_second, changed_second = self.upgrader._reconcile_vhost_http2_content(new_vhost)
+        self.assertFalse(changed_second)
+        self.assertEqual(vhost_second, new_vhost)
+
 if __name__ == "__main__":
     unittest.main()
 

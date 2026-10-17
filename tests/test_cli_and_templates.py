@@ -939,6 +939,38 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn('chmod 755 "${web_root}/wp-content"', watcher_content)
         self.assertIn('for sub in plugins themes uploads mu-plugins; do', watcher_content)
 
+    def test_php_hardening_gatekeeper_and_watcher_lockdown_toggle(self):
+        """Verify ls-gatekeeper and ls-watcher properly toggle strict lockdown vs benchmark window."""
+        gk_path = os.path.join(BASE_DIR, "core", "bin", "ls-gatekeeper")
+        with open(gk_path, "r") as f:
+            gk_content = f.read()
+        self.assertIn('local df_val="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset"', gk_content)
+        self.assertIn('if [ "$mode" == "benchmark" ]; then', gk_content)
+        self.assertIn('df_val="exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset"', gk_content)
+
+        watcher_path = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
+        with open(watcher_path, "r") as f:
+            watcher_content = f.read()
+        self.assertIn('local df_strict="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset"', watcher_content)
+
+    def test_ls_cron_queue_sudo_arguments_order(self):
+        """Verify ls-cron-queue places options (--chdir) before environment variable assignments in sudo command."""
+        cq_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
+        with open(cq_path, "r") as f:
+            cq_content = f.read()
+        chdir_idx = cq_content.find('sudo_cmd+=(--chdir="$site_path")')
+        home_idx = cq_content.find('sudo_cmd+=(HOME="/home/${user}")')
+        self.assertNotEqual(chdir_idx, -1)
+        self.assertNotEqual(home_idx, -1)
+        self.assertLess(chdir_idx, home_idx, "--chdir must precede HOME=... in sudo command array")
+
+    def test_apcu_stat_cache_clearing(self):
+        """Verify leanstack-apcu.php.tpl invalidates PHP stat cache before reading cron status mtime."""
+        apcu_path = os.path.join(BASE_DIR, "core", "templates", "leanstack-apcu.php.tpl")
+        with open(apcu_path, "r") as f:
+            apcu_content = f.read()
+        self.assertIn("clearstatcache( true, $sf );", apcu_content)
+
 if __name__ == "__main__":
     unittest.main()
 

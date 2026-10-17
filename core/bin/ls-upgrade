@@ -1029,7 +1029,7 @@ read_buffer_size               = 512K
 read_rnd_buffer_size           = {read_rnd}
 
 # --- Query Optimizer: Cost-Based with MRR Acceleration & Subquery Cache ---
-optimizer_switch               = 'mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on'
+optimizer_switch               = mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on
 
 # --- In-Memory Temporary Tables & Aria Page Cache ---
 tmp_table_size                 = 64M
@@ -1046,7 +1046,7 @@ table_definition_cache         = 2048
 character-set-server           = utf8mb4
 collation-server               = utf8mb4_unicode_520_ci
 """
-            changed = False
+            changed = self.force
             if os.path.exists(conf_path):
                 try:
                     with open(conf_path, "r", encoding="utf-8") as f:
@@ -1064,9 +1064,11 @@ collation-server               = utf8mb4_unicode_520_ci
                     f.write(conf_content)
                 self.log(f"Reconciled MariaDB High-QPS configuration at {conf_path}", Colors.GREEN, prefix="  ✔")
                 if shutil.which("systemctl") and hasattr(os, "geteuid") and os.geteuid() == 0:
-                    if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", "mariadb"], check=False).returncode == 0:
-                        subprocess.run(["systemctl", "--no-ask-password", "restart", "mariadb"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                        self.log("MariaDB service restarted with high-QPS profile.", Colors.GREEN, prefix="  ✔")
+                    for svc in ["mariadb", "mysql"]:
+                        if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:
+                            subprocess.run(["systemctl", "--no-ask-password", "restart", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                            self.log(f"MariaDB service ({svc}) restarted with high-QPS profile.", Colors.GREEN, prefix="  ✔")
+                            break
             return True
         except Exception as e:
             self.log(f"Notice: MariaDB tuning reconciliation: {e}", Colors.DIM, prefix="  ℹ")

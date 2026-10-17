@@ -127,7 +127,7 @@ read_buffer_size               = 512K
 read_rnd_buffer_size           = ${READ_RND}
 
 # --- Query Optimizer: Cost-Based with MRR Acceleration & Subquery Cache ---
-optimizer_switch               = 'mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on'
+optimizer_switch               = mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on
 
 # --- In-Memory Temporary Tables & Aria Page Cache ---
 # Aria pagecache prevents internal temporary tables with TEXT/BLOB from disk thrashing

@@ -364,6 +364,7 @@ class LeanStackInstaller:
         os.makedirs("/etc/lsctl/templates", exist_ok=True)
         os.makedirs("/etc/leanstack", exist_ok=True)
         os.makedirs("/var/lib/lsctl", mode=0o700, exist_ok=True)
+        os.makedirs("/var/log/lsctl", exist_ok=True)
         
         # Legacy compatibility links
         if not os.path.exists("/etc/cpctl"):
@@ -374,6 +375,11 @@ class LeanStackInstaller:
         if not os.path.exists("/var/lib/cpctl"):
             try:
                 os.symlink("/var/lib/lsctl", "/var/lib/cpctl")
+            except Exception:
+                pass
+        if not os.path.exists("/var/log/cpctl"):
+            try:
+                os.symlink("/var/log/lsctl", "/var/log/cpctl")
             except Exception:
                 pass
 

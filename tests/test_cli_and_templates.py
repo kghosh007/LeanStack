@@ -1004,7 +1004,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
             mock_sysctl = os.path.join(mock_bin, "systemctl")
             with open(mock_sysctl, "w") as f:
                 f.write("""#!/usr/bin/env bash
-if [ "$1" == "list-unit-files" ]; then
+if [ "$1" == "list-unit-files" ] || [ "$1" == "cat" ]; then
     if [ "$2" == "cp-cron.service" ] || [ "$2" == "cp-cron.timer" ]; then
         exit 0
     fi
@@ -1043,6 +1043,14 @@ exit 0
             self.assertNotIn("Service unit not found", res.stdout)
             self.assertNotIn("Timer unit not found", res.stdout)
 
+            # Test --json mode to verify clean state values (no "inactiveinactiveinactive" bug)
+            res_json = subprocess.run([lsctl_path, "cron:status", "--json"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(res_json.returncode, 0)
+            data = json.loads(res_json.stdout)
+            self.assertEqual(data["cron_timer"], "active")
+            self.assertEqual(data["cron_service"], "inactive")
+            self.assertFalse(data["cron_locked"])
+
     def test_sanitize_cron_logs_removes_chdir_and_open_basedir(self):
         """Verify sanitize_cron_logs strips both benign open_basedir warnings and stale sudo --chdir errors."""
         from importlib.machinery import SourceFileLoader
@@ -1062,32 +1070,83 @@ exit 0
                 f.write("PHP Warning:  open_basedir restriction in effect. File(/proc/cpuinfo) is not within the allowed path(s)\n")
                 f.write("PHP Fatal error: Allowed memory size of 134217728 bytes exhausted\n")
 
+            # Call real sanitize_cron_log_paths method on test_log
+            upgrader.sanitize_cron_log_paths([test_log])
+
             with open(test_log, "r", encoding="utf-8") as f:
                 lines = f.readlines()
-            cleaned = [
-                l for l in lines
-                if "open_basedir restriction in effect" not in l
-                and "not allowed to use '--chdir" not in l
-                and "not allowed to use \'--chdir" not in l
-            ]
-            self.assertEqual(len(cleaned), 1)
-            self.assertIn("PHP Fatal error: Allowed memory size", cleaned[0])
+            self.assertEqual(len(lines), 1)
+            self.assertIn("PHP Fatal error: Allowed memory size", lines[0])
+            self.assertNotIn("--chdir", lines[0])
+            self.assertNotIn("open_basedir", lines[0])
 
     def test_upgrade_git_fetch_force_and_behind_count(self):
-        """Verify ls-upgrade uses fetch --tags --force and returns False on 0 new commits."""
+        """Verify ls-upgrade uses fetch --tags --force and returns False on 0 new commits or fetch error."""
+        from unittest.mock import patch
+        from importlib.machinery import SourceFileLoader
+        import importlib.util
+
         upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        loader = SourceFileLoader("ls_upgrade", upgrade_bin)
+        spec = importlib.util.spec_from_file_location("ls_upgrade", upgrade_bin, loader=loader)
+        ls_upgrade_mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_upgrade_mod)
+
         with open(upgrade_bin, "r") as f:
             content = f.read()
         self.assertIn('["fetch", "--tags", "--force", "origin"]', content)
         self.assertIn('Repository is up to date with remote.', content)
-        self.assertIn('def sanitize_cron_logs(self):', content)
-        self.assertIn('"not allowed to use \'--chdir"', content)
+        self.assertIn('def sanitize_cron_logs(self', content)
 
         update_sh = os.path.join(BASE_DIR, "update.sh")
         with open(update_sh, "r") as f:
             update_content = f.read()
         self.assertIn('fetch --tags --force origin', update_content)
         self.assertIn('mkdir -p /usr/local/bin /etc/lsctl/templates /var/log/lsctl', update_content)
+
+        upgrader = ls_upgrade_mod.LeanStackUpgrader(repo_dir=BASE_DIR, db_file=":memory:")
+
+        # 1. Simulate up-to-date repo (behind_count == 0): must return False
+        def mock_run_uptodate(cmd, *args, **kwargs):
+            if "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "fetch" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="From https://github.com/kghosh007/LeanStack\n")
+            if "rev-list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=mock_run_uptodate):
+            pulled = upgrader.git_pull_latest()
+            self.assertFalse(pulled)
+
+        # 2. Simulate remote fetch failure: must return False and not re-exec
+        def mock_run_fetch_fail(cmd, *args, **kwargs):
+            if "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "fetch" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="From https://github.com/kghosh007/LeanStack\nfatal: unable to access 'https://github.com/': Could not resolve host\n")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=mock_run_fetch_fail):
+            pulled = upgrader.git_pull_latest()
+            self.assertFalse(pulled)
+
+        # 3. Simulate remote commits available: behind_count == 3, pull succeeds -> must return True
+        def mock_run_behind(cmd, *args, **kwargs):
+            if "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "fetch" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+            if "pull" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="Updating 0fc3533..c62dee4\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=mock_run_behind):
+            pulled = upgrader.git_pull_latest()
+            self.assertTrue(pulled)
 
 if __name__ == "__main__":
     unittest.main()

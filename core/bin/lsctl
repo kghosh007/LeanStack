@@ -466,10 +466,31 @@ except Exception:
             [ "$arg" == "--json" ] && JSON_OUT=1
         done
 
-        CRON_TIMER=$( (systemctl is-active cp-cron.timer 2>/dev/null || systemctl is-active ls-cron.timer 2>/dev/null || echo "inactive") | tr -d '\r\n' )
-        [ -z "$CRON_TIMER" ] && CRON_TIMER="inactive"
-        CRON_SVC=$( (systemctl is-active cp-cron.service 2>/dev/null || systemctl is-active ls-cron.service 2>/dev/null || echo "inactive") | tr -d '\r\n' )
-        [ -z "$CRON_SVC" ] && CRON_SVC="inactive"
+        CRON_TIMER="inactive"
+        for t in cp-cron.timer ls-cron.timer; do
+            if command -v systemctl &>/dev/null; then
+                st=$(systemctl is-active "$t" 2>/dev/null | tr -d '\r\n' || true)
+                if [ "$st" == "active" ]; then
+                    CRON_TIMER="active"
+                    break
+                elif [ -n "$st" ] && [ "$CRON_TIMER" == "inactive" ]; then
+                    CRON_TIMER="$st"
+                fi
+            fi
+        done
+
+        CRON_SVC="inactive"
+        for s in cp-cron.service ls-cron.service; do
+            if command -v systemctl &>/dev/null; then
+                st=$(systemctl is-active "$s" 2>/dev/null | tr -d '\r\n' || true)
+                if [ "$st" == "active" ]; then
+                    CRON_SVC="active"
+                    break
+                elif [ -n "$st" ] && [ "$CRON_SVC" == "inactive" ]; then
+                    CRON_SVC="$st"
+                fi
+            fi
+        done
 
         LOCK_HELD="false"
         for lf in "/run/ls-cron.lock" "/tmp/ls-cron.lock"; do
@@ -500,7 +521,8 @@ PY
         echo "=========================================================="
         FOUND_TIMER=""
         for t in cp-cron.timer ls-cron.timer; do
-            if [ -f "/etc/systemd/system/$t" ] || [ -f "/lib/systemd/system/$t" ] || [ -f "/usr/lib/systemd/system/$t" ] || systemctl list-unit-files "$t" &>/dev/null || systemctl cat "$t" &>/dev/null; then
+            if [ -f "/etc/systemd/system/$t" ] || [ -f "/lib/systemd/system/$t" ] || [ -f "/usr/lib/systemd/system/$t" ] || \
+               (command -v systemctl &>/dev/null && (systemctl cat "$t" &>/dev/null || systemctl list-unit-files "$t" &>/dev/null)); then
                 FOUND_TIMER="$t"
                 break
             fi
@@ -515,7 +537,8 @@ PY
 
         FOUND_SVC=""
         for s in cp-cron.service ls-cron.service; do
-            if [ -f "/etc/systemd/system/$s" ] || [ -f "/lib/systemd/system/$s" ] || [ -f "/usr/lib/systemd/system/$s" ] || systemctl list-unit-files "$s" &>/dev/null || systemctl cat "$s" &>/dev/null; then
+            if [ -f "/etc/systemd/system/$s" ] || [ -f "/lib/systemd/system/$s" ] || [ -f "/usr/lib/systemd/system/$s" ] || \
+               (command -v systemctl &>/dev/null && (systemctl cat "$s" &>/dev/null || systemctl list-unit-files "$s" &>/dev/null)); then
                 FOUND_SVC="$s"
                 break
             fi
@@ -535,7 +558,13 @@ PY
         fi
 
         if [ -n "$LOG_DISPLAY_PATH" ]; then
-            FILTERED_LOGS=$(grep -v -E "open_basedir restriction in effect|not allowed to use '--chdir|not allowed to use \'--chdir" "$LOG_DISPLAY_PATH" 2>/dev/null | tail -n 10 || true)
+            if [ -w "$LOG_DISPLAY_PATH" ] && grep -q -E "open_basedir restriction in effect|not allowed to use.*--chdir" "$LOG_DISPLAY_PATH" 2>/dev/null; then
+                TMP_LOG=$(mktemp)
+                grep -v -E "open_basedir restriction in effect|not allowed to use.*--chdir" "$LOG_DISPLAY_PATH" > "$TMP_LOG" 2>/dev/null || true
+                tail -n 1000 "$TMP_LOG" > "$LOG_DISPLAY_PATH" 2>/dev/null || true
+                rm -f "$TMP_LOG" 2>/dev/null || true
+            fi
+            FILTERED_LOGS=$(grep -v -E "open_basedir restriction in effect|not allowed to use.*--chdir" "$LOG_DISPLAY_PATH" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 10 || true)
             echo "Recent Cron Logs (${LOG_DISPLAY_PATH}):"
             if [ -n "$FILTERED_LOGS" ]; then
                 echo "$FILTERED_LOGS"

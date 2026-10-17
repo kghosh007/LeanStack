@@ -75,7 +75,11 @@ fi
 # 3. Deploy/Sync Control Plane Binaries & Templates directly to ensure freshest executables
 if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/core/bin" ]; then
     mkdir -p /usr/local/bin /etc/lsctl/templates /var/log/lsctl
-    if [ ! -e "/var/log/cpctl" ]; then
+    if [ -d "/var/log/cpctl" ] && [ ! -L "/var/log/cpctl" ]; then
+        cp -an /var/log/cpctl/. /var/log/lsctl/ 2>/dev/null || true
+        rm -rf /var/log/cpctl 2>/dev/null || true
+        ln -sf "/var/log/lsctl" "/var/log/cpctl" 2>/dev/null || true
+    elif [ ! -e "/var/log/cpctl" ]; then
         ln -sf "/var/log/lsctl" "/var/log/cpctl" 2>/dev/null || true
     fi
     for b in "${INSTALL_DIR}/core/bin/"*; do

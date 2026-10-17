@@ -1077,10 +1077,19 @@ class LeanStackBridge {
 
     public function get_cron_status() {
         $meta = array(
-            'last_run' => null,
-            'status' => 'active',
-            'ran_via' => 'systemd_timer',
-            'events_processed' => 0,
+            'last_run'               => null,
+            'status'                 => 'active',
+            'ran_via'                => 'systemd_timer',
+            'duration_ms'            => 0,
+            'cpu_ms'                 => 0,
+            'memory_mb'              => 0,
+            'events_processed'       => 0,
+            'history'                => array(),
+            'avg_duration_ms'        => 0,
+            'avg_cpu_ms'             => 0,
+            'avg_memory_mb'          => 0,
+            'total_runs'             => 0,
+            'total_events_processed' => 0,
         );
         if ( $this->cron_status_file && file_exists( $this->cron_status_file ) ) {
             $raw = @file_get_contents( $this->cron_status_file );
@@ -1092,11 +1101,74 @@ class LeanStackBridge {
         return $meta;
     }
 
+    public function update_cron_status_meta( $file, $duration_ms, $cpu_ms, $memory_mb, $events_processed, $iso_timestamp, $ran_via = 'ls-cron-queue' ) {
+        $existing = array();
+        if ( $file && file_exists( $file ) ) {
+            $raw = @file_get_contents( $file );
+            $json = json_decode( $raw, true );
+            if ( is_array( $json ) ) {
+                $existing = $json;
+            }
+        }
+
+        $history = isset( $existing['history'] ) && is_array( $existing['history'] ) ? $existing['history'] : array();
+        $run_entry = array(
+            'timestamp'        => $iso_timestamp,
+            'duration_ms'      => (float) $duration_ms,
+            'cpu_ms'           => (float) $cpu_ms,
+            'memory_mb'        => (float) $memory_mb,
+            'events_processed' => (int) $events_processed,
+            'ran_via'          => $ran_via,
+        );
+        array_unshift( $history, $run_entry );
+        $history = array_slice( $history, 0, 20 );
+
+        $total_dur = 0;
+        $total_cpu = 0;
+        $total_mem = 0;
+        foreach ( $history as $h ) {
+            $total_dur += isset( $h['duration_ms'] ) ? (float) $h['duration_ms'] : 0;
+            $total_cpu += isset( $h['cpu_ms'] ) ? (float) $h['cpu_ms'] : 0;
+            $total_mem += isset( $h['memory_mb'] ) ? (float) $h['memory_mb'] : 0;
+        }
+        $count = count( $history );
+        $avg_duration = $count > 0 ? round( $total_dur / $count, 2 ) : (float) $duration_ms;
+        $avg_cpu = $count > 0 ? round( $total_cpu / $count, 2 ) : (float) $cpu_ms;
+        $avg_mem = $count > 0 ? round( $total_mem / $count, 2 ) : (float) $memory_mb;
+
+        $total_runs = ( isset( $existing['total_runs'] ) ? (int) $existing['total_runs'] : 0 ) + 1;
+        $total_events = ( isset( $existing['total_events_processed'] ) ? (int) $existing['total_events_processed'] : 0 ) + (int) $events_processed;
+
+        $payload = array(
+            'last_run'               => $iso_timestamp,
+            'status'                 => 'completed',
+            'ran_via'                => $ran_via,
+            'duration_ms'            => (float) $duration_ms,
+            'cpu_ms'                 => (float) $cpu_ms,
+            'memory_mb'              => (float) $memory_mb,
+            'events_processed'       => (int) $events_processed,
+            'history'                => $history,
+            'avg_duration_ms'        => $avg_duration,
+            'avg_cpu_ms'             => $avg_cpu,
+            'avg_memory_mb'          => $avg_mem,
+            'total_runs'             => $total_runs,
+            'total_events_processed' => $total_events,
+        );
+
+        if ( $file ) {
+            @file_put_contents( $file, json_encode( $payload, JSON_PRETTY_PRINT ) );
+        }
+        return $payload;
+    }
+
     public function handle_run_cron_now() {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( __( 'Unauthorized.', 'leanstack' ) );
         }
         check_admin_referer( 'leanstack_run_cron_action', 'leanstack_nonce' );
+
+        $t0 = microtime( true );
+        $r0 = function_exists( 'getrusage' ) ? getrusage() : null;
 
         $cron_array = _get_cron_array();
         $executed = 0;
@@ -1121,21 +1193,24 @@ class LeanStackBridge {
             }
         }
 
-        if ( $this->cron_status_file ) {
-            $status_data = array(
-                'last_run' => gmdate( 'Y-m-d\TH:i:s\Z' ),
-                'status' => 'completed',
-                'ran_via' => 'wp_dashboard',
-                'events_processed' => $executed,
-            );
-            @file_put_contents( $this->cron_status_file, json_encode( $status_data ) );
+        $duration_ms = round( ( microtime( true ) - $t0 ) * 1000, 2 );
+        $cpu_ms = 0;
+        if ( $r0 && function_exists( 'getrusage' ) ) {
+            $r1 = getrusage();
+            $utime = ( $r1['ru_utime.tv_sec'] - $r0['ru_utime.tv_sec'] ) + ( $r1['ru_utime.tv_usec'] - $r0['ru_utime.tv_usec'] ) / 1e6;
+            $stime = ( $r1['ru_stime.tv_sec'] - $r0['ru_stime.tv_sec'] ) + ( $r1['ru_stime.tv_usec'] - $r0['ru_stime.tv_usec'] ) / 1e6;
+            $cpu_ms = round( ( $utime + $stime ) * 1000, 2 );
         }
+        $memory_mb = round( memory_get_peak_usage( true ) / ( 1024 * 1024 ), 2 );
+        $iso_now = gmdate( 'Y-m-d\TH:i:s\Z' );
+
+        $status_data = $this->update_cron_status_meta( $this->cron_status_file, $duration_ms, $cpu_ms, $memory_mb, $executed, $iso_now, 'wp_dashboard' );
 
         // Also mirror to candidate nginx dir if distinct
         $doc_root = rtrim( ABSPATH, '/' );
         $alt_cron_file = dirname( $doc_root ) . '/nginx/.cron_status.json';
         if ( $alt_cron_file !== $this->cron_status_file && is_dir( dirname( $alt_cron_file ) ) ) {
-            @file_put_contents( $alt_cron_file, json_encode( $status_data ) );
+            @file_put_contents( $alt_cron_file, json_encode( $status_data, JSON_PRETTY_PRINT ) );
         }
 
         $referer = wp_get_referer();
@@ -1209,6 +1284,14 @@ class LeanStackBridge {
             <p style="margin: 6px 0; color: #50575e; font-size: 13px;">
                 <strong><?php _e( 'Last Queue Dispatch:', 'leanstack' ); ?></strong> <?php echo esc_html( $last_run_text ); ?>
             </p>
+            <?php if ( ! empty( $cron_meta['duration_ms'] ) || ! empty( $cron_meta['avg_duration_ms'] ) ) : ?>
+            <p style="margin: 6px 0; color: #50575e; font-size: 13px;">
+                <strong><?php _e( 'Execution Telemetry:', 'leanstack' ); ?></strong>
+                <span><?php printf( __( 'Wall: <strong>%sms</strong> (avg: <strong>%sms</strong>)', 'leanstack' ), esc_html( $cron_meta['duration_ms'] ), esc_html( $cron_meta['avg_duration_ms'] ) ); ?></span>
+                | <span><?php printf( __( 'CPU: <strong>%sms</strong>', 'leanstack' ), esc_html( $cron_meta['cpu_ms'] ) ); ?></span>
+                | <span><?php printf( __( 'RAM: <strong>%s MB</strong>', 'leanstack' ), esc_html( $cron_meta['memory_mb'] ) ); ?></span>
+            </p>
+            <?php endif; ?>
             <p style="margin: 6px 0; color: #50575e; font-size: 13px;">
                 <strong><?php _e( 'Scheduled Tasks:', 'leanstack' ); ?></strong> 
                 <?php printf( __( '<strong>%d</strong> scheduled', 'leanstack' ), $total_events ); ?>
@@ -1921,6 +2004,34 @@ class LeanStackBridge {
                             <?php endif; ?>
                         </td>
                     </tr>
+                    <tr>
+                        <td><strong><?php _e( 'Execution Telemetry (Last Run)', 'leanstack' ); ?></strong></td>
+                        <td>
+                            <?php if ( ! empty( $cron_meta['duration_ms'] ) || ! empty( $cron_meta['events_processed'] ) ) : ?>
+                                <?php printf( esc_html__( 'Duration: %sms | CPU: %sms | Peak Memory: %s MB | Events: %d', 'leanstack' ), esc_html( $cron_meta['duration_ms'] ), esc_html( isset( $cron_meta['cpu_ms'] ) ? $cron_meta['cpu_ms'] : '0' ), esc_html( isset( $cron_meta['memory_mb'] ) ? $cron_meta['memory_mb'] : '0' ), (int) $cron_meta['events_processed'] ); ?>
+                            <?php else : ?>
+                                <span style="color: #646970;"><?php _e( 'Awaiting telemetry data', 'leanstack' ); ?></span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <span class="dashicons dashicons-dashboard" style="color: #2271b1;"></span>
+                            <?php printf( esc_html__( 'Ran via %s', 'leanstack' ), esc_html( isset( $cron_meta['ran_via'] ) ? $cron_meta['ran_via'] : 'queue' ) ); ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong><?php _e( 'Rolling Analytics (Last 20 Runs)', 'leanstack' ); ?></strong></td>
+                        <td>
+                            <?php if ( ! empty( $cron_meta['avg_duration_ms'] ) ) : ?>
+                                <?php printf( esc_html__( 'Avg Duration: %sms | Avg CPU: %sms | Avg Memory: %s MB (Total Runs: %d, Total Events: %d)', 'leanstack' ), esc_html( $cron_meta['avg_duration_ms'] ), esc_html( isset( $cron_meta['avg_cpu_ms'] ) ? $cron_meta['avg_cpu_ms'] : '0' ), esc_html( isset( $cron_meta['avg_memory_mb'] ) ? $cron_meta['avg_memory_mb'] : '0' ), (int) ( isset( $cron_meta['total_runs'] ) ? $cron_meta['total_runs'] : 0 ), (int) ( isset( $cron_meta['total_events_processed'] ) ? $cron_meta['total_events_processed'] : 0 ) ); ?>
+                            <?php else : ?>
+                                <span style="color: #646970;"><?php _e( 'Calculating rolling averages...', 'leanstack' ); ?></span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <span class="dashicons dashicons-chart-line" style="color: #00a32a;"></span>
+                            <strong style="color: #00a32a;"><?php _e( 'Optimal Health', 'leanstack' ); ?></strong>
+                        </td>
+                    </tr>
                 </tbody>
             </table>
 
@@ -1937,6 +2048,35 @@ class LeanStackBridge {
                     </button>
                 </form>
             </div>
+
+            <?php if ( ! empty( $cron_meta['history'] ) && is_array( $cron_meta['history'] ) ) : ?>
+            <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
+            <h4><?php printf( __( 'Recent Queue Executions (%d recorded)', 'leanstack' ), count( $cron_meta['history'] ) ); ?></h4>
+            <table class="widefat striped" style="margin-top: 10px;">
+                <thead>
+                    <tr>
+                        <th><?php _e( 'Timestamp (UTC)', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Duration', 'leanstack' ); ?></th>
+                        <th><?php _e( 'CPU Time', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Peak Memory', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Events Processed', 'leanstack' ); ?></th>
+                        <th><?php _e( 'Trigger Source', 'leanstack' ); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ( $cron_meta['history'] as $run ) : ?>
+                        <tr>
+                            <td><code><?php echo esc_html( isset( $run['timestamp'] ) ? $run['timestamp'] : 'N/A' ); ?></code></td>
+                            <td><strong><?php echo esc_html( isset( $run['duration_ms'] ) ? $run['duration_ms'] : '0' ); ?> ms</strong></td>
+                            <td><?php echo esc_html( isset( $run['cpu_ms'] ) ? $run['cpu_ms'] : '0' ); ?> ms</td>
+                            <td><?php echo esc_html( isset( $run['memory_mb'] ) ? $run['memory_mb'] : '0' ); ?> MB</td>
+                            <td><?php echo (int) ( isset( $run['events_processed'] ) ? $run['events_processed'] : 0 ); ?></td>
+                            <td><code><?php echo esc_html( isset( $run['ran_via'] ) ? $run['ran_via'] : 'queue' ); ?></code></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+            <?php endif; ?>
 
             <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
 

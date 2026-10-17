@@ -198,10 +198,41 @@ class LeanStackAPCu {
     }
 
     // --- Alloptions Interception ---
+    public function check_cron_status_invalidation() {
+        if ( ! $this->enabled ) {
+            return;
+        }
+        $status_files = array();
+        if ( defined( 'ABSPATH' ) ) {
+            $doc_root = rtrim( ABSPATH, '/' );
+            $status_files[] = dirname( $doc_root ) . '/nginx/.cron_status.json';
+        }
+        if ( defined( 'WP_CONTENT_DIR' ) ) {
+            $status_files[] = WP_CONTENT_DIR . '/nginx-custom/.cron_status.json';
+        }
+        foreach ( $status_files as $sf ) {
+            if ( file_exists( $sf ) ) {
+                $mtime = filemtime( $sf );
+                $last_mtime_key = $this->key( 'meta', 'cron_mtime' );
+                $success = false;
+                $prev_mtime = apcu_fetch( $last_mtime_key, $success );
+                if ( ! $success || (int) $mtime > (int) $prev_mtime ) {
+                    apcu_store( $last_mtime_key, (int) $mtime, 86400 );
+                    if ( $success ) {
+                        // Background runner updated crons; invalidate alloptions immediately
+                        $this->invalidate_alloptions();
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     public function get_alloptions( $pre = null, $force_cache = false ) {
         if ( ! $this->enabled || $force_cache ) {
             return $pre;
         }
+        $this->check_cron_status_invalidation();
         $success = false;
         $val = apcu_fetch( $this->key( 'opt', 'alloptions' ), $success );
         if ( $success && is_array( $val ) && ! empty( $val ) ) {
@@ -214,7 +245,10 @@ class LeanStackAPCu {
         if ( ! $this->enabled || ! is_array( $alloptions ) || empty( $alloptions ) ) {
             return $alloptions;
         }
-        apcu_store( $this->key( 'opt', 'alloptions' ), $alloptions, 3600 );
+        $cached_options = $alloptions;
+        // Strictly exclude volatile 'cron' option so get_option('cron') never reads stale data from APCu
+        unset( $cached_options['cron'] );
+        apcu_store( $this->key( 'opt', 'alloptions' ), $cached_options, 3600 );
         return $alloptions;
     }
 

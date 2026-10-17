@@ -498,16 +498,53 @@ PY
         echo "=========================================================="
         echo "⏱ LeanStack Centralized Cron Queue Status"
         echo "=========================================================="
-        systemctl status cp-cron.timer 2>/dev/null || systemctl status ls-cron.timer 2>/dev/null || echo "Timer unit not found"
+        FOUND_TIMER=""
+        for t in cp-cron.timer ls-cron.timer; do
+            if [ -f "/etc/systemd/system/$t" ] || [ -f "/lib/systemd/system/$t" ] || [ -f "/usr/lib/systemd/system/$t" ] || systemctl list-unit-files "$t" &>/dev/null || systemctl cat "$t" &>/dev/null; then
+                FOUND_TIMER="$t"
+                break
+            fi
+        done
+        if [ -n "$FOUND_TIMER" ]; then
+            systemctl status "$FOUND_TIMER" --no-pager 2>/dev/null || true
+        else
+            echo "Timer unit not found"
+        fi
+
         echo ""
-        systemctl status cp-cron.service 2>/dev/null || systemctl status ls-cron.service 2>/dev/null || echo "Service unit not found"
+
+        FOUND_SVC=""
+        for s in cp-cron.service ls-cron.service; do
+            if [ -f "/etc/systemd/system/$s" ] || [ -f "/lib/systemd/system/$s" ] || [ -f "/usr/lib/systemd/system/$s" ] || systemctl list-unit-files "$s" &>/dev/null || systemctl cat "$s" &>/dev/null; then
+                FOUND_SVC="$s"
+                break
+            fi
+        done
+        if [ -n "$FOUND_SVC" ]; then
+            systemctl status "$FOUND_SVC" --no-pager 2>/dev/null || true
+        else
+            echo "Service unit not found"
+        fi
+
         echo ""
+        LOG_DISPLAY_PATH=""
         if [ -f /var/log/lsctl/cron.log ]; then
-            echo "Recent Cron Logs (/var/log/lsctl/cron.log):"
-            tail -n 10 /var/log/lsctl/cron.log
+            LOG_DISPLAY_PATH="/var/log/lsctl/cron.log"
         elif [ -f /var/log/cpctl/cron.log ]; then
-            echo "Recent Cron Logs (/var/log/cpctl/cron.log):"
-            tail -n 10 /var/log/cpctl/cron.log
+            LOG_DISPLAY_PATH="/var/log/cpctl/cron.log"
+        fi
+
+        if [ -n "$LOG_DISPLAY_PATH" ]; then
+            FILTERED_LOGS=$(grep -v -E "open_basedir restriction in effect|not allowed to use '--chdir|not allowed to use \'--chdir" "$LOG_DISPLAY_PATH" 2>/dev/null | tail -n 10 || true)
+            echo "Recent Cron Logs (${LOG_DISPLAY_PATH}):"
+            if [ -n "$FILTERED_LOGS" ]; then
+                echo "$FILTERED_LOGS"
+            else
+                echo "  (No errors or execution warnings reported in cron.log)"
+            fi
+        else
+            echo "Recent Cron Logs:"
+            echo "  (No errors or execution warnings reported in cron.log)"
         fi
         exit 0
         ;;

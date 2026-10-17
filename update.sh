@@ -57,7 +57,7 @@ fi
 # 1. Update Git Repository Payload if installed as git clone
 if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/.git" ]; then
     echo -e "${CYAN}🔄 Synchronizing LeanStack repository in ${INSTALL_DIR}...${NC}"
-    git -c safe.directory=* -C "$INSTALL_DIR" fetch --tags origin 2>/dev/null || true
+    git -c safe.directory=* -C "$INSTALL_DIR" fetch --tags --force origin 2>/dev/null || true
     git -c safe.directory=* -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
 fi
 
@@ -74,7 +74,10 @@ fi
 
 # 3. Deploy/Sync Control Plane Binaries & Templates directly to ensure freshest executables
 if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/core/bin" ]; then
-    mkdir -p /usr/local/bin /etc/lsctl/templates
+    mkdir -p /usr/local/bin /etc/lsctl/templates /var/log/lsctl
+    if [ ! -e "/var/log/cpctl" ]; then
+        ln -sf "/var/log/lsctl" "/var/log/cpctl" 2>/dev/null || true
+    fi
     for b in "${INSTALL_DIR}/core/bin/"*; do
         if [ -f "$b" ]; then
             b_name=$(basename "$b")

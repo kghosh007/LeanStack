@@ -11,6 +11,8 @@ import sqlite3
 import tempfile
 import json
 import re
+import subprocess
+import shutil
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -991,6 +993,101 @@ class TestProfilesAndTemplates(unittest.TestCase):
         with open(apcu_path, "r") as f:
             apcu_content = f.read()
         self.assertIn("clearstatcache( true, $sf );", apcu_content)
+
+    def test_cron_status_systemd_and_log_sanitization(self):
+        """Verify lsctl cron:status handles inactive oneshot service without 'Service unit not found' and cleans stale logs."""
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with tempfile.TemporaryDirectory() as td:
+            # Create a mock bin directory with a mock systemctl
+            mock_bin = os.path.join(td, "bin")
+            os.makedirs(mock_bin)
+            mock_sysctl = os.path.join(mock_bin, "systemctl")
+            with open(mock_sysctl, "w") as f:
+                f.write("""#!/usr/bin/env bash
+if [ "$1" == "list-unit-files" ]; then
+    if [ "$2" == "cp-cron.service" ] || [ "$2" == "cp-cron.timer" ]; then
+        exit 0
+    fi
+    exit 1
+elif [ "$1" == "status" ]; then
+    if [ "$2" == "cp-cron.service" ]; then
+        echo "○ cp-cron.service - LeanStack Centralized Anti-Thundering WP-Cron Queue"
+        echo "     Loaded: loaded (/etc/systemd/system/cp-cron.service; disabled; preset: enabled)"
+        echo "     Active: inactive (dead) since Sat 2026-10-17 12:56:06 UTC; 25s ago"
+        exit 3
+    elif [ "$2" == "cp-cron.timer" ]; then
+        echo "● cp-cron.timer - Trigger LeanStack Centralized WP-Cron Queue Every Minute"
+        echo "     Active: active (waiting) since Fri 2026-10-16 12:44:30 UTC; 24h ago"
+        exit 0
+    fi
+    exit 4
+elif [ "$1" == "is-active" ]; then
+    if [ "$2" == "cp-cron.timer" ]; then
+        echo "active"
+        exit 0
+    fi
+    echo "inactive"
+    exit 3
+fi
+exit 0
+""")
+            os.chmod(mock_sysctl, 0o755)
+
+            # Test execution with mock systemctl
+            env = os.environ.copy()
+            env["PATH"] = f"{mock_bin}:{env.get('PATH', '')}"
+            res = subprocess.run([lsctl_path, "cron:status"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("cp-cron.service - LeanStack Centralized Anti-Thundering WP-Cron Queue", res.stdout)
+            self.assertIn("cp-cron.timer - Trigger LeanStack Centralized WP-Cron Queue Every Minute", res.stdout)
+            self.assertNotIn("Service unit not found", res.stdout)
+            self.assertNotIn("Timer unit not found", res.stdout)
+
+    def test_sanitize_cron_logs_removes_chdir_and_open_basedir(self):
+        """Verify sanitize_cron_logs strips both benign open_basedir warnings and stale sudo --chdir errors."""
+        from importlib.machinery import SourceFileLoader
+        import importlib.util
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        loader = SourceFileLoader("ls_upgrade", upgrade_bin)
+        spec = importlib.util.spec_from_file_location("ls_upgrade", upgrade_bin, loader=loader)
+        ls_upgrade_mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_upgrade_mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            db_file = os.path.join(td, "sites.db")
+            upgrader = ls_upgrade_mod.LeanStackUpgrader(repo_dir=BASE_DIR, db_file=db_file)
+            test_log = os.path.join(td, "cron.log")
+            with open(test_log, "w", encoding="utf-8") as f:
+                f.write("sudo: you are not allowed to use '--chdir /home/staging_mfeasy_4809/htdocs' with '/usr/bin/php8.5'\n")
+                f.write("PHP Warning:  open_basedir restriction in effect. File(/proc/cpuinfo) is not within the allowed path(s)\n")
+                f.write("PHP Fatal error: Allowed memory size of 134217728 bytes exhausted\n")
+
+            with open(test_log, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            cleaned = [
+                l for l in lines
+                if "open_basedir restriction in effect" not in l
+                and "not allowed to use '--chdir" not in l
+                and "not allowed to use \'--chdir" not in l
+            ]
+            self.assertEqual(len(cleaned), 1)
+            self.assertIn("PHP Fatal error: Allowed memory size", cleaned[0])
+
+    def test_upgrade_git_fetch_force_and_behind_count(self):
+        """Verify ls-upgrade uses fetch --tags --force and returns False on 0 new commits."""
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            content = f.read()
+        self.assertIn('["fetch", "--tags", "--force", "origin"]', content)
+        self.assertIn('Repository is up to date with remote.', content)
+        self.assertIn('def sanitize_cron_logs(self):', content)
+        self.assertIn('"not allowed to use \'--chdir"', content)
+
+        update_sh = os.path.join(BASE_DIR, "update.sh")
+        with open(update_sh, "r") as f:
+            update_content = f.read()
+        self.assertIn('fetch --tags --force origin', update_content)
+        self.assertIn('mkdir -p /usr/local/bin /etc/lsctl/templates /var/log/lsctl', update_content)
 
 if __name__ == "__main__":
     unittest.main()

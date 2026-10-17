@@ -204,11 +204,7 @@ echo "LS_TELEMETRY:{$dur}:{$cpu}:{$mem}:{$executed}";
             cd "$site_path" 2>/dev/null || true
             local sudo_cmd=()
             if [ "$(id -u)" -eq 0 ]; then
-                sudo_cmd=(sudo -u "$user")
-                if sudo --help 2>&1 | grep -q -- '--chdir'; then
-                    sudo_cmd+=(--chdir="$site_path")
-                fi
-                sudo_cmd+=(HOME="/home/${user}")
+                sudo_cmd=(sudo -u "$user" -H)
             fi
             out=$(timeout 60 "${sudo_cmd[@]}" "$php_bin" \
                 -d open_basedir="${allowed_paths}" \

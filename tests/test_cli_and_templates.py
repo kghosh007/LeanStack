@@ -772,7 +772,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
         with open(cron_bin, "r") as f:
             content = f.read()
         self.assertIn('cd "$site_path"', content)
-        self.assertIn('--chdir="$site_path"', content)
+        self.assertIn('sudo_cmd=(sudo -u "$user" -H)', content)
 
         service_file = os.path.join(BASE_DIR, "systemd", "cp-cron.service")
         with open(service_file, "r") as f:
@@ -953,16 +953,13 @@ class TestProfilesAndTemplates(unittest.TestCase):
             watcher_content = f.read()
         self.assertIn('local df_strict="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset"', watcher_content)
 
-    def test_ls_cron_queue_sudo_arguments_order(self):
-        """Verify ls-cron-queue places options (--chdir) before environment variable assignments in sudo command."""
+    def test_ls_cron_queue_sudo_arguments(self):
+        """Verify ls-cron-queue uses sudo -u "$user" -H without --chdir to avoid sudoers CWD permission errors."""
         cq_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
         with open(cq_path, "r") as f:
             cq_content = f.read()
-        chdir_idx = cq_content.find('sudo_cmd+=(--chdir="$site_path")')
-        home_idx = cq_content.find('sudo_cmd+=(HOME="/home/${user}")')
-        self.assertNotEqual(chdir_idx, -1)
-        self.assertNotEqual(home_idx, -1)
-        self.assertLess(chdir_idx, home_idx, "--chdir must precede HOME=... in sudo command array")
+        self.assertIn('sudo_cmd=(sudo -u "$user" -H)', cq_content)
+        self.assertNotIn('--chdir', cq_content)
 
     def test_apcu_stat_cache_clearing(self):
         """Verify leanstack-apcu.php.tpl invalidates PHP stat cache before reading cron status mtime."""

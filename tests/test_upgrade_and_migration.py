@@ -405,6 +405,8 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         self.assertNotIn("/home/staging_mfeasy_4809/htdocs", reconciled)
         self.assertNotIn("symlink", reconciled)
         self.assertNotIn("link,", reconciled)
+        self.assertNotIn("curl_multi_exec", reconciled)
+        self.assertNotIn("parse_ini_file", reconciled)
         self.assertIn("dl,opcache_reset", reconciled)
         self.assertIn("php_admin_value[max_input_vars] = 5000", reconciled)
         self.assertIn("php_admin_flag[apc.enabled] = on", reconciled)

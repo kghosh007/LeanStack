@@ -10,8 +10,13 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+// Angie Rewrite & Pretty Permalinks Support (Enables rewrite rule detection for Site Health)
+$GLOBALS['is_nginx'] = true;
+add_filter( 'got_url_rewrite', '__return_true', 999 );
+add_filter( 'got_mod_rewrite', '__return_true', 999 );
+
 // ==============================================================================
-// Suppress Benign open_basedir Path Resolution Warnings
+// Suppress Benign open_basedir Path Resolution Warnings & PHP 8.5 Deprecations
 // Prevents log bloat from third-party plugins (e.g. wp-file-manager) and core block lookups
 // attempting to traverse parent roots outside the POSIX tenant jail.
 // ==============================================================================
@@ -24,6 +29,14 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
         $registered = true;
 
         $prev_handler = set_error_handler( function( $errno, $errstr, $errfile = '', $errline = 0 ) use ( &$prev_handler ) {
+            // Suppress PHP 8.5+ non-canonical cast deprecation notices from third-party plugins/themes
+            if ( E_DEPRECATED === $errno || ( defined( 'E_USER_DEPRECATED' ) && E_USER_DEPRECATED === $errno ) ) {
+                if ( false !== strpos( $errstr, 'Non-canonical cast' ) ||
+                     false !== strpos( $errstr, '(double) is deprecated' ) ||
+                     false !== strpos( $errstr, '(real) is deprecated' ) ) {
+                    return true;
+                }
+            }
             if ( E_WARNING === $errno && false !== strpos( $errstr, 'open_basedir restriction in effect' ) ) {
                 if ( false !== strpos( $errstr, 'File(/home)' ) ||
                      false !== strpos( $errstr, 'File(/)' ) ||
@@ -39,7 +52,7 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
                 return call_user_func( $prev_handler, $errno, $errstr, $errfile, $errline );
             }
             return false;
-        }, E_WARNING );
+        }, E_WARNING | E_DEPRECATED | ( defined( 'E_USER_DEPRECATED' ) ? E_USER_DEPRECATED : 0 ) );
     }
     leanstack_suppress_benign_open_basedir_warnings();
 }
@@ -329,6 +342,13 @@ class LeanStackBridge {
             $coep = trim( $m[1] );
         }
 
+        $hardening_file = $this->nginx_dir . '/php-hardening.json';
+        $hardening_data = file_exists( $hardening_file ) ? json_decode( file_get_contents( $hardening_file ), true ) : array();
+        $hardening_mode = isset( $hardening_data['mode'] ) ? $hardening_data['mode'] : 'strict';
+        $revert_duration = isset( $hardening_data['duration_seconds'] ) ? (int) $hardening_data['duration_seconds'] : 3600;
+        $revert_at = isset( $hardening_data['revert_at'] ) ? (int) $hardening_data['revert_at'] : 0;
+        $is_active_window = ( 'benchmark' === $hardening_mode && $revert_at > time() );
+
         ?>
         <div class="wrap">
             <h1><?php _e( 'LeanStack Security Policies & Headers Suite', 'leanstack' ); ?></h1>
@@ -468,6 +488,57 @@ class LeanStackBridge {
                         </tr>
                     </table>
 
+                    <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+
+                    <h3><span class="dashicons dashicons-admin-settings" style="color: #2271b1;"></span> <?php _e( '6. PHP Hardening & Runtime Controls', 'leanstack' ); ?></h3>
+                    <p class="description">
+                        <?php _e( 'Displays active disabled functions and allows configuring strict tenant lockdown versus a temporary benchmark/maintenance window with an auto-revert timer.', 'leanstack' ); ?>
+                    </p>
+
+                    <?php if ( ! empty( $is_active_window ) ) : ?>
+                        <div class="notice notice-warning inline" style="margin: 15px 0; padding: 12px; border-left-color: #dba617;">
+                            <p><strong><span class="dashicons dashicons-clock" style="color: #dba617; vertical-align: middle;"></span> <?php _e( 'Benchmark Maintenance Window Active:', 'leanstack' ); ?></strong>
+                            <?php printf( __( 'Automatic revert to Strict Production Lockdown scheduled at %s (in %s).', 'leanstack' ), gmdate( 'Y-m-d H:i:s \U\T\C', (int) $revert_at ), human_time_diff( (int) $revert_at ) ); ?></p>
+                        </div>
+                    <?php endif; ?>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><?php _e( 'Active Disabled Functions', 'leanstack' ); ?></th>
+                            <td>
+                                <code style="word-break: break-all; font-size: 12px;"><?php echo esc_html( ini_get( 'disable_functions' ) ?: __( 'None', 'leanstack' ) ); ?></code>
+                                <p class="description"><?php _e( 'Enforced at the PHP-FPM pool tier. OS shell execution functions are permanently blocked.', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Hardening Mode', 'leanstack' ); ?></th>
+                            <td>
+                                <fieldset>
+                                    <label style="display: block; margin-bottom: 8px;">
+                                        <input type="radio" name="php_hardening_mode" value="strict" <?php checked( $hardening_mode, 'strict' ); ?> onchange="document.getElementById('ls_revert_timer_row').style.display='none';">
+                                        <strong><?php _e( 'Strict Production Lockdown (Default)', 'leanstack' ); ?></strong> — <?php _e( 'Maximum tenant isolation and hardened security.', 'leanstack' ); ?>
+                                    </label>
+                                    <label style="display: block;">
+                                        <input type="radio" name="php_hardening_mode" value="benchmark" <?php checked( $hardening_mode, 'benchmark' ); ?> onchange="document.getElementById('ls_revert_timer_row').style.display='';">
+                                        <strong><?php _e( 'Temporary Benchmark / Maintenance Window', 'leanstack' ); ?></strong> — <?php _e( 'Permits benchmark suite execution with strict automatic safety revert.', 'leanstack' ); ?>
+                                    </label>
+                                </fieldset>
+                            </td>
+                        </tr>
+                        <tr id="ls_revert_timer_row" style="<?php echo ( 'benchmark' === $hardening_mode ) ? '' : 'display: none;'; ?>">
+                            <th scope="row"><?php _e( 'Auto-Revert Timer', 'leanstack' ); ?></th>
+                            <td>
+                                <select name="php_revert_duration">
+                                    <option value="3600" <?php selected( $revert_duration, 3600 ); ?>><?php _e( '1 Hour (Recommended)', 'leanstack' ); ?></option>
+                                    <option value="7200" <?php selected( $revert_duration, 7200 ); ?>><?php _e( '2 Hours', 'leanstack' ); ?></option>
+                                    <option value="21600" <?php selected( $revert_duration, 21600 ); ?>><?php _e( '6 Hours', 'leanstack' ); ?></option>
+                                    <option value="86400" <?php selected( $revert_duration, 86400 ); ?>><?php _e( '24 Hours', 'leanstack' ); ?></option>
+                                </select>
+                                <p class="description"><?php _e( 'When time elapses, LeanStack Watcher automatically restores Strict Production Lockdown.', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
+                    </table>
+
                     <p class="submit">
                         <button type="submit" class="button button-primary button-large"><?php _e( 'Apply Security Policies', 'leanstack' ); ?></button>
                     </p>
@@ -542,6 +613,22 @@ class LeanStackBridge {
         $content = implode( "\n", $lines ) . "\n";
         $target_file = $this->nginx_dir . '/security-headers.conf';
         file_put_contents( $target_file, $content );
+
+        // PHP Hardening & Runtime Controls
+        $mode = ( isset( $_POST['php_hardening_mode'] ) && 'benchmark' === $_POST['php_hardening_mode'] ) ? 'benchmark' : 'strict';
+        $duration = isset( $_POST['php_revert_duration'] ) ? (int) $_POST['php_revert_duration'] : 3600;
+        if ( ! in_array( $duration, array( 3600, 7200, 21600, 86400 ), true ) ) {
+            $duration = 3600;
+        }
+        $revert_at = time() + $duration;
+        $hardening_payload = array(
+            'mode'             => $mode,
+            'duration_seconds' => $duration,
+            'revert_at'        => $revert_at,
+            'timestamp'        => current_time( 'mysql' ),
+        );
+        $hardening_file = $this->nginx_dir . '/php-hardening.json';
+        @file_put_contents( $hardening_file, json_encode( $hardening_payload, JSON_PRETTY_PRINT ) );
 
         // Update status to pending
         $pending = array(

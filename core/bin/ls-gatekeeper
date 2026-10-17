@@ -47,6 +47,102 @@ get_domain_for_user() {
     echo "$domain"
 }
 
+process_php_hardening() {
+    local filepath="$1"
+    local tenant_user="$2"
+    local status_file="$3"
+    local active_marker="$(dirname "$filepath")/.php-hardening-active.json"
+
+    log "PHP hardening configuration change detected for user '${tenant_user}'"
+    if [ ! -f "$filepath" ]; then
+        return 0
+    fi
+
+    local mode="strict"
+    local revert_at=0
+    if command -v python3 &>/dev/null; then
+        mode=$(python3 -c "import json; d=json.load(open('$filepath')); print(d.get('mode', 'strict'))" 2>/dev/null || echo "strict")
+        revert_at=$(python3 -c "import json; d=json.load(open('$filepath')); print(d.get('revert_at', 0))" 2>/dev/null || echo "0")
+    fi
+
+    local df_val="exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset"
+    if [ "$mode" == "benchmark" ]; then
+        cp -f "$filepath" "$active_marker" 2>/dev/null || true
+        chmod 644 "$active_marker" 2>/dev/null || true
+        chown "${tenant_user}:www-data" "$active_marker" 2>/dev/null || true
+    else
+        rm -f "$active_marker" 2>/dev/null || true
+    fi
+
+    local pool_updated=0
+    for v in 8.1 8.2 8.3 8.4 8.5; do
+        local pconf="/etc/php/${v}/fpm/pool.d/${tenant_user}.conf"
+        if [ -f "$pconf" ]; then
+            local bak="${pconf}.bak"
+            cp "$pconf" "$bak"
+            if grep -q "php_admin_value\[disable_functions\]" "$pconf"; then
+                sed -i "s|^php_admin_value\[disable_functions\].*|php_admin_value[disable_functions] = ${df_val}|" "$pconf"
+            else
+                echo "php_admin_value[disable_functions] = ${df_val}" >> "$pconf"
+            fi
+            pool_updated=1
+        fi
+    done
+
+    if [ "$pool_updated" -eq 1 ]; then
+        local php_err=""
+        local test_ok=1
+        for v in 8.1 8.2 8.3 8.4 8.5; do
+            if command -v "php-fpm${v}" &>/dev/null; then
+                if ! "php-fpm${v}" -t 2>/dev/null; then
+                    test_ok=0
+                    php_err="PHP-FPM ${v} syntax check failed"
+                    break
+                fi
+            fi
+        done
+
+        if [ "$test_ok" -eq 1 ]; then
+            for v in 8.1 8.2 8.3 8.4 8.5; do
+                if command -v "php-fpm${v}" &>/dev/null; then
+                    systemctl reload "php${v}-fpm" 2>/dev/null || true
+                fi
+            done
+            for v in 8.1 8.2 8.3 8.4 8.5; do
+                rm -f "/etc/php/${v}/fpm/pool.d/${tenant_user}.conf.bak" 2>/dev/null || true
+            done
+            cat > "$status_file" << EOF
+{
+  "status": "active",
+  "file": "php-hardening.json",
+  "message": "PHP hardening profile '${mode}' applied successfully.",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+            chmod 644 "$status_file" 2>/dev/null || true
+            chown "${tenant_user}:www-data" "$status_file" 2>/dev/null || true
+            return 0
+        else
+            for v in 8.1 8.2 8.3 8.4 8.5; do
+                local pconf="/etc/php/${v}/fpm/pool.d/${tenant_user}.conf"
+                [ -f "${pconf}.bak" ] && mv "${pconf}.bak" "$pconf"
+            done
+            cat > "$status_file" << EOF
+{
+  "status": "error",
+  "file": "php-hardening.json",
+  "message": "${php_err}",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+            chmod 644 "$status_file" 2>/dev/null || true
+            chown "${tenant_user}:www-data" "$status_file" 2>/dev/null || true
+            return 1
+        fi
+    fi
+    return 0
+}
+
 process_tenant_config() {
     local filepath="$1"
     local filename
@@ -57,9 +153,21 @@ process_tenant_config() {
         return 0
     fi
 
-    # Target files only: custom-early.conf, custom-rules.conf, security-headers.conf, cache-config.conf
-    if [[ "$filename" != "custom-early.conf" && "$filename" != "custom-rules.conf" && "$filename" != "security-headers.conf" && "$filename" != "cache-config.conf" ]]; then
+    # Target files only: custom-early.conf, custom-rules.conf, security-headers.conf, cache-config.conf, php-hardening.json
+    if [[ "$filename" != "custom-early.conf" && "$filename" != "custom-rules.conf" && "$filename" != "security-headers.conf" && "$filename" != "cache-config.conf" && "$filename" != "php-hardening.json" ]]; then
         return 0
+    fi
+
+    # Extract user from path /home/<user>/nginx/<filename>
+    local user_dir
+    user_dir=$(dirname "$(dirname "$filepath")")
+    local tenant_user
+    tenant_user=$(basename "$user_dir")
+    local status_file="$(dirname "$filepath")/.status.json"
+
+    if [[ "$filename" == "php-hardening.json" ]]; then
+        process_php_hardening "$filepath" "$tenant_user" "$status_file"
+        return $?
     fi
 
     # Extract user from path /home/<user>/nginx/<filename>

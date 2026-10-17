@@ -91,6 +91,8 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("dl,opcache_reset", content)
         self.assertNotIn("symlink", content)
         self.assertNotIn("link,", content)
+        self.assertNotIn("curl_multi_exec", content)
+        self.assertNotIn("parse_ini_file", content)
         self.assertIn("php_admin_value[upload_tmp_dir]", content)
         self.assertIn("listen.mode = 0660", content)
         self.assertIn("/run/valkey", content)

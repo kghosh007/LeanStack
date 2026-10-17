@@ -90,6 +90,7 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
         sed -i 's/^max_execution_time = .*/max_execution_time = 120/' "$FPM_INI"
         sed -i 's/^;*max_input_vars = .*/max_input_vars = 5000/' "$FPM_INI"
         grep -q "^max_input_vars" "$FPM_INI" || echo "max_input_vars = 5000" >> "$FPM_INI"
+        sed -i 's/^;*disable_functions\s*=.*/disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset/' "$FPM_INI"
 
         CLI_INI="/etc/php/${VER}/cli/php.ini"
         if [ -f "$CLI_INI" ]; then

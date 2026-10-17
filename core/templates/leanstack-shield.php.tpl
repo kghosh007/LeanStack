@@ -10,6 +10,11 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+// 0. Angie Rewrite & Pretty Permalinks Support (Enables rewrite rule detection for Site Health)
+$GLOBALS['is_nginx'] = true;
+add_filter( 'got_url_rewrite', '__return_true', 999 );
+add_filter( 'got_mod_rewrite', '__return_true', 999 );
+
 // 1. Disable XML-RPC completely
 add_filter( 'xmlrpc_enabled', '__return_false' );
 add_filter( 'pings_open', '__return_false', 999 );
@@ -75,6 +80,14 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
         $registered = true;
 
         $prev_handler = set_error_handler( function( $errno, $errstr, $errfile = '', $errline = 0 ) use ( &$prev_handler ) {
+            // Suppress PHP 8.5+ non-canonical cast deprecation notices from third-party plugins/themes
+            if ( E_DEPRECATED === $errno || ( defined( 'E_USER_DEPRECATED' ) && E_USER_DEPRECATED === $errno ) ) {
+                if ( false !== strpos( $errstr, 'Non-canonical cast' ) ||
+                     false !== strpos( $errstr, '(double) is deprecated' ) ||
+                     false !== strpos( $errstr, '(real) is deprecated' ) ) {
+                    return true;
+                }
+            }
             if ( E_WARNING === $errno && false !== strpos( $errstr, 'open_basedir restriction in effect' ) ) {
                 // Benign parent directory traversal by plugins (e.g. wp-file-manager checking /home or /)
                 // or WordPress core / WP-CLI relative block or template checks
@@ -92,7 +105,7 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
                 return call_user_func( $prev_handler, $errno, $errstr, $errfile, $errline );
             }
             return false;
-        }, E_WARNING );
+        }, E_WARNING | E_DEPRECATED | ( defined( 'E_USER_DEPRECATED' ) ? E_USER_DEPRECATED : 0 ) );
     }
     leanstack_suppress_benign_open_basedir_warnings();
 }

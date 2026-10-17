@@ -33,7 +33,7 @@ php_admin_value[session.save_path] = /home/{{USER_NAME}}/tmp
 php_admin_value[memory_limit] = {{MEMORY_LIMIT}}
 
 ; Block dangerous command execution functions (Permits safe opcache_invalidate for tenant scripts while blocking opcache_reset)
-php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset
 php_admin_value[max_input_vars] = 5000
 php_admin_flag[allow_url_include] = off
 php_admin_flag[expose_php] = off

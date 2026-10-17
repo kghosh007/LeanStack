@@ -881,13 +881,14 @@ class LeanStackUpgrader:
                     p_content = p_content.replace(ob_match.group(0), new_ob_line)
                     p_changed = True
 
-        # 2. Reconcile disable_functions (remove symlink,link for Query Monitor compatibility)
+        # 2. Reconcile disable_functions (remove symlink,link,curl_multi_exec,parse_ini_file)
         df_match = re.search(r"php_admin_value\[disable_functions\]\s*=\s*([^\n]+)", p_content)
         if df_match:
             df_val = df_match.group(1).strip()
             funcs = [f.strip() for f in df_val.split(",") if f.strip()]
-            if "symlink" in funcs or "link" in funcs:
-                funcs = [f for f in funcs if f not in ("symlink", "link")]
+            to_remove = {"symlink", "link", "curl_multi_exec", "parse_ini_file"}
+            if any(f in funcs for f in to_remove):
+                funcs = [f for f in funcs if f not in to_remove]
                 new_df_line = f"php_admin_value[disable_functions] = {','.join(funcs)}"
                 p_content = p_content.replace(df_match.group(0), new_df_line)
                 p_changed = True

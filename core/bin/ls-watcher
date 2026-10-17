@@ -282,13 +282,32 @@ heal_tenant_permissions() {
                 chmod 750 "$web_root" 2>/dev/null || true
             fi
 
-            # Check if wp-content is not owned by www-data
+            # Enforce 0755 permissions on wp-content and subdirectories (plugins, themes, uploads, mu-plugins)
             if [ -d "${web_root}/wp-content" ]; then
-                local wc_group
+                local wc_group wc_mode
                 wc_group=$(stat -c '%G' "${web_root}/wp-content" 2>/dev/null || true)
+                wc_mode=$(stat -c '%a' "${web_root}/wp-content" 2>/dev/null || true)
+                [ -n "$wc_mode" ] && wc_mode="${wc_mode: -3}"
                 if [ "$wc_group" != "www-data" ]; then
                     chown -R "${tenant}:www-data" "${web_root}/wp-content" 2>/dev/null || true
                 fi
+                if [ "$wc_mode" != "755" ]; then
+                    chmod 755 "${web_root}/wp-content" 2>/dev/null || true
+                fi
+                for sub in plugins themes uploads mu-plugins; do
+                    if [ -d "${web_root}/wp-content/${sub}" ]; then
+                        local sub_group sub_mode
+                        sub_group=$(stat -c '%G' "${web_root}/wp-content/${sub}" 2>/dev/null || true)
+                        sub_mode=$(stat -c '%a' "${web_root}/wp-content/${sub}" 2>/dev/null || true)
+                        [ -n "$sub_mode" ] && sub_mode="${sub_mode: -3}"
+                        if [ "$sub_group" != "www-data" ]; then
+                            chown "${tenant}:www-data" "${web_root}/wp-content/${sub}" 2>/dev/null || true
+                        fi
+                        if [ "$sub_mode" != "755" ]; then
+                            chmod 755 "${web_root}/wp-content/${sub}" 2>/dev/null || true
+                        fi
+                    fi
+                done
             fi
 
             # Enforce mode 700 on tmp directory
@@ -335,6 +354,9 @@ heal_tenant_permissions() {
 heal_cache_permissions() {
     [ ! -d "/var/cache/angie/sites" ] && return 0
     chmod 755 /var/cache/angie /var/cache/angie/sites 2>/dev/null || true
+
+    # Stale cache file garbage collection (older than 60 minutes)
+    find /var/cache/angie/sites -type f -mmin +60 -delete 2>/dev/null || true
 
     for site_cache in /var/cache/angie/sites/*; do
         [ -d "$site_cache" ] || continue
@@ -415,6 +437,52 @@ check_cron_queue() {
     fi
 }
 
+# 11. PHP Hardening Auto-Revert Guardrail
+check_php_hardening_revert() {
+    local now_ts
+    now_ts=$(date +%s)
+    for active_file in /home/*/nginx/.php-hardening-active.json; do
+        [ -f "$active_file" ] || continue
+        local revert_at=0
+        if command -v python3 &>/dev/null; then
+            revert_at=$(python3 -c "import json; print(json.load(open('$active_file')).get('revert_at', 0))" 2>/dev/null || echo "0")
+        fi
+        if [ "$revert_at" -gt 0 ] && [ "$now_ts" -ge "$revert_at" ]; then
+            local user_dir
+            user_dir=$(dirname "$(dirname "$active_file")")
+            local tenant_user
+            tenant_user=$(basename "$user_dir")
+            log "[AUTOREVERT] Reverting expired benchmark window for tenant '${tenant_user}' to Strict Lockdown..."
+            rm -f "$active_file" 2>/dev/null || true
+            local df_strict="exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset"
+            for v in 8.1 8.2 8.3 8.4 8.5; do
+                local pconf="/etc/php/${v}/fpm/pool.d/${tenant_user}.conf"
+                if [ -f "$pconf" ]; then
+                    sed -i "s|^php_admin_value\[disable_functions\].*|php_admin_value[disable_functions] = ${df_strict}|" "$pconf"
+                fi
+            done
+            for v in 8.1 8.2 8.3 8.4 8.5; do
+                if command -v "php-fpm${v}" &>/dev/null && "php-fpm${v}" -t 2>/dev/null; then
+                    systemctl reload "php${v}-fpm" 2>/dev/null || true
+                fi
+            done
+            local status_file="${user_dir}/nginx/.status.json"
+            if [ -d "$(dirname "$status_file")" ]; then
+                cat > "$status_file" << EOF
+{
+  "status": "active",
+  "file": "php-hardening.json",
+  "message": "Auto-reverted benchmark window to Strict Lockdown.",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+                chmod 644 "$status_file" 2>/dev/null || true
+                chown "${tenant_user}:www-data" "$status_file" 2>/dev/null || true
+            fi
+        fi
+    done
+}
+
 main() {
     check_angie
     check_mariadb
@@ -424,6 +492,7 @@ main() {
     heal_cache_permissions
     cleanup_disk_and_inodes
     check_cron_queue
+    check_php_hardening_revert
 }
 
 main "$@"

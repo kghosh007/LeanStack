@@ -485,9 +485,9 @@ class LeanStackUpgrader:
                 except Exception:
                     pass
 
-    def _strip_duplicate_tls_directives(self, content: str) -> Tuple[str, bool]:
-        """Removes duplicate global TLS and HTTP/2 directives from secondary config files."""
-        directives = (
+    def _strip_duplicate_tls_directives(self, content: str, owner_content: str = "") -> Tuple[str, bool]:
+        """Removes duplicate global TLS, HTTP/2, and QUIC directives from secondary config files."""
+        always_strip = [
             "ssl_protocols",
             "ssl_ciphers",
             "ssl_ecdh_curve",
@@ -495,14 +495,21 @@ class LeanStackUpgrader:
             "ssl_session_cache",
             "ssl_session_timeout",
             "ssl_session_tickets",
-            "ssl_session_ticket_key",
-            "ssl_stapling",
-            "ssl_stapling_verify",
             "http2",
             "quic_gso",
             "quic_retry",
-        )
-        pattern = rf"^[ \t]*(?:{'|'.join(directives)})\s+[^;\n]+;[ \t]*\r?\n?"
+        ]
+        conditional_strip = [
+            "ssl_session_ticket_key",
+            "ssl_stapling",
+            "ssl_stapling_verify",
+        ]
+        directives = list(always_strip)
+        for d in conditional_strip:
+            if not owner_content or re.search(rf"^[ \t]*{d}\s+[^;\n]+;", owner_content, re.M):
+                directives.append(d)
+
+        pattern = rf"^[ \t]*(?:{'|'.join(directives)})\s+[^;\n]+;[ \t]*(?:#[^\r\n]*)?\r?\n?"
         new_content = re.sub(pattern, "", content, flags=re.M)
         return new_content, (new_content != content)
 
@@ -516,7 +523,7 @@ class LeanStackUpgrader:
             indent = "    " if (is_angie_conf or "http {" in content) else ""
 
         def replace_or_dedup(text: str, directive: str, value: str) -> Tuple[str, bool]:
-            pat = rf"^[ \t]*{directive}\s+[^;\n]+;[ \t]*$"
+            pat = rf"^[ \t]*{directive}\s+[^;\n]+;[ \t]*(?:#[^\r\n]*)?$"
             matches = list(re.finditer(pat, text, flags=re.M))
             target_line = f"{indent}{directive} {value};"
             if not matches:
@@ -524,7 +531,7 @@ class LeanStackUpgrader:
             # Replace first occurrence and remove any subsequent duplicate occurrences
             first = matches[0]
             out = text[:first.start()] + target_line + text[first.end():]
-            out_after = re.sub(rf"^[ \t]*{directive}\s+[^;\n]+;[ \t]*\r?\n?", "", out[first.start() + len(target_line):], flags=re.M)
+            out_after = re.sub(rf"^[ \t]*{directive}\s+[^;\n]+;[ \t]*(?:#[^\r\n]*)?\r?\n?", "", out[first.start() + len(target_line):], flags=re.M)
             out = out[:first.start() + len(target_line)] + out_after
             return out, True
 
@@ -537,7 +544,7 @@ class LeanStackUpgrader:
         content, has_tickets = replace_or_dedup(content, "ssl_session_tickets", "off")
         content, has_http2 = replace_or_dedup(content, "http2", "on")
 
-        # Inject any missing directives anchored to existing ssl_* lines or http {} block
+        # Inject any missing directives anchored to the last existing ssl_* line or http {} block
         missing_lines = []
         if not has_timeout:
             missing_lines.append(f"{indent}ssl_session_timeout 1d;")
@@ -558,9 +565,9 @@ class LeanStackUpgrader:
 
         if missing_lines:
             block = "\n".join(missing_lines)
-            anchor = re.search(r"^[ \t]*ssl_(?:ecdh_curve|prefer_server_ciphers|ciphers|protocols)\s+[^;\n]+;[ \t]*$", content, re.M)
-            if anchor:
-                pos = anchor.end()
+            anchors = list(re.finditer(r"^[ \t]*ssl_(?:ecdh_curve|prefer_server_ciphers|ciphers|protocols)\s+[^;\n]+;[ \t]*(?:#[^\r\n]*)?$", content, re.M))
+            if anchors:
+                pos = anchors[-1].end()
                 content = content[:pos] + "\n" + block + content[pos:]
             elif "include /etc/angie/http.d/*.conf;" in content:
                 content = content.replace(
@@ -579,30 +586,90 @@ class LeanStackUpgrader:
         """Injects http2 on; into HTTPS 443 server blocks and removes legacy weak cipher overrides."""
         orig = content
         # Remove legacy per-vhost weak cipher override if present
-        content = re.sub(r"^[ \t]*ssl_ciphers\s+HIGH:!aNULL:!MD5;[ \t]*\r?\n?", "", content, flags=re.M)
+        content = re.sub(r"^[ \t]*ssl_ciphers\s+HIGH:!aNULL:!MD5;[ \t]*(?:#[^\r\n]*)?\r?\n?", "", content, flags=re.M)
 
-        if not re.search(r"^[ \t]*listen\s+(?:\[::\]:)?443\s+ssl\b", content, re.M):
-            return content, (content != orig)
+        # Process each server { ... } block independently so multi-server files and non-contiguous
+        # listen directives never receive duplicate http2 on; lines
+        out_parts: List[str] = []
+        idx = 0
+        n = len(content)
+        server_pat = re.compile(r"\bserver\s*\{")
 
-        # Skip if http2 is already configured via directive or deprecated listen parameter
-        if re.search(r"^[ \t]*http2\s+on\s*;", content, re.M) or re.search(r"^[ \t]*listen\s+[^\n]*443[^\n]*\bhttp2\b", content, re.M):
-            return content, (content != orig)
+        while idx < n:
+            m = server_pat.search(content, idx)
+            if not m:
+                out_parts.append(content[idx:])
+                break
 
-        if re.search(r"^[ \t]*listen\s+[^\n]*443\s+quic\b[^\n]*;", content, re.M):
-            content = re.sub(
-                r"((?:^[ \t]*listen\s+[^\n]*443\s+quic\b[^\n]*;\r?\n?)+)",
-                lambda m: m.group(1).rstrip("\r\n") + "\n" + (re.match(r"^([ \t]*)", m.group(1)).group(1) or "    ") + "http2 on;\n",
-                content,
-                flags=re.M
-            )
-        elif re.search(r"^[ \t]*listen\s+[^\n]*443\s+ssl\b[^\n]*;", content, re.M):
-            content = re.sub(
-                r"((?:^[ \t]*listen\s+[^\n]*443\s+ssl\b[^\n]*;\r?\n?)+)",
-                lambda m: m.group(1).rstrip("\r\n") + "\n" + (re.match(r"^([ \t]*)", m.group(1)).group(1) or "    ") + "http2 on;\n",
-                content,
-                flags=re.M
-            )
+            out_parts.append(content[idx:m.start()])
+            brace_start = content.find("{", m.start())
+            depth = 0
+            pos = brace_start
+            in_squote = False
+            in_dquote = False
+            in_comment = False
 
+            while pos < n:
+                ch = content[pos]
+                if in_comment:
+                    if ch == "\n":
+                        in_comment = False
+                elif in_squote:
+                    if ch == "\\" and pos + 1 < n:
+                        pos += 1
+                    elif ch == "'":
+                        in_squote = False
+                elif in_dquote:
+                    if ch == "\\" and pos + 1 < n:
+                        pos += 1
+                    elif ch == '"':
+                        in_dquote = False
+                else:
+                    if ch == "#":
+                        in_comment = True
+                    elif ch == "'":
+                        in_squote = True
+                    elif ch == '"':
+                        in_dquote = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            pos += 1
+                            break
+                pos += 1
+
+            block = content[m.start():pos]
+            if re.search(r"^[ \t]*listen\s+[^\n;]*443\s+(?:ssl|quic)\b", block, re.M):
+                # If deprecated listen ... 443 ... http2 is present, leave as-is
+                if not re.search(r"^[ \t]*listen\s+[^\n;]*443[^\n;]*\bhttp2\b", block, re.M):
+                    http2_matches = list(re.finditer(r"^([ \t]*)http2\s+(on|off)\s*;[ \t]*(?:#[^\r\n]*)?$", block, re.M))
+                    if http2_matches:
+                        first_h2 = http2_matches[0]
+                        h2_indent = first_h2.group(1) or "    "
+                        target_h2 = f"{h2_indent}http2 on;"
+                        new_block = block[:first_h2.start()] + target_h2 + block[first_h2.end():]
+                        after_h2 = re.sub(
+                            r"^[ \t]*http2\s+(?:on|off)\s*;[ \t]*(?:#[^\r\n]*)?\r?\n?",
+                            "",
+                            new_block[first_h2.start() + len(target_h2):],
+                            flags=re.M
+                        )
+                        block = new_block[:first_h2.start() + len(target_h2)] + after_h2
+                    else:
+                        quic_listens = list(re.finditer(r"^([ \t]*)listen\s+[^\n;]*443\s+quic\b[^\n;]*;[ \t]*(?:#[^\r\n]*)?", block, re.M))
+                        ssl_listens = list(re.finditer(r"^([ \t]*)listen\s+[^\n;]*443\s+ssl\b[^\n;]*;[ \t]*(?:#[^\r\n]*)?", block, re.M))
+                        anchor_match = quic_listens[-1] if quic_listens else (ssl_listens[-1] if ssl_listens else None)
+                        if anchor_match:
+                            h2_indent = anchor_match.group(1) or "    "
+                            insert_pos = anchor_match.end()
+                            block = block[:insert_pos] + f"\n{h2_indent}http2 on;" + block[insert_pos:]
+
+            out_parts.append(block)
+            idx = pos
+
+        content = "".join(out_parts)
         return content, (content != orig)
 
     def reconcile_angie_tls(self, angie_dir: str = "/etc/angie", check_syntax: bool = None) -> bool:
@@ -624,18 +691,23 @@ class LeanStackUpgrader:
         http_d_dir = os.path.join(angie_dir, "http.d")
         opt_conf = os.path.join(http_d_dir, "00-optimization.conf")
         sites_avail_dir = os.path.join(angie_dir, "sites-available")
+        sites_enabled_dir = os.path.join(angie_dir, "sites-enabled")
 
-        # 1. Snapshot all candidate configuration files for atomic rollback
+        # 1. Snapshot all candidate configuration files for atomic rollback (deduplicated by realpath)
         tracked_files: List[str] = []
+        seen_realpaths = set()
         if os.path.isfile(angie_conf):
             tracked_files.append(angie_conf)
-        for d in (http_d_dir, sites_avail_dir):
+            seen_realpaths.add(os.path.realpath(angie_conf))
+        for d in (http_d_dir, sites_avail_dir, sites_enabled_dir):
             if os.path.isdir(d):
                 for fn in sorted(os.listdir(d)):
                     if fn.endswith(".conf"):
                         fp = os.path.join(d, fn)
-                        if os.path.isfile(fp) and fp not in tracked_files:
+                        real_fp = os.path.realpath(fp)
+                        if os.path.isfile(fp) and fp not in tracked_files and real_fp not in seen_realpaths:
                             tracked_files.append(fp)
+                            seen_realpaths.add(real_fp)
 
         original_contents: Dict[str, str] = {}
         for fp in tracked_files:
@@ -673,26 +745,30 @@ class LeanStackUpgrader:
 
         if angie_has_tls or (angie_conf in original_contents and not opt_has_tls):
             owner_file = angie_conf
-            if opt_conf in original_contents:
-                stripped_opt, opt_changed = self._strip_duplicate_tls_directives(original_contents[opt_conf])
-                if opt_changed:
-                    modified_files[opt_conf] = stripped_opt
             updated_angie, angie_changed = self._update_tls_owner_content(
                 original_contents[angie_conf], self.TARGET_SSL_CURVES_PQC, is_angie_conf=True
             )
             if angie_changed:
                 modified_files[angie_conf] = updated_angie
+            if opt_conf in original_contents:
+                stripped_opt, opt_changed = self._strip_duplicate_tls_directives(
+                    original_contents[opt_conf], owner_content=updated_angie
+                )
+                if opt_changed:
+                    modified_files[opt_conf] = stripped_opt
         elif opt_has_tls and opt_conf in original_contents:
             owner_file = opt_conf
-            if angie_conf in original_contents:
-                stripped_angie, angie_changed = self._strip_duplicate_tls_directives(original_contents[angie_conf])
-                if angie_changed:
-                    modified_files[angie_conf] = stripped_angie
             updated_opt, opt_changed = self._update_tls_owner_content(
                 original_contents[opt_conf], self.TARGET_SSL_CURVES_PQC, is_angie_conf=False
             )
             if opt_changed:
                 modified_files[opt_conf] = updated_opt
+            if angie_conf in original_contents:
+                stripped_angie, angie_changed = self._strip_duplicate_tls_directives(
+                    original_contents[angie_conf], owner_content=updated_opt
+                )
+                if angie_changed:
+                    modified_files[angie_conf] = stripped_angie
 
         # 4. Reconcile tenant vhosts in sites-available/*.conf and http.d/*.conf
         for fp in tracked_files:

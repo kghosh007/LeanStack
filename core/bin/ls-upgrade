@@ -952,6 +952,14 @@ class LeanStackUpgrader:
                 # 1. Update MU-Plugins
                 mu_dir = os.path.join(site_path, "wp-content", "mu-plugins")
                 if os.path.isdir(mu_dir):
+                    try:
+                        import pwd, grp
+                        u_info = pwd.getpwnam(user)
+                        w_info = grp.getgrnam("www-data")
+                        os.chown(mu_dir, u_info.pw_uid, w_info.gr_gid)
+                        os.chmod(mu_dir, 0o755)
+                    except Exception:
+                        pass
                     for tpl_name, plugin_name in mu_plugins:
                         tpl_path = os.path.join(self.templates_dir, tpl_name)
                         if os.path.exists(tpl_path):
@@ -1520,7 +1528,7 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         except Exception:
                             pass
 
-                # 8. Ensure wp-content directory permissions allow tenant and webserver write access
+                # 8. Ensure wp-content and subdirectories permissions (0755 user:www-data)
                 wp_content_dir = os.path.join(site_path, "wp-content")
                 if os.path.isdir(wp_content_dir):
                     try:
@@ -1528,7 +1536,12 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         u_info = pwd.getpwnam(user)
                         w_info = grp.getgrnam("www-data")
                         os.chown(wp_content_dir, u_info.pw_uid, w_info.gr_gid)
-                        os.chmod(wp_content_dir, 0o775)
+                        os.chmod(wp_content_dir, 0o755)
+                        for sub in ["plugins", "themes", "uploads", "mu-plugins"]:
+                            sub_dir = os.path.join(wp_content_dir, sub)
+                            if os.path.isdir(sub_dir):
+                                os.chown(sub_dir, u_info.pw_uid, w_info.gr_gid)
+                                os.chmod(sub_dir, 0o755)
                     except Exception:
                         pass
 

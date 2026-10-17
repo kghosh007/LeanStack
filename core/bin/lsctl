@@ -1329,7 +1329,7 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
             fi
         done
         chown -R "${USER_NAME}:www-data" "${WEB_ROOT}/wp-content/mu-plugins"
-        chmod 750 "${WEB_ROOT}/wp-content/mu-plugins"
+        chmod 755 "${WEB_ROOT}/wp-content/mu-plugins"
         chmod 644 "${WEB_ROOT}/wp-content/mu-plugins"/*.php 2>/dev/null || true
 
         # Scaffold Nginx Tenant Custom Configuration & Security Headers
@@ -1449,6 +1449,18 @@ EOF
         chmod 750 "$WEB_ROOT"
         chown "${USER_NAME}:${USER_NAME}" "$WEB_ROOT/wp-config.php" 2>/dev/null || chown "${USER_NAME}:www-data" "$WEB_ROOT/wp-config.php" 2>/dev/null || true
         chmod 600 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
+
+        # Enforce 0755 permissions on wp-content and subdirectories
+        if [ -d "${WEB_ROOT}/wp-content" ]; then
+            chown "${USER_NAME}:www-data" "${WEB_ROOT}/wp-content" 2>/dev/null || true
+            chmod 755 "${WEB_ROOT}/wp-content" 2>/dev/null || true
+            for sub in plugins themes uploads mu-plugins; do
+                if [ -d "${WEB_ROOT}/wp-content/${sub}" ]; then
+                    chown "${USER_NAME}:www-data" "${WEB_ROOT}/wp-content/${sub}" 2>/dev/null || true
+                    chmod 755 "${WEB_ROOT}/wp-content/${sub}" 2>/dev/null || true
+                fi
+            done
+        fi
 
         # Angie Virtual Host Generation
         ensure_ssl_fallback

@@ -1018,6 +1018,7 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         os.chmod("/var/cache/angie", 0o755)
                         os.makedirs("/var/cache/angie/sites", exist_ok=True)
                         os.chmod("/var/cache/angie/sites", 0o755)
+                        subprocess.run(["find", "/var/cache/angie/sites", "-type", "f", "-mmin", "+60", "-delete"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
                     os.makedirs(site_cache_dir, exist_ok=True)
@@ -1057,9 +1058,20 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
 
                 zone_key = "".join(c if c.isalnum() else "_" for c in domain.lower())
                 zone_conf = f"/etc/angie/cache-zones/{domain}.conf"
-                if os.path.isdir("/etc/angie/cache-zones") and not os.path.exists(zone_conf):
-                    with open(zone_conf, "w") as f:
-                        f.write(f"fastcgi_cache_path {site_cache_dir} levels=1:2 keys_zone=CACHE_{zone_key}:20m inactive=7d max_size=512m use_temp_path=off;\n")
+                if os.path.isdir("/etc/angie/cache-zones"):
+                    if not os.path.exists(zone_conf):
+                        with open(zone_conf, "w") as f:
+                            f.write(f"fastcgi_cache_path {site_cache_dir} levels=1:2 keys_zone=CACHE_{zone_key}:20m inactive=60m max_size=256m use_temp_path=off;\n")
+                    else:
+                        try:
+                            with open(zone_conf, "r") as f:
+                                zc_content = f.read()
+                            if "inactive=7d" in zc_content or "max_size=512m" in zc_content:
+                                zc_content = zc_content.replace("inactive=7d", "inactive=60m").replace("max_size=512m", "max_size=256m")
+                                with open(zone_conf, "w") as f:
+                                    f.write(zc_content)
+                        except Exception:
+                            pass
 
                 # 3b. Reconcile PHP-FPM Pool open_basedir & APCu Permissions
                 php_ver = s["php_version"] if "php_version" in s.keys() else "8.5"

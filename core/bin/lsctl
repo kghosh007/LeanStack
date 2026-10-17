@@ -1404,7 +1404,7 @@ EOF
         fi
 
         cat > "/etc/angie/cache-zones/${DOMAIN}.conf" << EOF
-fastcgi_cache_path ${SITE_CACHE_DIR} levels=1:2 keys_zone=CACHE_${ZONE_KEY}:20m inactive=7d max_size=512m use_temp_path=off;
+fastcgi_cache_path ${SITE_CACHE_DIR} levels=1:2 keys_zone=CACHE_${ZONE_KEY}:20m inactive=60m max_size=256m use_temp_path=off;
 EOF
 
         # Compatibility symlink for plugins expecting .nginx.conf

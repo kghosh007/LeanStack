@@ -174,7 +174,7 @@ http {
     error_log /var/log/angie/error.log warn;
 
     # FastCGI Microcache Storage
-    fastcgi_cache_path /var/cache/angie/fastcgi levels=1:2 keys_zone=WORDPRESS:100m inactive=60m max_size=1g;
+    fastcgi_cache_path /var/cache/angie/fastcgi levels=1:2 keys_zone=WORDPRESS:100m inactive=60m max_size=256m;
     fastcgi_cache_key "$scheme$request_method$host$request_uri";
     fastcgi_cache_use_stale error timeout updating invalid_header http_500 http_503;
     fastcgi_ignore_headers Cache-Control Expires Set-Cookie;

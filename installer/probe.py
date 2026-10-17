@@ -265,9 +265,12 @@ class TuningCalculator:
         """
         MariaDB High-QPS Tuning
         Addresses the 237 QPS bottleneck:
-        - Per-query buffers strictly sized to 256K/512K to fit in CPU L2/L3 cache (never 16M).
+        - Per-query buffers dynamically sized (1M-4M) to keep filesort and group operations in RAM without on-disk spills.
         - READ-COMMITTED isolation eliminates InnoDB gap locks.
         - mrr_cost_based = on preserves direct index point lookups.
+        - Subquery cache, semijoin, and index condition pushdown accelerate complex subqueries.
+        - Aria pagecache (64M-256M) prevents internal temporary tables with TEXT/BLOB from disk thrashing.
+        - Query cache explicitly disabled (query_cache_type = 0, size = 0) to eliminate global mutex serialization.
         - Partitioned table cache eliminates mutex lock contention.
         """
         # Buffer pool calculation
@@ -290,9 +293,23 @@ class TuningCalculator:
         # Log file size: 25% of buffer pool, capped at 1024M
         log_file_size_mb = min(bp_mb // 4, 1024)
 
-        # Per query buffers (kept strictly in 256K-512K range)
-        sort_buf = "256K" if self.cores < 8 else "512K"
-        join_buf = "256K" if self.cores < 8 else "512K"
+        # In-memory per-query buffers (1M on <=2GB, 2M on <=8GB, 4M on >8GB)
+        # Sized to prevent multi-pass disk sort merges (Sort_merge_passes) while strictly avoiding 16M malloc overhead
+        if self.ram_mb <= 2048:
+            sort_buf = "1M"
+            join_buf = "1M"
+            read_rnd = "512K"
+            aria_page = "64M"
+        elif self.ram_mb <= 8192:
+            sort_buf = "2M"
+            join_buf = "2M"
+            read_rnd = "1M"
+            aria_page = "128M"
+        else:
+            sort_buf = "4M"
+            join_buf = "4M"
+            read_rnd = "2M"
+            aria_page = "256M"
 
         # Max connections based on RAM
         max_conn = 150 if self.ram_mb <= 2048 else (300 if self.ram_mb <= 8192 else 500)
@@ -305,16 +322,23 @@ class TuningCalculator:
             "innodb_log_buffer_size": "64M",
             "innodb_flush_log_at_trx_commit": 2,
             "innodb_flush_method": "O_DIRECT",
+            "innodb_adaptive_hash_index": 1,
+            "innodb_change_buffering": "all",
             "transaction_isolation": "READ-COMMITTED",
             "mrr_cost_based": "on",
+            "optimizer_switch": "mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on",
+            "query_cache_type": 0,
+            "query_cache_size": 0,
             "table_open_cache": 4096,
             "table_open_cache_instances": table_cache_inst,
             "sort_buffer_size": sort_buf,
             "join_buffer_size": join_buf,
-            "read_buffer_size": "128K",
-            "read_rnd_buffer_size": "256K",
+            "read_buffer_size": "512K",
+            "read_rnd_buffer_size": read_rnd,
             "tmp_table_size": "64M",
             "max_heap_table_size": "64M",
+            "aria_pagecache_buffer_size": aria_page,
+            "aria_sort_buffer_size": "32M",
             "max_connections": max_conn,
             "thread_cache_size": 128,
             "back_log": 512,

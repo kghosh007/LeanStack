@@ -714,6 +714,35 @@ server {
         self.assertFalse(changed_second)
         self.assertEqual(vhost_second, new_vhost)
 
+    def test_reconcile_mariadb_tuning(self):
+        """Verify MariaDB High-QPS tuning profile reconciliation and idempotency."""
+        temp_mariadb_dir = os.path.join(self.test_dir, "mariadb_conf_d")
+        os.makedirs(temp_mariadb_dir, exist_ok=True)
+
+        res = self.upgrader.reconcile_mariadb_tuning(conf_dir=temp_mariadb_dir)
+        self.assertTrue(res)
+
+        cnf_path = os.path.join(temp_mariadb_dir, "99-leanstack-highqps.cnf")
+        self.assertTrue(os.path.isfile(cnf_path))
+
+        with open(cnf_path, "r", encoding="utf-8") as f:
+            cnf_content = f.read()
+
+        self.assertIn("query_cache_type               = 0", cnf_content)
+        self.assertIn("query_cache_size               = 0", cnf_content)
+        self.assertIn("aria_pagecache_buffer_size", cnf_content)
+        self.assertIn("aria_sort_buffer_size          = 32M", cnf_content)
+        self.assertIn("subquery_cache=on", cnf_content)
+        self.assertIn("semijoin=on", cnf_content)
+        self.assertIn("index_condition_pushdown=on", cnf_content)
+        self.assertIn("innodb_adaptive_hash_index     = 1", cnf_content)
+
+        # Idempotency check: running again produces True without overwriting differently
+        res_second = self.upgrader.reconcile_mariadb_tuning(conf_dir=temp_mariadb_dir)
+        self.assertTrue(res_second)
+        with open(cnf_path, "r", encoding="utf-8") as f:
+            self.assertEqual(f.read(), cnf_content)
+
 if __name__ == "__main__":
     unittest.main()
 

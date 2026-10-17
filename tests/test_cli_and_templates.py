@@ -1148,6 +1148,85 @@ exit 0
             pulled = upgrader.git_pull_latest()
             self.assertTrue(pulled)
 
+    def test_transactional_email_and_zero_daemon_smtp(self):
+        """Verify zero-daemon transactional email architecture across pool, mu-plugins, bridge, and CLI."""
+        pool_tpl = os.path.join(BASE_DIR, "core", "templates", "pool.conf.tpl")
+        with open(pool_tpl, "r") as f:
+            pool_c = f.read()
+        self.assertIn("php_admin_value[sendmail_path]", pool_c)
+        self.assertIn("/usr/bin/msmtp -C /home/{{USER_NAME}}/.msmtprc -t -i", pool_c)
+
+        smtp_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-smtp.php.tpl")
+        self.assertTrue(os.path.exists(smtp_tpl))
+        with open(smtp_tpl, "r") as f:
+            smtp_c = f.read()
+        self.assertIn("class LeanStackSMTP", smtp_c)
+        self.assertIn("phpmailer_init", smtp_c)
+        self.assertIn("SMTP_HOST", smtp_c)
+        self.assertIn("LEANSTACK_SMTP_HOST", smtp_c)
+        self.assertIn(".leanstack-smtp.json", smtp_c)
+        self.assertIn("leanstack_smtp_settings", smtp_c)
+        self.assertIn("sync_msmtprc", smtp_c)
+        self.assertIn("chmod( $msmtprc, 0600 )", smtp_c)
+
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge_c = f.read()
+        self.assertIn("tab=smtp", bridge_c)
+        self.assertIn("'smtp' === $active_tab", bridge_c)
+        self.assertIn("render_smtp_tab_content", bridge_c)
+        self.assertIn("handle_save_smtp", bridge_c)
+        self.assertIn("handle_send_smtp_test", bridge_c)
+        self.assertIn("ls-smtp-preset", bridge_c)
+        self.assertIn("SendGrid", bridge_c)
+        self.assertIn("Postmark", bridge_c)
+        self.assertIn("msmtp", bridge_c)
+
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_path, "r") as f:
+            lsctl_c = f.read()
+        self.assertIn(".msmtprc", lsctl_c)
+        self.assertIn("chmod 600", lsctl_c)
+        self.assertIn("leanstack-smtp.php", lsctl_c)
+
+        upgrade_path = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_path, "r") as f:
+            upgrade_c = f.read()
+        self.assertIn("leanstack-smtp.php", upgrade_c)
+        self.assertIn("sendmail_path", upgrade_c)
+        self.assertIn(".msmtprc", upgrade_c)
+
+    def test_dynamic_timezone_support_in_mu_plugins(self):
+        """Verify leanstack-bridge dynamically formats dates/times in the WordPress site's configured timezone."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            content = f.read()
+
+        self.assertIn("function format_site_time(", content)
+        self.assertIn("wp_date(", content)
+        self.assertIn("wp_timezone_string()", content)
+        self.assertNotIn("gmdate( 'H:i:s \\U\\T\\C', $last_time )", content)
+        self.assertNotIn("gmdate( 'Y-m-d H:i:s \\U\\T\\C', (int) $revert_at )", content)
+        self.assertIn("$this->format_site_time( $last_time", content)
+        self.assertIn("$this->format_site_time( (int) $revert_at )", content)
+        self.assertIn("$this->format_site_time( $ev['timestamp'] )", content)
+        self.assertIn("$this->format_site_time( filemtime( $target ) )", content)
+
+    def test_tenant_cpu_and_memory_telemetry(self):
+        """Verify accurate CPU & RAM telemetry relative to assigned resources without false 100% elevation."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            content = f.read()
+
+        self.assertIn("'cpu_usage_pct'", content)
+        self.assertIn("'memory_usage_pct'", content)
+        self.assertIn("'capacity_saturation_pct'", content)
+        self.assertIn("'max_workers'", content)
+        self.assertIn("'cpu_cores'", content)
+        self.assertIn("CPU:</span> <?php echo esc_html( $analytics['system']['cpu_usage_pct'] ); ?>%", content)
+        self.assertIn("RAM:</span> <?php echo esc_html( $analytics['system']['memory_usage_pct'] ); ?>%", content)
+        self.assertIn("Workers: <strong>%d / %d</strong>", content)
+
 if __name__ == "__main__":
     unittest.main()
 

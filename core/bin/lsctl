@@ -1387,9 +1387,33 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
         chmod 600 "$WP_CONFIG"
         chmod 600 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
 
+        # Scaffold Lightweight OS Mail Relay (msmtp) Configuration
+        MSMTPRC="/home/${USER_NAME}/.msmtprc"
+        cat > "$MSMTPRC" << EOF
+# LeanStack Lightweight OS Mail Relay Configuration (msmtp)
+# Strict permissions enforced: chmod 600
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /home/${USER_NAME}/logs/msmtp.log
+
+account        default
+host           127.0.0.1
+port           587
+from           noreply@${DOMAIN}
+user           none
+password       none
+EOF
+        chown "${USER_NAME}:${USER_NAME}" "$MSMTPRC"
+        chmod 600 "$MSMTPRC"
+        touch "${LOG_DIR}/msmtp.log"
+        chown "${USER_NAME}:www-data" "${LOG_DIR}/msmtp.log"
+        chmod 640 "${LOG_DIR}/msmtp.log"
+
         # Deploy LeanStack MU-Plugins Suite
         mkdir -p "${WEB_ROOT}/wp-content/mu-plugins"
-        for tpl in leanstack-shield.php leanstack-bridge.php leanstack-holepunch.php leanstack-apcu.php; do
+        for tpl in leanstack-shield.php leanstack-bridge.php leanstack-holepunch.php leanstack-apcu.php leanstack-smtp.php; do
             if [ -f "${TEMPLATE_DIR}/${tpl}.tpl" ]; then
                 cp "${TEMPLATE_DIR}/${tpl}.tpl" "${WEB_ROOT}/wp-content/mu-plugins/${tpl}"
             fi

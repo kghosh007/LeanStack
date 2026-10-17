@@ -87,6 +87,10 @@ class LeanStackBridge {
         add_action( 'admin_post_leanstack_save_cf_credentials', array( $this, 'handle_save_cf_credentials' ) );
         add_action( 'admin_post_leanstack_purge_cf', array( $this, 'handle_purge_cloudflare' ) );
 
+        // Transactional Email & Zero-Daemon SMTP Handlers
+        add_action( 'admin_post_leanstack_save_smtp', array( $this, 'handle_save_smtp' ) );
+        add_action( 'admin_post_leanstack_send_smtp_test', array( $this, 'handle_send_smtp_test' ) );
+
         // Anti-Thundering Background Cron Queue Handlers
         add_action( 'admin_post_leanstack_run_cron_now', array( $this, 'handle_run_cron_now' ) );
         add_filter( 'site_status_tests', array( $this, 'register_site_health_cron_test' ) );
@@ -146,6 +150,32 @@ class LeanStackBridge {
         } else {
             $this->logs_dir = $candidate_logs;
         }
+    }
+
+    /**
+     * Formats a unix timestamp or ISO string in the site's configured timezone.
+     * Automatically adapts whenever the WordPress timezone is updated in Settings > General.
+     *
+     * @param int|string $timestamp Unix timestamp or parseable datetime string.
+     * @param string     $format    PHP date format string.
+     * @return string
+     */
+    public function format_site_time( $timestamp, $format = 'Y-m-d H:i:s T' ) {
+        if ( empty( $timestamp ) ) {
+            return __( 'Never / Not Created', 'leanstack' );
+        }
+        if ( ! is_numeric( $timestamp ) ) {
+            $parsed = strtotime( (string) $timestamp );
+            if ( false === $parsed || -1 === $parsed ) {
+                return (string) $timestamp;
+            }
+            $timestamp = $parsed;
+        }
+        if ( function_exists( 'wp_date' ) ) {
+            return wp_date( $format, (int) $timestamp );
+        }
+        $offset = (float) get_option( 'gmt_offset', 0 ) * HOUR_IN_SECONDS;
+        return date_i18n( $format, (int) $timestamp + (int) $offset );
     }
 
     public function register_admin_menus() {
@@ -515,7 +545,7 @@ class LeanStackBridge {
                     <?php if ( ! empty( $is_active_window ) ) : ?>
                         <div class="notice notice-warning inline" style="margin: 15px 0; padding: 12px; border-left-color: #dba617;">
                             <p><strong><span class="dashicons dashicons-clock" style="color: #dba617; vertical-align: middle;"></span> <?php _e( 'Benchmark Maintenance Window Active:', 'leanstack' ); ?></strong>
-                            <?php printf( __( 'Automatic revert to Strict Production Lockdown scheduled at %s (in %s).', 'leanstack' ), gmdate( 'Y-m-d H:i:s \U\T\C', (int) $revert_at ), human_time_diff( (int) $revert_at ) ); ?></p>
+                            <?php printf( __( 'Automatic revert to Strict Production Lockdown scheduled at %s (in %s).', 'leanstack' ), esc_html( $this->format_site_time( (int) $revert_at ) ), human_time_diff( (int) $revert_at ) ); ?></p>
                         </div>
                     <?php endif; ?>
 
@@ -1279,7 +1309,7 @@ class LeanStackBridge {
         $last_run_text = __( 'Active (awaiting next 60s trigger)', 'leanstack' );
         if ( ! empty( $cron_meta['last_run'] ) ) {
             $last_time = strtotime( $cron_meta['last_run'] );
-            $last_run_text = sprintf( __( '%s ago (%s)', 'leanstack' ), human_time_diff( $last_time ), gmdate( 'H:i:s \U\T\C', $last_time ) );
+            $last_run_text = sprintf( __( '%s ago (%s)', 'leanstack' ), human_time_diff( $last_time ), $this->format_site_time( $last_time, 'H:i:s T' ) );
         }
         ?>
         <div class="leanstack-cron-widget">
@@ -1575,6 +1605,25 @@ class LeanStackBridge {
         $current_uid = function_exists( 'posix_geteuid' ) ? posix_geteuid() : ( function_exists( 'getmyuid' ) ? getmyuid() : null );
         $rss_total_kb = 0;
         $proc_count = 0;
+        $total_cpu_ticks = 0;
+        $total_proc_cpu_pct = 0.0;
+
+        $cpu_cores = 1;
+        if ( @is_readable( '/proc/cpuinfo' ) ) {
+            $cpuinfo = @file_get_contents( '/proc/cpuinfo' );
+            if ( $cpuinfo && preg_match_all( '/^processor\s*:/m', $cpuinfo, $m_cores ) ) {
+                $cpu_cores = max( 1, count( $m_cores[0] ) );
+            }
+        }
+
+        $sys_uptime = 0.0;
+        if ( @is_readable( '/proc/uptime' ) ) {
+            $uptime_str = @file_get_contents( '/proc/uptime' );
+            if ( $uptime_str ) {
+                $u_parts = explode( ' ', trim( $uptime_str ) );
+                $sys_uptime = (float) $u_parts[0];
+            }
+        }
 
         if ( is_dir( '/proc' ) ) {
             $pids = @scandir( '/proc' );
@@ -1591,6 +1640,27 @@ class LeanStackBridge {
                                         if ( preg_match( '/^VmRSS:\s+(\d+)\s+kB/m', $status_str, $m_rss ) ) {
                                             $rss_total_kb += (int) $m_rss[1];
                                         }
+
+                                        $stat_file = "/proc/{$p}/stat";
+                                        if ( file_exists( $stat_file ) ) {
+                                            $stat_str = @file_get_contents( $stat_file );
+                                            if ( $stat_str ) {
+                                                $rparen = strrpos( $stat_str, ')' );
+                                                if ( false !== $rparen ) {
+                                                    $f_after = preg_split( '/\s+/', trim( substr( $stat_str, $rparen + 1 ) ) );
+                                                    if ( isset( $f_after[11], $f_after[12] ) ) {
+                                                        $utime = (int) $f_after[11];
+                                                        $stime = (int) $f_after[12];
+                                                        $total_cpu_ticks += ( $utime + $stime );
+                                                        if ( isset( $f_after[19] ) && $sys_uptime > 0 ) {
+                                                            $p_start = (int) $f_after[19];
+                                                            $p_run_sec = max( 1.0, $sys_uptime - ( $p_start / 100.0 ) );
+                                                            $total_proc_cpu_pct += ( ( ( $utime + $stime ) / 100.0 ) / $p_run_sec ) * 100.0;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1600,13 +1670,48 @@ class LeanStackBridge {
             }
         }
 
+        // Active / Delta CPU sampling via transient or APCu
+        $now = microtime( true );
+        $metric_key = 'ls_cpu_metric_' . (string) ( null !== $current_uid ? $current_uid : 0 );
+        $prev_metric = function_exists( 'apcu_fetch' ) ? @apcu_fetch( $metric_key ) : get_transient( $metric_key );
+        $delta_cpu_pct = null;
+        if ( is_array( $prev_metric ) && isset( $prev_metric['t'], $prev_metric['ticks'] ) ) {
+            $dt = $now - (float) $prev_metric['t'];
+            if ( $dt >= 1.0 && $dt <= 300.0 ) {
+                $dticks = max( 0, $total_cpu_ticks - (int) $prev_metric['ticks'] );
+                $delta_cpu_pct = ( ( $dticks / 100.0 ) / ( $dt * $cpu_cores ) ) * 100.0;
+            }
+        }
+        $new_metric = array( 't' => $now, 'ticks' => $total_cpu_ticks );
+        if ( function_exists( 'apcu_store' ) ) {
+            @apcu_store( $metric_key, $new_metric, 300 );
+        } else {
+            set_transient( $metric_key, $new_metric, 300 );
+        }
+
+        if ( null !== $delta_cpu_pct ) {
+            $cpu_usage_pct = min( 100.0, max( 0.0, round( $delta_cpu_pct, 1 ) ) );
+        } elseif ( $total_proc_cpu_pct > 0 ) {
+            $cpu_usage_pct = min( 100.0, max( 0.0, round( $total_proc_cpu_pct / $cpu_cores, 1 ) ) );
+        } elseif ( function_exists( 'sys_getloadavg' ) ) {
+            $loads = sys_getloadavg();
+            $cpu_usage_pct = min( 100.0, max( 0.0, round( ( (float) $loads[0] / $cpu_cores ) * 100.0, 1 ) ) );
+        } else {
+            $cpu_usage_pct = 0.0;
+        }
+
         $tenant_mem_bytes = ( $rss_total_kb > 0 ) ? ( $rss_total_kb * 1024 ) : ( function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0 );
-        $memory_usage_pct = min( 100, round( ( $tenant_mem_bytes / $mem_limit_bytes ) * 100, 1 ) );
 
-        $pool_capacity = (int) apply_filters( 'leanstack_pool_capacity', 10 );
-        $capacity_saturation_pct = min( 100, round( ( max( 1, $proc_count ) / $pool_capacity ) * 100 ) );
+        $max_workers = (int) apply_filters( 'leanstack_pool_capacity', 30 );
+        $assigned_pool_bytes = (int) apply_filters( 'leanstack_pool_memory_limit', $max_workers * ( 64 * 1024 * 1024 ) );
+        if ( $assigned_pool_bytes < $mem_limit_bytes ) {
+            $assigned_pool_bytes = $mem_limit_bytes * 2;
+        }
 
-        $highest_saturation = max( $memory_usage_pct, $capacity_saturation_pct );
+        $memory_usage_pct = min( 100.0, max( 0.0, round( ( $tenant_mem_bytes / $assigned_pool_bytes ) * 100.0, 1 ) ) );
+        $capacity_saturation_pct = min( 100, round( ( max( 1, $proc_count ) / $max_workers ) * 100 ) );
+
+        $highest_saturation = max( $cpu_usage_pct, $memory_usage_pct, ( $capacity_saturation_pct > 80 ? $capacity_saturation_pct : 0 ) );
         if ( $highest_saturation >= 85 ) {
             $status_badge = 'Elevated';
             $status_color = '#d63638';
@@ -1618,8 +1723,14 @@ class LeanStackBridge {
             $status_color = '#00a32a';
         }
 
+        $data['system']['cpu_usage_pct'] = $cpu_usage_pct;
         $data['system']['memory_usage_pct'] = $memory_usage_pct;
         $data['system']['capacity_saturation_pct'] = $capacity_saturation_pct;
+        $data['system']['proc_count'] = $proc_count;
+        $data['system']['max_workers'] = $max_workers;
+        $data['system']['cpu_cores'] = $cpu_cores;
+        $data['system']['tenant_mem_bytes'] = $tenant_mem_bytes;
+        $data['system']['tenant_mem_formatted'] = function_exists( 'size_format' ) ? size_format( $tenant_mem_bytes, 1 ) : round( $tenant_mem_bytes / ( 1024 * 1024 ), 1 ) . ' MB';
         $data['system']['status_badge'] = $status_badge;
         $data['system']['status_color'] = $status_color;
         $data['system']['memory_limit'] = $mem_limit_str;
@@ -1692,6 +1803,15 @@ class LeanStackBridge {
             <?php if ( isset( $_GET['cron_dispatched'] ) ) : ?>
                 <div class="notice notice-success is-dismissible"><p><?php printf( __( 'LeanStack Background Cron Queue executed successfully (%d scheduled events processed).', 'leanstack' ), (int) $_GET['cron_dispatched'] ); ?></p></div>
             <?php endif; ?>
+            <?php if ( isset( $_GET['saved_smtp'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Transactional Email (SMTP) configuration saved and synced with OS msmtp relay.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['test_email_sent'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php printf( __( 'Test email successfully sent to %s via authenticated SMTP.', 'leanstack' ), esc_html( sanitize_email( $_GET['test_email_sent'] ) ) ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['test_email_error'] ) ) : ?>
+                <div class="notice notice-error is-dismissible"><p><?php printf( __( 'Failed to deliver test email: %s', 'leanstack' ), esc_html( sanitize_text_field( $_GET['test_email_error'] ) ) ); ?></p></div>
+            <?php endif; ?>
 
             <h2 class="nav-tab-wrapper">
                 <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cache&tab=analytics' ) ); ?>" class="nav-tab <?php echo 'analytics' === $active_tab ? 'nav-tab-active' : ''; ?>">
@@ -1708,6 +1828,9 @@ class LeanStackBridge {
                 </a>
                 <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cache&tab=cron' ) ); ?>" class="nav-tab <?php echo 'cron' === $active_tab ? 'nav-tab-active' : ''; ?>">
                     <span class="dashicons dashicons-clock" style="vertical-align: text-bottom;"></span> <?php _e( 'Background Cron Queue', 'leanstack' ); ?>
+                </a>
+                <a href="<?php echo esc_url( admin_url( 'tools.php?page=leanstack-cache&tab=smtp' ) ); ?>" class="nav-tab <?php echo 'smtp' === $active_tab ? 'nav-tab-active' : ''; ?>">
+                    <span class="dashicons dashicons-email" style="vertical-align: text-bottom;"></span> <?php _e( 'Transactional Email (SMTP)', 'leanstack' ); ?>
                 </a>
             </h2>
 
@@ -1743,15 +1866,17 @@ class LeanStackBridge {
                     <!-- 4. System & Tenant Telemetry -->
                     <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                         <h3 style="margin-top: 0; color: #1d2327;"><span class="dashicons dashicons-dashboard" style="color: <?php echo esc_attr( $analytics['system']['status_color'] ); ?>;"></span> <?php _e( 'Tenant CPU & Memory', 'leanstack' ); ?></h3>
-                        <p style="font-size: 28px; font-weight: bold; margin: 10px 0; color: <?php echo esc_attr( $analytics['system']['status_color'] ); ?>;">
-                            <?php echo esc_html( $analytics['system']['memory_usage_pct'] ); ?>%
+                        <p style="font-size: 24px; font-weight: bold; margin: 10px 0; color: <?php echo esc_attr( $analytics['system']['status_color'] ); ?>;">
+                            <span style="font-size: 13px; font-weight: 600; color: #646970;">CPU:</span> <?php echo esc_html( $analytics['system']['cpu_usage_pct'] ); ?>%
+                            <span style="color: #ccd0d4; font-weight: normal; margin: 0 4px;">•</span>
+                            <span style="font-size: 13px; font-weight: 600; color: #646970;">RAM:</span> <?php echo esc_html( $analytics['system']['memory_usage_pct'] ); ?>%
                             <span style="display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 12px; vertical-align: middle; margin-left: 6px; background: <?php echo esc_attr( $analytics['system']['status_color'] ); ?>; color: #fff;">
                                 <?php echo esc_html( $analytics['system']['status_badge'] ); ?>
                             </span>
                         </p>
-                        <p style="color: #646970; margin: 0;"><?php printf( __( 'Pool Saturation: <strong>%d%%</strong> | Limit: <strong>%s</strong>', 'leanstack' ), (int) $analytics['system']['capacity_saturation_pct'], esc_html( $analytics['system']['memory_limit'] ) ); ?></p>
+                        <p style="color: #646970; margin: 0;"><?php printf( __( 'Workers: <strong>%d / %d</strong> (%d%%) | RAM: <strong>%s</strong> | Limit: <strong>%s</strong>', 'leanstack' ), (int) $analytics['system']['proc_count'], (int) $analytics['system']['max_workers'], (int) $analytics['system']['capacity_saturation_pct'], esc_html( $analytics['system']['tenant_mem_formatted'] ), esc_html( $analytics['system']['memory_limit'] ) ); ?></p>
                         <hr style="margin: 15px 0; border: 0; border-top: 1px solid #f0f0f1;">
-                        <span class="dashicons dashicons-shield" style="color: #00a32a; vertical-align: middle;"></span> <small style="color: #646970;"><?php _e( 'Multi-tenant isolation active • Privacy-safe metrics', 'leanstack' ); ?></small>
+                        <span class="dashicons dashicons-shield" style="color: #00a32a; vertical-align: middle;"></span> <small style="color: #646970;"><?php printf( __( 'Multi-tenant isolation active • %d assigned CPU core(s)', 'leanstack' ), (int) $analytics['system']['cpu_cores'] ); ?></small>
                     </div>
 
                     <!-- 5. Background Cron Queue -->
@@ -1943,6 +2068,8 @@ class LeanStackBridge {
 
             <?php elseif ( 'cron' === $active_tab ) : ?>
                 <?php $this->render_cron_tab_content(); ?>
+            <?php elseif ( 'smtp' === $active_tab ) : ?>
+                <?php $this->render_smtp_tab_content(); ?>
             <?php endif; ?>
         </div>
         <?php
@@ -2023,7 +2150,7 @@ class LeanStackBridge {
                             <?php
                             if ( ! empty( $cron_meta['last_run'] ) ) {
                                 $last_time = strtotime( $cron_meta['last_run'] );
-                                printf( esc_html__( '%s (%s ago)', 'leanstack' ), esc_html( $cron_meta['last_run'] ), human_time_diff( $last_time ) );
+                                printf( esc_html__( '%s (%s ago)', 'leanstack' ), esc_html( $this->format_site_time( $last_time ) ), human_time_diff( $last_time ) );
                             } else {
                                 _e( 'Systemd Active (Awaiting next 60s trigger)', 'leanstack' );
                             }
@@ -2096,7 +2223,7 @@ class LeanStackBridge {
             <table class="widefat striped" style="margin-top: 10px;">
                 <thead>
                     <tr>
-                        <th><?php _e( 'Timestamp (UTC)', 'leanstack' ); ?></th>
+                        <th><?php printf( __( 'Timestamp (%s)', 'leanstack' ), esc_html( function_exists( 'wp_timezone_string' ) ? wp_timezone_string() : 'Site Time' ) ); ?></th>
                         <th><?php _e( 'Duration', 'leanstack' ); ?></th>
                         <th><?php _e( 'CPU Time', 'leanstack' ); ?></th>
                         <th><?php _e( 'Peak Memory', 'leanstack' ); ?></th>
@@ -2107,7 +2234,7 @@ class LeanStackBridge {
                 <tbody>
                     <?php foreach ( $cron_meta['history'] as $run ) : ?>
                         <tr>
-                            <td><code><?php echo esc_html( isset( $run['timestamp'] ) ? $run['timestamp'] : 'N/A' ); ?></code></td>
+                            <td><code><?php echo esc_html( $this->format_site_time( isset( $run['timestamp'] ) ? $run['timestamp'] : '' ) ); ?></code></td>
                             <td><strong><?php echo esc_html( isset( $run['duration_ms'] ) ? $run['duration_ms'] : '0' ); ?> ms</strong></td>
                             <td><?php echo esc_html( isset( $run['cpu_ms'] ) ? $run['cpu_ms'] : '0' ); ?> ms</td>
                             <td><?php echo esc_html( isset( $run['memory_mb'] ) ? $run['memory_mb'] : '0' ); ?> MB</td>
@@ -2144,7 +2271,7 @@ class LeanStackBridge {
                                         <span style="color: #d63638; font-weight: bold;"><?php _e( 'Due now', 'leanstack' ); ?></span> (<?php echo esc_html( human_time_diff( $ev['timestamp'] ) ); ?> <?php _e( 'overdue', 'leanstack' ); ?>)
                                     <?php else : ?>
                                         <span style="color: #007017;"><?php printf( esc_html__( 'In %s', 'leanstack' ), esc_html( human_time_diff( $ev['timestamp'] ) ) ); ?></span>
-                                        <br><small style="color: #8c8f94;"><?php echo esc_html( date_i18n( 'Y-m-d H:i:s', $ev['timestamp'] ) ); ?></small>
+                                        <br><small style="color: #8c8f94;"><?php echo esc_html( $this->format_site_time( $ev['timestamp'] ) ); ?></small>
                                     <?php endif; ?>
                                 </td>
                                 <td><code><?php echo esc_html( $ev['hook'] ); ?></code></td>
@@ -2157,6 +2284,327 @@ class LeanStackBridge {
             </table>
         </div>
         <?php
+    }
+
+    // =========================================================================
+    // UI: Transactional Email & Zero-Daemon SMTP Relay
+    // =========================================================================
+
+    public function render_smtp_tab_content() {
+        $smtp_cfg = function_exists( 'leanstack_get_smtp_config' )
+            ? leanstack_get_smtp_config()
+            : array(
+                'enabled'    => false,
+                'source'     => 'none',
+                'host'       => '',
+                'port'       => 587,
+                'encryption' => 'tls',
+                'auth'       => true,
+                'user'       => '',
+                'pass'       => '',
+                'from_email' => get_option( 'admin_email' ),
+                'from_name'  => get_bloginfo( 'name' ),
+            );
+
+        $home_dir = dirname( rtrim( ABSPATH, '/' ) );
+        $msmtprc_path = $home_dir . '/.msmtprc';
+        $msmtprc_exists = file_exists( $msmtprc_path );
+        $msmtp_bin_exists = file_exists( '/usr/bin/msmtp' );
+        $current_user = wp_get_current_user();
+        $default_test_email = $current_user ? $current_user->user_email : get_option( 'admin_email' );
+        $last_error = get_transient( 'leanstack_last_mail_error' );
+
+        ?>
+        <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; margin-top: 20px; border-radius: 4px;">
+            <h3><span class="dashicons dashicons-email" style="color: #2271b1;"></span> <?php _e( 'Transactional Email & Zero-Daemon SMTP Relay', 'leanstack' ); ?></h3>
+            <p class="description">
+                <?php _e( 'High-deliverability transactional email architecture. Integrates WordPress in-process PHPMailer with an ultra-lightweight OS relay (<code>msmtp</code>). Zero persistent mail daemons (Postfix/Exim eliminated), zero RAM overhead, and 100% SPF/DKIM/DMARC alignment through external SMTP delivery providers.', 'leanstack' ); ?>
+            </p>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 15px; margin: 20px 0;">
+                <div style="background: #f6f7f7; border: 1px solid #dcdcde; border-radius: 4px; padding: 15px;">
+                    <strong style="color: #1d2327; font-size: 13px;"><?php _e( 'In-Process WordPress PHPMailer', 'leanstack' ); ?></strong>
+                    <p style="margin: 6px 0 0; font-size: 13px; color: #50575e;">
+                        <?php if ( ! empty( $smtp_cfg['enabled'] ) ) : ?>
+                            <span class="dashicons dashicons-yes-alt" style="color: #00a32a; vertical-align: middle;"></span>
+                            <strong style="color: #00a32a;"><?php _e( 'Active (Authenticated TLS)', 'leanstack' ); ?></strong>
+                            <br><small style="color: #646970;"><?php printf( __( 'Source: %s', 'leanstack' ), esc_html( ucfirst( $smtp_cfg['source'] ) ) ); ?></small>
+                        <?php else : ?>
+                            <span class="dashicons dashicons-marker" style="color: #dba617; vertical-align: middle;"></span>
+                            <span style="color: #646970;"><?php _e( 'Disabled (Using PHP fallback)', 'leanstack' ); ?></span>
+                        <?php endif; ?>
+                    </p>
+                </div>
+
+                <div style="background: #f6f7f7; border: 1px solid #dcdcde; border-radius: 4px; padding: 15px;">
+                    <strong style="color: #1d2327; font-size: 13px;"><?php _e( 'OS Lightweight Relay (msmtp)', 'leanstack' ); ?></strong>
+                    <p style="margin: 6px 0 0; font-size: 13px; color: #50575e;">
+                        <?php if ( $msmtp_bin_exists ) : ?>
+                            <span class="dashicons dashicons-yes-alt" style="color: #00a32a; vertical-align: middle;"></span>
+                            <strong style="color: #00a32a;"><?php _e( 'Installed (/usr/bin/msmtp)', 'leanstack' ); ?></strong>
+                        <?php else : ?>
+                            <span class="dashicons dashicons-warning" style="color: #dba617; vertical-align: middle;"></span>
+                            <span style="color: #b26b00;"><?php _e( 'Optional (Package msmtp recommended)', 'leanstack' ); ?></span>
+                        <?php endif; ?>
+                        <br><small style="color: #646970;"><?php echo $msmtprc_exists ? __( 'Tenant .msmtprc active (0600)', 'leanstack' ) : __( 'Tenant .msmtprc pending save', 'leanstack' ); ?></small>
+                    </p>
+                </div>
+
+                <div style="background: #f6f7f7; border: 1px solid #dcdcde; border-radius: 4px; padding: 15px;">
+                    <strong style="color: #1d2327; font-size: 13px;"><?php _e( 'Zero Daemon Overhead', 'leanstack' ); ?></strong>
+                    <p style="margin: 6px 0 0; font-size: 13px; color: #50575e;">
+                        <span class="dashicons dashicons-shield" style="color: #00a32a; vertical-align: middle;"></span>
+                        <strong style="color: #00a32a;"><?php _e( '0 MB RAM at idle', 'leanstack' ); ?></strong>
+                        <br><small style="color: #646970;"><?php _e( 'Zero shared IP blacklisting risk', 'leanstack' ); ?></small>
+                    </p>
+                </div>
+            </div>
+
+            <?php if ( ! empty( $last_error ) ) : ?>
+                <div class="notice notice-warning inline" style="margin: 15px 0; padding: 12px; border-left-color: #dba617;">
+                    <p><strong><span class="dashicons dashicons-warning" style="color: #dba617; vertical-align: middle;"></span> <?php _e( 'Recent Mail Delivery Notice:', 'leanstack' ); ?></strong> <?php echo esc_html( $last_error ); ?></p>
+                </div>
+            <?php endif; ?>
+
+            <hr style="margin: 25px 0; border: 0; border-top: 1px solid #eee;">
+
+            <h4><?php _e( 'Provider Quick Presets', 'leanstack' ); ?></h4>
+            <p style="color: #646970; font-size: 13px;"><?php _e( 'Choose your transactional email provider to automatically populate recommended host and port configurations:', 'leanstack' ); ?></p>
+            <div style="margin-bottom: 20px;">
+                <button type="button" class="button ls-smtp-preset" data-host="smtp.sendgrid.net" data-port="587" data-enc="tls" data-user="apikey"><?php _e( 'SendGrid', 'leanstack' ); ?></button>
+                <button type="button" class="button ls-smtp-preset" data-host="smtp.postmarkapp.com" data-port="587" data-enc="tls"><?php _e( 'Postmark', 'leanstack' ); ?></button>
+                <button type="button" class="button ls-smtp-preset" data-host="email-smtp.us-east-1.amazonaws.com" data-port="587" data-enc="tls"><?php _e( 'Amazon SES', 'leanstack' ); ?></button>
+                <button type="button" class="button ls-smtp-preset" data-host="smtp-relay.brevo.com" data-port="587" data-enc="tls"><?php _e( 'Brevo', 'leanstack' ); ?></button>
+                <button type="button" class="button ls-smtp-preset" data-host="smtp.mailgun.org" data-port="587" data-enc="tls"><?php _e( 'Mailgun', 'leanstack' ); ?></button>
+            </div>
+
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <?php wp_nonce_field( 'leanstack_smtp_action', 'leanstack_nonce' ); ?>
+                <input type="hidden" name="action" value="leanstack_save_smtp">
+
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><?php _e( 'Authenticated Delivery', 'leanstack' ); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="smtp_enabled" value="1" <?php checked( ! empty( $smtp_cfg['enabled'] ) ); ?> <?php disabled( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ); ?>>
+                                <strong><?php _e( 'Enable Authenticated SMTP Delivery for WordPress', 'leanstack' ); ?></strong>
+                            </label>
+                            <?php if ( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ) : ?>
+                                <p class="description"><span class="dashicons dashicons-lock" style="font-size: 14px; vertical-align: middle;"></span> <?php printf( __( 'Managed by %s override.', 'leanstack' ), esc_html( $smtp_cfg['source'] ) ); ?></p>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="ls_smtp_host"><?php _e( 'SMTP Host', 'leanstack' ); ?></label></th>
+                        <td>
+                            <input type="text" id="ls_smtp_host" name="smtp_host" value="<?php echo esc_attr( $smtp_cfg['host'] ); ?>" class="regular-text" placeholder="e.g., smtp.sendgrid.net" <?php disabled( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ); ?>>
+                            <p class="description"><?php _e( 'The outgoing SMTP host provided by your transactional email service.', 'leanstack' ); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="ls_smtp_port"><?php _e( 'SMTP Port', 'leanstack' ); ?></label></th>
+                        <td>
+                            <input type="number" id="ls_smtp_port" name="smtp_port" value="<?php echo (int) $smtp_cfg['port']; ?>" class="small-text" <?php disabled( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ); ?>>
+                            <p class="description"><?php _e( 'Standard ports: 587 (STARTTLS, recommended), 465 (SMTPS), 2525 (Alternative).', 'leanstack' ); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="ls_smtp_enc"><?php _e( 'Encryption Protocol', 'leanstack' ); ?></label></th>
+                        <td>
+                            <select id="ls_smtp_enc" name="smtp_encryption" <?php disabled( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ); ?>>
+                                <option value="tls" <?php selected( 'tls', $smtp_cfg['encryption'] ); ?>><?php _e( 'TLS / STARTTLS (Port 587)', 'leanstack' ); ?></option>
+                                <option value="ssl" <?php selected( 'ssl', $smtp_cfg['encryption'] ); ?>><?php _e( 'SSL / SMTPS (Port 465)', 'leanstack' ); ?></option>
+                                <option value="none" <?php selected( 'none', $smtp_cfg['encryption'] ); ?>><?php _e( 'None (Insecure / Internal Relay)', 'leanstack' ); ?></option>
+                            </select>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php _e( 'Authentication Required', 'leanstack' ); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="smtp_auth" value="1" <?php checked( ! empty( $smtp_cfg['auth'] ) ); ?> <?php disabled( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ); ?>>
+                                <?php _e( 'This SMTP server requires authentication (Username/Password)', 'leanstack' ); ?>
+                            </label>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="ls_smtp_user"><?php _e( 'SMTP Username / API Key', 'leanstack' ); ?></label></th>
+                        <td>
+                            <input type="text" id="ls_smtp_user" name="smtp_user" value="<?php echo esc_attr( $smtp_cfg['user'] ); ?>" class="regular-text" autocomplete="off" <?php disabled( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ); ?>>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="ls_smtp_pass"><?php _e( 'SMTP Password / Secret', 'leanstack' ); ?></label></th>
+                        <td>
+                            <input type="password" id="ls_smtp_pass" name="smtp_pass" value="<?php echo esc_attr( $smtp_cfg['pass'] ); ?>" class="regular-text" autocomplete="new-password" <?php disabled( 'constant' === $smtp_cfg['source'] || 'environment' === $smtp_cfg['source'] ); ?>>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="ls_from_email"><?php _e( 'From Email Address', 'leanstack' ); ?></label></th>
+                        <td>
+                            <input type="email" id="ls_from_email" name="from_email" value="<?php echo esc_attr( ! empty( $smtp_cfg['from_email'] ) ? $smtp_cfg['from_email'] : get_option( 'admin_email' ) ); ?>" class="regular-text" placeholder="noreply@yourdomain.com">
+                            <p class="description"><?php _e( 'Must match a verified sender domain in your email service provider to guarantee SPF/DKIM/DMARC pass.', 'leanstack' ); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="ls_from_name"><?php _e( 'From Name', 'leanstack' ); ?></label></th>
+                        <td>
+                            <input type="text" id="ls_from_name" name="from_name" value="<?php echo esc_attr( ! empty( $smtp_cfg['from_name'] ) ? $smtp_cfg['from_name'] : get_bloginfo( 'name' ) ); ?>" class="regular-text">
+                        </td>
+                    </tr>
+                </table>
+
+                <p class="submit">
+                    <button type="submit" class="button button-primary"><?php _e( 'Save & Sync SMTP Settings', 'leanstack' ); ?></button>
+                </p>
+            </form>
+
+            <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;">
+
+            <h4><?php _e( 'Diagnostic Delivery Test', 'leanstack' ); ?></h4>
+            <p style="color: #646970; font-size: 13px;"><?php _e( 'Send a test email using active SMTP credentials to verify socket connection and authentication handshake:', 'leanstack' ); ?></p>
+
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <?php wp_nonce_field( 'leanstack_smtp_test_action', 'leanstack_nonce' ); ?>
+                <input type="hidden" name="action" value="leanstack_send_smtp_test">
+
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="ls_test_email"><?php _e( 'Recipient Email', 'leanstack' ); ?></label></th>
+                        <td>
+                            <input type="email" id="ls_test_email" name="test_email" value="<?php echo esc_attr( $default_test_email ); ?>" class="regular-text" required>
+                            <button type="submit" class="button button-secondary" style="margin-left: 8px;">
+                                <span class="dashicons dashicons-email-alt" style="vertical-align: text-bottom;"></span> <?php _e( 'Send Test Email', 'leanstack' ); ?>
+                            </button>
+                        </td>
+                    </tr>
+                </table>
+            </form>
+        </div>
+
+        <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            var presets = document.querySelectorAll('.ls-smtp-preset');
+            presets.forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var host = this.getAttribute('data-host');
+                    var port = this.getAttribute('data-port');
+                    var enc = this.getAttribute('data-enc');
+                    var user = this.getAttribute('data-user');
+
+                    if (host) document.getElementById('ls_smtp_host').value = host;
+                    if (port) document.getElementById('ls_smtp_port').value = port;
+                    if (enc) document.getElementById('ls_smtp_enc').value = enc;
+                    if (user) document.getElementById('ls_smtp_user').value = user;
+                });
+            });
+        });
+        </script>
+        <?php
+    }
+
+    public function handle_save_smtp() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_smtp_action', 'leanstack_nonce' );
+
+        $enabled    = ! empty( $_POST['smtp_enabled'] );
+        $host       = isset( $_POST['smtp_host'] ) ? sanitize_text_field( wp_unslash( $_POST['smtp_host'] ) ) : '';
+        $port       = isset( $_POST['smtp_port'] ) ? (int) $_POST['smtp_port'] : 587;
+        $encryption = isset( $_POST['smtp_encryption'] ) ? sanitize_key( wp_unslash( $_POST['smtp_encryption'] ) ) : 'tls';
+        $auth       = ! empty( $_POST['smtp_auth'] );
+        $user       = isset( $_POST['smtp_user'] ) ? sanitize_text_field( wp_unslash( $_POST['smtp_user'] ) ) : '';
+        $pass       = isset( $_POST['smtp_pass'] ) ? sanitize_text_field( wp_unslash( $_POST['smtp_pass'] ) ) : '';
+        $from_email = isset( $_POST['from_email'] ) ? sanitize_email( wp_unslash( $_POST['from_email'] ) ) : '';
+        $from_name  = isset( $_POST['from_name'] ) ? sanitize_text_field( wp_unslash( $_POST['from_name'] ) ) : '';
+
+        $settings = array(
+            'enabled'    => $enabled,
+            'host'       => $host,
+            'port'       => $port,
+            'encryption' => $encryption,
+            'auth'       => $auth,
+            'user'       => $user,
+            'pass'       => $pass,
+            'from_email' => $from_email,
+            'from_name'  => $from_name,
+        );
+
+        update_option( 'leanstack_smtp_settings', $settings );
+
+        // Synchronize with OS msmtp relay configuration (/home/{user}/.msmtprc)
+        if ( function_exists( 'leanstack_sync_msmtprc' ) ) {
+            leanstack_sync_msmtprc( $settings );
+        } else {
+            $home_dir = dirname( rtrim( ABSPATH, '/' ) );
+            $msmtprc = $home_dir . '/.msmtprc';
+            if ( is_dir( $home_dir ) && ( is_writable( $home_dir ) || file_exists( $msmtprc ) ) ) {
+                $tls_mode = ( 'ssl' === $encryption || 'tls' === $encryption ) ? 'on' : 'off';
+                $content  = "# LeanStack Lightweight OS Mail Relay Configuration\n";
+                $content .= "# Strict permissions enforced: chmod 600\n";
+                $content .= "defaults\n";
+                $content .= "auth           " . ( $auth ? 'on' : 'off' ) . "\n";
+                $content .= "tls            " . $tls_mode . "\n";
+                if ( 'on' === $tls_mode ) {
+                    $content .= "tls_trust_file /etc/ssl/certs/ca-certificates.crt\n";
+                }
+                $content .= "\naccount        default\n";
+                $content .= "host           " . ( $host ? $host : '127.0.0.1' ) . "\n";
+                $content .= "port           " . $port . "\n";
+                $content .= "from           " . ( $from_email ? $from_email : get_option( 'admin_email' ) ) . "\n";
+                $content .= "user           " . ( $user ? $user : 'none' ) . "\n";
+                $content .= "password       " . ( $pass ? $pass : 'none' ) . "\n";
+                @file_put_contents( $msmtprc, $content );
+                @chmod( $msmtprc, 0600 );
+            }
+        }
+
+        wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'saved_smtp' => '1' ), admin_url( 'tools.php' ) ) );
+        exit;
+    }
+
+    public function handle_send_smtp_test() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_smtp_test_action', 'leanstack_nonce' );
+
+        $to = isset( $_POST['test_email'] ) ? sanitize_email( wp_unslash( $_POST['test_email'] ) ) : '';
+        if ( empty( $to ) || ! is_email( $to ) ) {
+            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_error' => urlencode( 'Invalid recipient email.' ) ), admin_url( 'tools.php' ) ) );
+            exit;
+        }
+
+        $mail_error = '';
+        $error_catcher = function( $wp_error ) use ( &$mail_error ) {
+            if ( is_wp_error( $wp_error ) ) {
+                $mail_error = $wp_error->get_error_message();
+            }
+        };
+        add_action( 'wp_mail_failed', $error_catcher );
+
+        $site_name = get_bloginfo( 'name' );
+        $subject = sprintf( '[%s] LeanStack Transactional Email Test', $site_name );
+        $message  = "Congratulations!\n\n";
+        $message .= "Your transactional email delivery pipeline on LeanStack is functioning flawlessly.\n\n";
+        $message .= "Delivery Mode: Authenticated Zero-Daemon SMTP\n";
+        $message .= "Site: " . home_url() . "\n";
+        $message .= "Timestamp: " . $this->format_site_time( time() ) . "\n";
+
+        $sent = wp_mail( $to, $subject, $message );
+        remove_action( 'wp_mail_failed', $error_catcher );
+
+        if ( $sent ) {
+            delete_transient( 'leanstack_last_mail_error' );
+            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_sent' => urlencode( $to ) ), admin_url( 'tools.php' ) ) );
+        } else {
+            $err_msg = ! empty( $mail_error ) ? $mail_error : 'Unknown delivery failure. Check SMTP host, credentials, or recipient firewall.';
+            set_transient( 'leanstack_last_mail_error', $err_msg, 3600 );
+            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_error' => urlencode( $err_msg ) ), admin_url( 'tools.php' ) ) );
+        }
+        exit;
     }
 
     // =========================================================================
@@ -2254,7 +2702,7 @@ class LeanStackBridge {
                 'writable'    => is_writable( $wp_debug_path ) || ( ! file_exists( $wp_debug_path ) && is_writable( dirname( $wp_debug_path ) ) ),
                 'size'        => ( file_exists( $wp_debug_path ) && is_readable( $wp_debug_path ) ) ? (int) filesize( $wp_debug_path ) : 0,
                 'size_human'  => ( file_exists( $wp_debug_path ) && is_readable( $wp_debug_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $wp_debug_path ), 2 ) : ( filesize( $wp_debug_path ) . ' B' ) ) : '0 B',
-                'modified'    => ( file_exists( $wp_debug_path ) && is_readable( $wp_debug_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $wp_debug_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+                'modified'    => ( file_exists( $wp_debug_path ) && is_readable( $wp_debug_path ) ) ? $this->format_site_time( filemtime( $wp_debug_path ) ) : __( 'Never / Not Created', 'leanstack' ),
             );
         }
 
@@ -2272,7 +2720,7 @@ class LeanStackBridge {
                 'writable'    => is_writable( $php_slow_path ) || ( ! file_exists( $php_slow_path ) && is_writable( dirname( $php_slow_path ) ) ),
                 'size'        => ( file_exists( $php_slow_path ) && is_readable( $php_slow_path ) ) ? (int) filesize( $php_slow_path ) : 0,
                 'size_human'  => ( file_exists( $php_slow_path ) && is_readable( $php_slow_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $php_slow_path ), 2 ) : ( filesize( $php_slow_path ) . ' B' ) ) : '0 B',
-                'modified'    => ( file_exists( $php_slow_path ) && is_readable( $php_slow_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $php_slow_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+                'modified'    => ( file_exists( $php_slow_path ) && is_readable( $php_slow_path ) ) ? $this->format_site_time( filemtime( $php_slow_path ) ) : __( 'Never / Not Created', 'leanstack' ),
             );
         }
 
@@ -2290,7 +2738,7 @@ class LeanStackBridge {
                 'writable'    => is_writable( $angie_err_path ) || ( ! file_exists( $angie_err_path ) && is_writable( dirname( $angie_err_path ) ) ),
                 'size'        => ( file_exists( $angie_err_path ) && is_readable( $angie_err_path ) ) ? (int) filesize( $angie_err_path ) : 0,
                 'size_human'  => ( file_exists( $angie_err_path ) && is_readable( $angie_err_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $angie_err_path ), 2 ) : ( filesize( $angie_err_path ) . ' B' ) ) : '0 B',
-                'modified'    => ( file_exists( $angie_err_path ) && is_readable( $angie_err_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $angie_err_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+                'modified'    => ( file_exists( $angie_err_path ) && is_readable( $angie_err_path ) ) ? $this->format_site_time( filemtime( $angie_err_path ) ) : __( 'Never / Not Created', 'leanstack' ),
             );
         }
 
@@ -2308,7 +2756,25 @@ class LeanStackBridge {
                 'writable'    => is_writable( $angie_acc_path ) || ( ! file_exists( $angie_acc_path ) && is_writable( dirname( $angie_acc_path ) ) ),
                 'size'        => ( file_exists( $angie_acc_path ) && is_readable( $angie_acc_path ) ) ? (int) filesize( $angie_acc_path ) : 0,
                 'size_human'  => ( file_exists( $angie_acc_path ) && is_readable( $angie_acc_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $angie_acc_path ), 2 ) : ( filesize( $angie_acc_path ) . ' B' ) ) : '0 B',
-                'modified'    => ( file_exists( $angie_acc_path ) && is_readable( $angie_acc_path ) ) ? date_i18n( 'Y-m-d H:i:s', filemtime( $angie_acc_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+                'modified'    => ( file_exists( $angie_acc_path ) && is_readable( $angie_acc_path ) ) ? $this->format_site_time( filemtime( $angie_acc_path ) ) : __( 'Never / Not Created', 'leanstack' ),
+            );
+        }
+
+        // 5. msmtp Lightweight OS Mail Relay Log
+        $msmtp_log_path = $logs_dir . '/msmtp.log';
+        if ( $this->is_valid_log_path( $msmtp_log_path ) ) {
+            $logs['msmtp'] = array(
+                'id'          => 'msmtp',
+                'name'        => __( 'msmtp Mail Relay Log', 'leanstack' ),
+                'path'        => $msmtp_log_path,
+                'filename'    => basename( $msmtp_log_path ),
+                'description' => __( 'Outgoing transactional email delivery attempts, TLS handshake logs, and SMTP relay status codes.', 'leanstack' ),
+                'exists'      => file_exists( $msmtp_log_path ),
+                'readable'    => is_readable( $msmtp_log_path ),
+                'writable'    => is_writable( $msmtp_log_path ) || ( ! file_exists( $msmtp_log_path ) && is_writable( dirname( $msmtp_log_path ) ) ),
+                'size'        => ( file_exists( $msmtp_log_path ) && is_readable( $msmtp_log_path ) ) ? (int) filesize( $msmtp_log_path ) : 0,
+                'size_human'  => ( file_exists( $msmtp_log_path ) && is_readable( $msmtp_log_path ) ) ? ( function_exists( 'size_format' ) ? size_format( filesize( $msmtp_log_path ), 2 ) : ( filesize( $msmtp_log_path ) . ' B' ) ) : '0 B',
+                'modified'    => ( file_exists( $msmtp_log_path ) && is_readable( $msmtp_log_path ) ) ? $this->format_site_time( filemtime( $msmtp_log_path ) ) : __( 'Never / Not Created', 'leanstack' ),
             );
         }
 
@@ -2588,7 +3054,7 @@ class LeanStackBridge {
         $content = $exists ? $this->read_log_tail( $target, 300 ) : '';
         $size = $exists ? (int) filesize( $target ) : 0;
         $size_human = $exists ? ( function_exists( 'size_format' ) ? size_format( $size, 2 ) : ( $size . ' B' ) ) : '0 B';
-        $mod = $exists ? date_i18n( 'Y-m-d H:i:s', filemtime( $target ) ) : __( 'Never / Not Created', 'leanstack' );
+        $mod = $exists ? $this->format_site_time( filemtime( $target ) ) : __( 'Never / Not Created', 'leanstack' );
 
         wp_send_json_success( array(
             'log_id'         => $log_id,

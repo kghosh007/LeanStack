@@ -915,6 +915,225 @@ class LeanStackUpgrader:
             self.log(f"Reconciled Angie TLS 1.2/1.3 ECDHE ciphers, curves & HTTP/2 across {len(modified_files)} file(s)", Colors.GREEN, prefix="  ✔")
         return True
 
+    def reconcile_mariadb_tuning(self, conf_dir: str = "/etc/mysql/mariadb.conf.d") -> bool:
+        """
+        Reconciles MariaDB 99-leanstack-highqps.cnf with the latest High-QPS engine profile:
+        - Dynamically sized in-memory filesort buffers (1M-4M) eliminating on-disk merge spills.
+        - Aria pagecache (64M-256M) and Aria sort buffer (32M) for in-memory temporary tables.
+        - Elimination of legacy query cache mutex serialization (query_cache_type = 0, size = 0).
+        - Subquery cache, semijoin, and index condition pushdown in optimizer_switch.
+        - Adaptive hash index and secondary index change buffering.
+        """
+        if not os.path.isdir(conf_dir):
+            return False
+
+        try:
+            ram_mb = 2048
+            if os.path.exists("/proc/meminfo"):
+                with open("/proc/meminfo", "r") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            ram_mb = int(line.split()[1]) // 1024
+                            break
+            cores = os.cpu_count() or 1
+
+            if ram_mb <= 2048:
+                bp_mb = 512
+                bp_inst = 1
+                sort_buf = "1M"
+                join_buf = "1M"
+                read_rnd = "512K"
+                aria_page = "64M"
+                max_conn = 150
+            elif ram_mb <= 4096:
+                bp_mb = int(ram_mb * 0.35)
+                bp_inst = 2
+                sort_buf = "2M"
+                join_buf = "2M"
+                read_rnd = "1M"
+                aria_page = "128M"
+                max_conn = 300
+            elif ram_mb <= 8192:
+                bp_mb = 2800 if ram_mb >= 6000 else int(ram_mb * 0.40)
+                bp_inst = 2
+                sort_buf = "2M"
+                join_buf = "2M"
+                read_rnd = "1M"
+                aria_page = "128M"
+                max_conn = 300
+            else:
+                bp_mb = int(ram_mb * 0.55)
+                bp_inst = min(cores, max(1, bp_mb // 1024))
+                sort_buf = "4M"
+                join_buf = "4M"
+                read_rnd = "2M"
+                aria_page = "256M"
+                max_conn = 500
+
+            table_inst = min(cores, 16)
+            log_mb = min(bp_mb // 4, 1024)
+
+            conf_path = os.path.join(conf_dir, "99-leanstack-highqps.cnf")
+            conf_content = f"""[mysqld]
+# ==============================================================================
+# LeanStack MariaDB High-QPS Tuning Profile
+# Solves SELECT & UPDATE Bottlenecks (Eliminates L2 cache overflow & gap locks)
+# ==============================================================================
+
+# --- Security Hardening ---
+bind-address                   = 127.0.0.1
+local-infile                   = 0
+
+# --- Connection & Thread Model ---
+thread_handling                = one-thread-per-connection
+thread_cache_size              = 128
+max_connections                = {max_conn}
+back_log                       = 512
+
+# --- Eliminate Profiling, Binary Log & Query Cache Mutex Contention ---
+performance_schema             = OFF
+skip-log-bin
+skip-name-resolve              = 1
+query_cache_type               = 0
+query_cache_size               = 0
+
+# --- Transaction Concurrency & Gap Lock Elimination ---
+transaction_isolation          = READ-COMMITTED
+
+# --- InnoDB Buffer Pool ---
+innodb_buffer_pool_size        = {bp_mb}M
+innodb_buffer_pool_instances   = {bp_inst}
+innodb_buffer_pool_dump_at_shutdown = ON
+innodb_buffer_pool_load_at_startup  = ON
+
+# --- Redo Log & High-Throughput Transaction Writes ---
+innodb_log_file_size           = {log_mb}M
+innodb_log_buffer_size         = 64M
+innodb_flush_log_at_trx_commit = 2
+innodb_flush_method            = O_DIRECT
+innodb_autoinc_lock_mode       = 2
+innodb_adaptive_hash_index     = 1
+innodb_change_buffering        = all
+
+# --- NVMe Storage & I/O Tuning ---
+innodb_io_capacity             = 4000
+innodb_io_capacity_max         = 8000
+innodb_read_io_threads         = 4
+innodb_write_io_threads        = 4
+innodb_flush_neighbors         = 0
+
+# --- In-Memory Sorting & Query Buffers ---
+sort_buffer_size               = {sort_buf}
+join_buffer_size               = {join_buf}
+read_buffer_size               = 512K
+read_rnd_buffer_size           = {read_rnd}
+
+# --- Query Optimizer: Cost-Based with MRR Acceleration & Subquery Cache ---
+optimizer_switch               = 'mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on'
+
+# --- In-Memory Temporary Tables & Aria Page Cache ---
+tmp_table_size                 = 64M
+max_heap_table_size            = 64M
+aria_pagecache_buffer_size     = {aria_page}
+aria_sort_buffer_size          = 32M
+
+# --- Multi-vCPU Table Cache Partitioning ---
+table_open_cache               = 4096
+table_open_cache_instances     = {table_inst}
+table_definition_cache         = 2048
+
+# --- Character Sets ---
+character-set-server           = utf8mb4
+collation-server               = utf8mb4_unicode_520_ci
+"""
+            changed = False
+            if os.path.exists(conf_path):
+                try:
+                    with open(conf_path, "r", encoding="utf-8") as f:
+                        old_conf = f.read()
+                    if old_conf.strip() != conf_content.strip():
+                        changed = True
+                except Exception:
+                    changed = True
+            else:
+                changed = True
+
+            if changed and not self.dry_run:
+                os.makedirs(conf_dir, exist_ok=True)
+                with open(conf_path, "w", encoding="utf-8") as f:
+                    f.write(conf_content)
+                self.log(f"Reconciled MariaDB High-QPS configuration at {conf_path}", Colors.GREEN, prefix="  ✔")
+                if shutil.which("systemctl") and hasattr(os, "geteuid") and os.geteuid() == 0:
+                    if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", "mariadb"], check=False).returncode == 0:
+                        subprocess.run(["systemctl", "--no-ask-password", "restart", "mariadb"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        self.log("MariaDB service restarted with high-QPS profile.", Colors.GREEN, prefix="  ✔")
+            return True
+        except Exception as e:
+            self.log(f"Notice: MariaDB tuning reconciliation: {e}", Colors.DIM, prefix="  ℹ")
+            return False
+
+    def reconcile_php_opcache(self) -> bool:
+        """
+        Reconciles OPcache & JIT and global date.timezone across all installed PHP versions:
+        - Drops /etc/php/{p_ver}/fpm/conf.d/99-leanstack-opcache.ini ensuring JIT is active.
+        - Sets date.timezone = UTC in php.ini to eliminate filesystem stat(/etc/localtime) calls.
+        """
+        reloaded = False
+        opcache_ini_content = """; --- LeanStack High-Performance OPcache & JIT Profile ---
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 256
+opcache.interned_strings_buffer = 32
+opcache.max_accelerated_files = 30000
+opcache.revalidate_freq = 60
+opcache.validate_timestamps = 1
+opcache.save_comments = 1
+opcache.fast_shutdown = 1
+opcache.validate_permission = 1
+opcache.validate_root = 1
+opcache.jit = tracing
+opcache.jit_buffer_size = 64M
+opcache.jit_max_root_traces = 5000
+opcache.jit_max_side_traces = 5000
+opcache.jit_hot_loop = 1
+"""
+        for p_ver in ["8.5", "8.4", "8.3", "8.2", "8.1"]:
+            php_dir = f"/etc/php/{p_ver}"
+            if not os.path.isdir(php_dir):
+                continue
+            try:
+                for target_sub in ["fpm", "cli"]:
+                    conf_d = os.path.join(php_dir, target_sub, "conf.d")
+                    if os.path.isdir(conf_d) and not self.dry_run:
+                        opc_path = os.path.join(conf_d, "99-leanstack-opcache.ini")
+                        write_needed = True
+                        if os.path.isfile(opc_path):
+                            with open(opc_path, "r", encoding="utf-8") as f:
+                                if f.read().strip() == opcache_ini_content.strip():
+                                    write_needed = False
+                        if write_needed:
+                            with open(opc_path, "w", encoding="utf-8") as f:
+                                f.write(opcache_ini_content)
+                            reloaded = True
+
+                    ini_path = os.path.join(php_dir, target_sub, "php.ini")
+                    if os.path.isfile(ini_path) and not self.dry_run:
+                        with open(ini_path, "r", encoding="utf-8") as f:
+                            ini_data = f.read()
+                        if not re.search(r"^date\.timezone\s*=\s*UTC", ini_data, re.M):
+                            if re.search(r"^;*date\.timezone\s*=.*", ini_data, re.M):
+                                ini_data = re.sub(r"^;*date\.timezone\s*=.*", "date.timezone = UTC", ini_data, flags=re.M)
+                            else:
+                                ini_data += "\ndate.timezone = UTC\n"
+                            with open(ini_path, "w", encoding="utf-8") as f:
+                                f.write(ini_data)
+                            reloaded = True
+            except Exception as e:
+                self.log(f"Notice: PHP OPcache reconciliation for {p_ver}: {e}", Colors.DIM, prefix="  ℹ")
+        if reloaded:
+            self.log("Reconciled PHP OPcache JIT & date.timezone=UTC across installed PHP versions.", Colors.GREEN, prefix="  ✔")
+        return reloaded
+
     def reconcile_pool_content(self, content: str, user: str) -> tuple[str, bool]:
         """
         Reconciles PHP-FPM pool configuration for tenant sandboxing:
@@ -981,6 +1200,11 @@ class LeanStackUpgrader:
             p_content = p_content.strip() + "\nphp_admin_flag[apc.enabled] = on\n"
             p_changed = True
 
+        # 5. Lightweight OS Mail Relay (msmtp)
+        if "sendmail_path" not in p_content:
+            p_content = p_content.strip() + f'\nphp_admin_value[sendmail_path] = "/usr/bin/msmtp -C /home/{user}/.msmtprc -t -i"\n'
+            p_changed = True
+
         return p_content, p_changed
 
     def sync_tenants(self) -> int:
@@ -1012,6 +1236,7 @@ class LeanStackUpgrader:
             ("leanstack-holepunch.php.tpl", "leanstack-holepunch.php"),
             ("leanstack-apcu.php.tpl", "leanstack-apcu.php"),
             ("leanstack-shield.php.tpl", "leanstack-shield.php"),
+            ("leanstack-smtp.php.tpl", "leanstack-smtp.php"),
         ]
 
         for s in sites:
@@ -1078,6 +1303,38 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                         shutil.copy2(sec_hdr, prod_sec_hdr)
                     elif not os.path.exists(prod_sec_hdr):
                         shutil.copy2(sec_hdr, prod_sec_hdr)
+
+                    # Ensure .msmtprc exists with strict 0600 permissions
+                    msmtprc = f"/home/{user}/.msmtprc"
+                    if not os.path.exists(msmtprc):
+                        try:
+                            with open(msmtprc, "w") as mf:
+                                mf.write(f"""# LeanStack Lightweight OS Mail Relay Configuration (msmtp)
+# Strict permissions enforced: chmod 600
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        /home/{user}/logs/msmtp.log
+
+account        default
+host           127.0.0.1
+port           587
+from           noreply@{domain}
+user           none
+password       none
+""")
+                            import pwd
+                            u_info = pwd.getpwnam(user)
+                            os.chown(msmtprc, u_info.pw_uid, u_info.pw_gid)
+                            os.chmod(msmtprc, 0o600)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            os.chmod(msmtprc, 0o600)
+                        except Exception:
+                            pass
 
                 # 3. Ensure Dedicated Cache Directory, Group Access & Angie Zone Exist
                 try:
@@ -1662,6 +1919,8 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                 self.sync_binaries()
                 self.sync_templates_and_profiles()
                 self.reconcile_angie_tls()
+                self.reconcile_mariadb_tuning()
+                self.reconcile_php_opcache()
             except Exception:
                 pass
 
@@ -1831,10 +2090,14 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
         if not self.reconcile_angie_tls():
             return False
 
-        # 7. Tenant reconciliation
+        # 7. Database Engine & PHP OPcache High-QPS Tuning Reconciliation
+        self.reconcile_mariadb_tuning()
+        self.reconcile_php_opcache()
+
+        # 8. Tenant reconciliation
         self.sync_tenants()
 
-        # 8. Reload
+        # 9. Reload
         if not self.reload_services():
             return False
 

@@ -32,9 +32,11 @@ class TestHardwareTuning(unittest.TestCase):
         # MariaDB buffer pool capped safely at 512M
         self.assertEqual(m["innodb_buffer_pool_size"], "512M")
         self.assertEqual(m["innodb_buffer_pool_instances"], 1)
-        self.assertEqual(m["sort_buffer_size"], "256K")
+        self.assertEqual(m["sort_buffer_size"], "1M")
         self.assertEqual(m["transaction_isolation"], "READ-COMMITTED")
         self.assertEqual(m["mrr_cost_based"], "on")
+        self.assertEqual(m["query_cache_type"], 0)
+        self.assertEqual(m["aria_pagecache_buffer_size"], "64M")
 
         # Valkey 10% (min 128MB)
         self.assertEqual(v["maxmemory"], "128mb")
@@ -53,9 +55,11 @@ class TestHardwareTuning(unittest.TestCase):
         # Exactly 2800M buffer pool as proven in tuning teardown
         self.assertEqual(m["innodb_buffer_pool_size"], "2800M")
         self.assertEqual(m["innodb_buffer_pool_instances"], 2)
-        self.assertEqual(m["sort_buffer_size"], "256K")
+        self.assertEqual(m["sort_buffer_size"], "2M")
         self.assertEqual(m["table_open_cache_instances"], 4)
         self.assertEqual(m["transaction_isolation"], "READ-COMMITTED")
+        self.assertEqual(m["query_cache_type"], 0)
+        self.assertEqual(m["aria_pagecache_buffer_size"], "128M")
 
         # Valkey ~614MB
         self.assertEqual(v["maxmemory"], "614mb")
@@ -73,8 +77,9 @@ class TestHardwareTuning(unittest.TestCase):
         # 55% buffer pool (~9011M)
         self.assertGreaterEqual(m["innodb_buffer_pool_size_mb"], 8000)
         self.assertEqual(m["innodb_buffer_pool_instances"], 8)
-        self.assertEqual(m["sort_buffer_size"], "512K")
+        self.assertEqual(m["sort_buffer_size"], "4M")
         self.assertEqual(m["table_open_cache_instances"], 8)
+        self.assertEqual(m["aria_pagecache_buffer_size"], "256M")
 
         # Valkey capped at 10% (~1638MB)
         self.assertEqual(v["maxmemory_mb"], 1638)
@@ -85,7 +90,7 @@ class TestHardwareTuning(unittest.TestCase):
             for cores in [1, 2, 4, 8, 16, 32]:
                 p = self.get_profile_for(ram_mb=ram, cores=cores)
                 sort_buf = p["mariadb"]["sort_buffer_size"]
-                self.assertIn(sort_buf, ["256K", "512K"])
+                self.assertIn(sort_buf, ["1M", "2M", "4M"])
                 self.assertNotEqual(sort_buf, "16M")
 
     def test_angie_tls_ecdhe_and_pqc_probing(self):

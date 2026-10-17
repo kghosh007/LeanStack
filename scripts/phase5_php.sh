@@ -53,7 +53,7 @@ done
 # If no specific version package was found, check default php-fpm
 if [ ${#AVAILABLE_VERSIONS[@]} -eq 0 ]; then
     echo ">>> [Phase 5] Installing default distribution PHP-FPM runtime..."
-    apt-get install -y -qq php-fpm php-mysql php-redis php-curl php-gd php-mbstring php-xml php-zip php-imagick php-bcmath php-intl php-apcu 2>/dev/null || true
+    apt-get install -y -qq php-fpm php-mysql php-redis php-curl php-gd php-mbstring php-xml php-zip php-imagick php-bcmath php-intl php-apcu msmtp msmtp-mta 2>/dev/null || true
     DEF_VER=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;' 2>/dev/null || echo "8.5")
     AVAILABLE_VERSIONS+=("$DEF_VER")
 fi
@@ -78,7 +78,7 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
         fi
     done
 
-    apt-get install -y -qq $PKGS 2>/dev/null || apt-get install -y -qq "php${VER}-fpm" 2>/dev/null || true
+    apt-get install -y -qq $PKGS msmtp msmtp-mta 2>/dev/null || apt-get install -y -qq "php${VER}-fpm" msmtp msmtp-mta 2>/dev/null || true
 
     # Tune Master php.ini for this version if installed
     FPM_INI="/etc/php/${VER}/fpm/php.ini"
@@ -98,9 +98,17 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
             grep -q "^max_input_vars" "$CLI_INI" || echo "max_input_vars = 5000" >> "$CLI_INI"
         fi
 
-        # OPcache Tuning
-        cat << EOF >> "$FPM_INI"
+        # Global Timezone Configuration (eliminates /etc/localtime stat() syscalls)
+        for ini_file in "$FPM_INI" "$CLI_INI"; do
+            if [ -f "$ini_file" ]; then
+                sed -i 's/^;*date\.timezone\s*=.*/date.timezone = UTC/' "$ini_file"
+                grep -q "^date.timezone" "$ini_file" || echo "date.timezone = UTC" >> "$ini_file"
+            fi
+        done
 
+        # Deploy High-Priority LeanStack OPcache & JIT Configuration Drop-in
+        mkdir -p "/etc/php/${VER}/fpm/conf.d" "/etc/php/${VER}/cli/conf.d"
+        cat << EOF > "/etc/php/${VER}/fpm/conf.d/99-leanstack-opcache.ini"
 ; --- LeanStack High-Performance OPcache & JIT Profile ---
 opcache.enable = 1
 opcache.enable_cli = 0
@@ -113,14 +121,13 @@ opcache.save_comments = 1
 opcache.fast_shutdown = 1
 opcache.validate_permission = 1
 opcache.validate_root = 1
-EOF
-
-        if [ "$HAS_AVX2" -eq 1 ] || [ "$HAS_SSE4" -eq 1 ]; then
-            cat << 'EOF' >> "$FPM_INI"
 opcache.jit = tracing
 opcache.jit_buffer_size = 64M
+opcache.jit_max_root_traces = 5000
+opcache.jit_max_side_traces = 5000
+opcache.jit_hot_loop = 1
 EOF
-        fi
+        cp "/etc/php/${VER}/fpm/conf.d/99-leanstack-opcache.ini" "/etc/php/${VER}/cli/conf.d/99-leanstack-opcache.ini" 2>/dev/null || true
 
         # APCu High-Speed In-Memory Cache Tuning (64MB SHM, enable_cli=0)
         APCU_INI="/etc/php/${VER}/mods-available/apcu.ini"

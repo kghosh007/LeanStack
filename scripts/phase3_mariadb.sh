@@ -26,17 +26,33 @@ CPU_CORES=$(nproc)
 if [ "$RAM_TOTAL_MB" -le 2048 ]; then
     BP_MB=512
     BP_INST=1
+    SORT_BUF="1M"
+    JOIN_BUF="1M"
+    READ_RND="512K"
+    ARIA_PAGE="64M"
 elif [ "$RAM_TOTAL_MB" -le 4096 ]; then
     BP_MB=$(( RAM_TOTAL_MB * 35 / 100 ))
     BP_INST=2
+    SORT_BUF="2M"
+    JOIN_BUF="2M"
+    READ_RND="1M"
+    ARIA_PAGE="128M"
 elif [ "$RAM_TOTAL_MB" -le 8192 ]; then
     BP_MB=2800
     BP_INST=2
+    SORT_BUF="2M"
+    JOIN_BUF="2M"
+    READ_RND="1M"
+    ARIA_PAGE="128M"
 else
     BP_MB=$(( RAM_TOTAL_MB * 55 / 100 ))
     BP_INST=$(( BP_MB / 1024 ))
     [ "$BP_INST" -gt "$CPU_CORES" ] && BP_INST=$CPU_CORES
     [ "$BP_INST" -lt 1 ] && BP_INST=1
+    SORT_BUF="4M"
+    JOIN_BUF="4M"
+    READ_RND="2M"
+    ARIA_PAGE="256M"
 fi
 
 TABLE_INST=$CPU_CORES
@@ -44,9 +60,6 @@ TABLE_INST=$CPU_CORES
 
 LOG_MB=$(( BP_MB / 4 ))
 [ "$LOG_MB" -gt 1024 ] && LOG_MB=1024
-
-SORT_BUF="256K"
-[ "$CPU_CORES" -ge 8 ] && SORT_BUF="512K"
 
 MAX_CONN=300
 [ "$RAM_TOTAL_MB" -le 2048 ] && MAX_CONN=150
@@ -73,10 +86,12 @@ thread_cache_size              = 128
 max_connections                = ${MAX_CONN}
 back_log                       = 512
 
-# --- Eliminate Profiling & Binary Log Overhead ---
+# --- Eliminate Profiling, Binary Log & Query Cache Mutex Contention ---
 performance_schema             = OFF
 skip-log-bin
 skip-name-resolve              = 1
+query_cache_type               = 0
+query_cache_size               = 0
 
 # --- Transaction Concurrency & Gap Lock Elimination ---
 # READ-COMMITTED eliminates next-key gap locks, accelerating concurrent UPDATEs & inventory checks
@@ -94,27 +109,32 @@ innodb_log_buffer_size         = 64M
 innodb_flush_log_at_trx_commit = 2
 innodb_flush_method            = O_DIRECT
 innodb_autoinc_lock_mode       = 2
+innodb_adaptive_hash_index     = 1
+innodb_change_buffering        = all
 
 # --- NVMe Storage & I/O Tuning ---
 innodb_io_capacity             = 4000
 innodb_io_capacity_max         = 8000
 innodb_read_io_threads         = 4
 innodb_write_io_threads        = 4
+innodb_flush_neighbors         = 0
 
-# --- Cache-Sized Per-Query Buffers (Fits inside CPU L2/L3 Cache) ---
-# Small buffers prevent malloc() overhead on simple SELECT/UPDATE lookups
+# --- In-Memory Sorting & Query Buffers ---
+# Dynamically sized (1M-4M) to keep filesort in RAM and eliminate on-disk sort merges
 sort_buffer_size               = ${SORT_BUF}
-join_buffer_size               = ${SORT_BUF}
-read_buffer_size               = 128K
-read_rnd_buffer_size           = 256K
+join_buffer_size               = ${JOIN_BUF}
+read_buffer_size               = 512K
+read_rnd_buffer_size           = ${READ_RND}
 
-# --- Query Optimizer: Cost-Based with MRR Acceleration ---
-# Keeps MRR active but allows the optimizer to use direct index point lookups
-optimizer_switch               = 'mrr=on,mrr_cost_based=on'
+# --- Query Optimizer: Cost-Based with MRR Acceleration & Subquery Cache ---
+optimizer_switch               = 'mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on'
 
-# --- In-Memory Temporary Tables ---
+# --- In-Memory Temporary Tables & Aria Page Cache ---
+# Aria pagecache prevents internal temporary tables with TEXT/BLOB from disk thrashing
 tmp_table_size                 = 64M
 max_heap_table_size            = 64M
+aria_pagecache_buffer_size     = ${ARIA_PAGE}
+aria_sort_buffer_size          = 32M
 
 # --- Multi-vCPU Table Cache Partitioning ---
 # Splitting table cache eliminates mutex lock contention across CPU cores

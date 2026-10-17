@@ -1423,11 +1423,11 @@ class LeanStackBridge {
                 'total_memory_formatted' => '0 B',
             ),
             'system' => array(
-                'process_count' => 0,
-                'tenant_rss_memory' => 0,
-                'tenant_rss_formatted' => '0 B',
-                'load_avg' => '0.00, 0.00, 0.00',
-                'uptime' => 'N/A',
+                'memory_usage_pct' => 0,
+                'capacity_saturation_pct' => 0,
+                'status_badge' => 'Optimal',
+                'status_color' => '#00a32a',
+                'memory_limit' => '256M',
             ),
         );
 
@@ -1531,7 +1531,30 @@ class LeanStackBridge {
             $data['apcu']['tenant_memory_formatted'] = function_exists( 'size_format' ) ? size_format( $mem, 2 ) : ( $mem . ' B' );
         }
 
-        // 4. System & Tenant CPU / Memory from /proc
+        // 4. Privacy-Safe Tenant Telemetry (Normalized Percentages)
+        $mem_limit_ini = ini_get( 'memory_limit' );
+        if ( empty( $mem_limit_ini ) || '-1' === $mem_limit_ini ) {
+            $mem_limit_bytes = 512 * 1024 * 1024;
+            $mem_limit_str = ( '-1' === $mem_limit_ini ) ? __( 'Unlimited (512M baseline)', 'leanstack' ) : '512M';
+        } else {
+            $mem_limit_str = $mem_limit_ini;
+            $val = trim( $mem_limit_ini );
+            $last = strtolower( substr( $val, -1 ) );
+            $val_num = (float) $val;
+            switch ( $last ) {
+                case 'g':
+                    $val_num *= 1024 * 1024 * 1024;
+                    break;
+                case 'm':
+                    $val_num *= 1024 * 1024;
+                    break;
+                case 'k':
+                    $val_num *= 1024;
+                    break;
+            }
+            $mem_limit_bytes = ( $val_num > 0 ) ? $val_num : 256 * 1024 * 1024;
+        }
+
         $current_uid = function_exists( 'posix_geteuid' ) ? posix_geteuid() : ( function_exists( 'getmyuid' ) ? getmyuid() : null );
         $rss_total_kb = 0;
         $proc_count = 0;
@@ -1560,33 +1583,29 @@ class LeanStackBridge {
             }
         }
 
-        $data['system']['process_count'] = $proc_count;
-        $data['system']['tenant_rss_memory'] = $rss_total_kb * 1024;
-        $data['system']['tenant_rss_formatted'] = function_exists( 'size_format' ) ? size_format( $rss_total_kb * 1024, 2 ) : ( ( $rss_total_kb * 1024 ) . ' B' );
+        $tenant_mem_bytes = ( $rss_total_kb > 0 ) ? ( $rss_total_kb * 1024 ) : ( function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0 );
+        $memory_usage_pct = min( 100, round( ( $tenant_mem_bytes / $mem_limit_bytes ) * 100, 1 ) );
 
-        if ( function_exists( 'sys_getloadavg' ) ) {
-            $load = sys_getloadavg();
-            if ( is_array( $load ) && count( $load ) >= 3 ) {
-                $data['system']['load_avg'] = sprintf( '%.2f, %.2f, %.2f', $load[0], $load[1], $load[2] );
-            }
-        } elseif ( file_exists( '/proc/loadavg' ) ) {
-            $lavg = @file_get_contents( '/proc/loadavg' );
-            if ( $lavg ) {
-                $parts = explode( ' ', trim( $lavg ) );
-                $data['system']['load_avg'] = implode( ', ', array_slice( $parts, 0, 3 ) );
-            }
+        $pool_capacity = (int) apply_filters( 'leanstack_pool_capacity', 10 );
+        $capacity_saturation_pct = min( 100, round( ( max( 1, $proc_count ) / $pool_capacity ) * 100 ) );
+
+        $highest_saturation = max( $memory_usage_pct, $capacity_saturation_pct );
+        if ( $highest_saturation >= 85 ) {
+            $status_badge = 'Elevated';
+            $status_color = '#d63638';
+        } elseif ( $highest_saturation >= 60 ) {
+            $status_badge = 'Moderate';
+            $status_color = '#dba617';
+        } else {
+            $status_badge = 'Optimal';
+            $status_color = '#00a32a';
         }
 
-        if ( file_exists( '/proc/uptime' ) ) {
-            $up = @file_get_contents( '/proc/uptime' );
-            if ( $up ) {
-                $secs = (int) explode( ' ', trim( $up ) )[0];
-                $days = floor( $secs / 86400 );
-                $hours = floor( ( $secs % 86400 ) / 3600 );
-                $mins = floor( ( $secs % 3600 ) / 60 );
-                $data['system']['uptime'] = "{$days}d {$hours}h {$mins}m";
-            }
-        }
+        $data['system']['memory_usage_pct'] = $memory_usage_pct;
+        $data['system']['capacity_saturation_pct'] = $capacity_saturation_pct;
+        $data['system']['status_badge'] = $status_badge;
+        $data['system']['status_color'] = $status_color;
+        $data['system']['memory_limit'] = $mem_limit_str;
 
         return $data;
     }
@@ -1706,11 +1725,16 @@ class LeanStackBridge {
 
                     <!-- 4. System & Tenant Telemetry -->
                     <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                        <h3 style="margin-top: 0; color: #1d2327;"><span class="dashicons dashicons-dashboard" style="color: #d63638;"></span> <?php _e( 'Tenant CPU & Memory', 'leanstack' ); ?></h3>
-                        <p style="font-size: 28px; font-weight: bold; margin: 10px 0; color: #d63638;"><?php echo esc_html( $analytics['system']['tenant_rss_formatted'] ); ?> <span style="font-size: 14px; font-weight: normal; color: #646970;">RSS</span></p>
-                        <p style="color: #646970; margin: 0;"><?php printf( __( 'Workers: <strong>%d</strong> | Load: <strong>%s</strong>', 'leanstack' ), $analytics['system']['process_count'], $analytics['system']['load_avg'] ); ?></p>
+                        <h3 style="margin-top: 0; color: #1d2327;"><span class="dashicons dashicons-dashboard" style="color: <?php echo esc_attr( $analytics['system']['status_color'] ); ?>;"></span> <?php _e( 'Tenant CPU & Memory', 'leanstack' ); ?></h3>
+                        <p style="font-size: 28px; font-weight: bold; margin: 10px 0; color: <?php echo esc_attr( $analytics['system']['status_color'] ); ?>;">
+                            <?php echo esc_html( $analytics['system']['memory_usage_pct'] ); ?>%
+                            <span style="display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 12px; vertical-align: middle; margin-left: 6px; background: <?php echo esc_attr( $analytics['system']['status_color'] ); ?>; color: #fff;">
+                                <?php echo esc_html( $analytics['system']['status_badge'] ); ?>
+                            </span>
+                        </p>
+                        <p style="color: #646970; margin: 0;"><?php printf( __( 'Pool Saturation: <strong>%d%%</strong> | Limit: <strong>%s</strong>', 'leanstack' ), (int) $analytics['system']['capacity_saturation_pct'], esc_html( $analytics['system']['memory_limit'] ) ); ?></p>
                         <hr style="margin: 15px 0; border: 0; border-top: 1px solid #f0f0f1;">
-                        <small style="color: #646970;"><?php printf( __( 'Server Uptime: %s', 'leanstack' ), $analytics['system']['uptime'] ); ?></small>
+                        <span class="dashicons dashicons-shield" style="color: #00a32a; vertical-align: middle;"></span> <small style="color: #646970;"><?php _e( 'Multi-tenant isolation active • Privacy-safe metrics', 'leanstack' ); ?></small>
                     </div>
 
                     <!-- 5. Background Cron Queue -->

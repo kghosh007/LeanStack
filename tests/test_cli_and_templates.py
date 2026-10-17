@@ -961,6 +961,30 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn('sudo_cmd=(sudo -u "$user" -H)', cq_content)
         self.assertNotIn('--chdir', cq_content)
 
+    def test_ls_cron_queue_open_basedir_suppression_and_filtering(self):
+        """Verify ls-cron-queue suppresses and filters benign open_basedir warnings from WP-CLI."""
+        cq_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
+        with open(cq_path, "r") as f:
+            cq_content = f.read()
+        self.assertIn('-d display_errors=Off', cq_content)
+        self.assertIn('-d error_reporting="E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED"', cq_content)
+        self.assertIn('grep -v -E "open_basedir restriction in effect\\. File\\(/home|open_basedir restriction in effect\\. File\\(/"', cq_content)
+        self.assertIn('@ini_set("display_errors", "0");', cq_content)
+
+    def test_upgrade_git_resilience_and_safe_directory(self):
+        """Verify ls-upgrade and update.sh use safe.directory=* and handle fetch failures gracefully."""
+        upgrade_path = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_path, "r") as f:
+            upgrade_content = f.read()
+        self.assertIn('["git", "-c", "safe.directory=*"]', upgrade_content)
+        self.assertIn('Remote fetch skipped', upgrade_content)
+        self.assertIn('def sanitize_cron_logs(self):', upgrade_content)
+
+        update_path = os.path.join(BASE_DIR, "update.sh")
+        with open(update_path, "r") as f:
+            update_content = f.read()
+        self.assertIn('git -c safe.directory=*', update_content)
+
     def test_apcu_stat_cache_clearing(self):
         """Verify leanstack-apcu.php.tpl invalidates PHP stat cache before reading cron status mtime."""
         apcu_path = os.path.join(BASE_DIR, "core", "templates", "leanstack-apcu.php.tpl")

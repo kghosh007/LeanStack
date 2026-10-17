@@ -165,6 +165,7 @@ with open(meta_file, 'w') as f:
 
         # Run WP-CLI cron as tenant user within site root with timeout and strict PHP runtime sandboxing
         local eval_php='
+@ini_set("display_errors", "0");
 $t0 = microtime(true);
 $r0 = function_exists("getrusage") ? getrusage() : null;
 $cron_array = _get_cron_array();
@@ -206,17 +207,30 @@ echo "LS_TELEMETRY:{$dur}:{$cpu}:{$mem}:{$executed}";
             if [ "$(id -u)" -eq 0 ]; then
                 sudo_cmd=(sudo -u "$user" -H)
             fi
+            local err_tmp
+            err_tmp=$(mktemp)
+
             out=$(timeout 60 "${sudo_cmd[@]}" "$php_bin" \
                 -d open_basedir="${allowed_paths}" \
                 -d disable_functions="${disabled_funcs}" \
-                "$wp_bin" eval "$eval_php" --path="$site_path" 2>> "$LOG_FILE" || true)
+                -d display_errors=Off \
+                -d error_reporting="E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED" \
+                "$wp_bin" eval "$eval_php" --path="$site_path" 2> "$err_tmp" || true)
 
             if [[ "$out" != *"LS_TELEMETRY:"* ]]; then
                 timeout 60 "${sudo_cmd[@]}" "$php_bin" \
                     -d open_basedir="${allowed_paths}" \
                     -d disable_functions="${disabled_funcs}" \
-                    "$wp_bin" cron event run --due-now --path="$site_path" --quiet 2>> "$LOG_FILE" || true
+                    -d display_errors=Off \
+                    -d error_reporting="E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED" \
+                    "$wp_bin" cron event run --due-now --path="$site_path" --quiet 2>> "$err_tmp" || true
             fi
+
+            if [ -s "$err_tmp" ]; then
+                grep -v -E "open_basedir restriction in effect\. File\(/home|open_basedir restriction in effect\. File\(/" "$err_tmp" >> "$LOG_FILE" || true
+            fi
+            rm -f "$err_tmp"
+
             echo "$out"
         )
 

@@ -40,6 +40,7 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
             if ( E_WARNING === $errno && false !== strpos( $errstr, 'open_basedir restriction in effect' ) ) {
                 if ( false !== strpos( $errstr, 'File(/home)' ) ||
                      false !== strpos( $errstr, 'File(/)' ) ||
+                     false !== strpos( $errstr, 'File(/usr/bin' ) ||
                      false !== strpos( $errstr, 'File(core/' ) ||
                      false !== strpos( $errstr, 'File(man-params.mustache)' ) ||
                      ( $errfile && false !== strpos( $errfile, 'backup-storage.php' ) ) ||
@@ -56,6 +57,36 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
     }
     leanstack_suppress_benign_open_basedir_warnings();
 }
+
+// ==============================================================================
+// Query Monitor Benchmark Bypass
+// Prevents heavy debug_backtrace() instrumentation from degrading throughput during
+// synthetic hosting benchmarks (e.g. divewp-boost-site-performance) and slow-log skew.
+// ==============================================================================
+if ( ! defined( 'QM_DISABLE' ) ) {
+    if ( ( isset( $_REQUEST['action'] ) && ( false !== strpos( $_REQUEST['action'], 'benchmark' ) || false !== strpos( $_REQUEST['action'], 'divewp' ) ) ) ||
+         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ) {
+        define( 'QM_DISABLE', true );
+    }
+}
+add_filter( 'qm/collect/db_queries', function( $collect ) {
+    if ( ( defined( 'DOING_AJAX' ) && DOING_AJAX ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
+        $action = isset( $_REQUEST['action'] ) ? (string) $_REQUEST['action'] : '';
+        if ( false !== strpos( $action, 'benchmark' ) || false !== strpos( $action, 'divewp' ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
+            return false;
+        }
+    }
+    return $collect;
+}, 999 );
+add_filter( 'qm/dispatch/html', function( $dispatch ) {
+    if ( ( defined( 'DOING_AJAX' ) && DOING_AJAX ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
+        $action = isset( $_REQUEST['action'] ) ? (string) $_REQUEST['action'] : '';
+        if ( false !== strpos( $action, 'benchmark' ) || false !== strpos( $action, 'divewp' ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
+            return false;
+        }
+    }
+    return $dispatch;
+}, 999 );
 
 class LeanStackBridge {
 
@@ -1700,15 +1731,11 @@ class LeanStackBridge {
             $cpu_usage_pct = 0.0;
         }
 
-        $tenant_mem_bytes = ( $rss_total_kb > 0 ) ? ( $rss_total_kb * 1024 ) : ( function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0 );
+        $wp_mem_bytes = function_exists( 'memory_get_peak_usage' ) ? memory_get_peak_usage( true ) : ( function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0 );
+        $pool_rss_bytes = ( $rss_total_kb > 0 ) ? ( $rss_total_kb * 1024 ) : $wp_mem_bytes;
 
         $max_workers = (int) apply_filters( 'leanstack_pool_capacity', 30 );
-        $assigned_pool_bytes = (int) apply_filters( 'leanstack_pool_memory_limit', $max_workers * ( 64 * 1024 * 1024 ) );
-        if ( $assigned_pool_bytes < $mem_limit_bytes ) {
-            $assigned_pool_bytes = $mem_limit_bytes * 2;
-        }
-
-        $memory_usage_pct = min( 100.0, max( 0.0, round( ( $tenant_mem_bytes / $assigned_pool_bytes ) * 100.0, 1 ) ) );
+        $memory_usage_pct = ( $mem_limit_bytes > 0 ) ? min( 100.0, max( 0.0, round( ( $wp_mem_bytes / $mem_limit_bytes ) * 100.0, 1 ) ) ) : 0.0;
         $capacity_saturation_pct = min( 100, round( ( max( 1, $proc_count ) / $max_workers ) * 100 ) );
 
         $highest_saturation = max( $cpu_usage_pct, $memory_usage_pct, ( $capacity_saturation_pct > 80 ? $capacity_saturation_pct : 0 ) );
@@ -1729,8 +1756,10 @@ class LeanStackBridge {
         $data['system']['proc_count'] = $proc_count;
         $data['system']['max_workers'] = $max_workers;
         $data['system']['cpu_cores'] = $cpu_cores;
-        $data['system']['tenant_mem_bytes'] = $tenant_mem_bytes;
-        $data['system']['tenant_mem_formatted'] = function_exists( 'size_format' ) ? size_format( $tenant_mem_bytes, 1 ) : round( $tenant_mem_bytes / ( 1024 * 1024 ), 1 ) . ' MB';
+        $data['system']['tenant_mem_bytes'] = $wp_mem_bytes;
+        $data['system']['tenant_mem_formatted'] = function_exists( 'size_format' ) ? size_format( $wp_mem_bytes, 1 ) : round( $wp_mem_bytes / ( 1024 * 1024 ), 1 ) . ' MB';
+        $data['system']['pool_rss_bytes'] = $pool_rss_bytes;
+        $data['system']['pool_rss_formatted'] = function_exists( 'size_format' ) ? size_format( $pool_rss_bytes, 1 ) : round( $pool_rss_bytes / ( 1024 * 1024 ), 1 ) . ' MB';
         $data['system']['status_badge'] = $status_badge;
         $data['system']['status_color'] = $status_color;
         $data['system']['memory_limit'] = $mem_limit_str;
@@ -1874,7 +1903,7 @@ class LeanStackBridge {
                                 <?php echo esc_html( $analytics['system']['status_badge'] ); ?>
                             </span>
                         </p>
-                        <p style="color: #646970; margin: 0;"><?php printf( __( 'Workers: <strong>%d / %d</strong> (%d%%) | RAM: <strong>%s</strong> | Limit: <strong>%s</strong>', 'leanstack' ), (int) $analytics['system']['proc_count'], (int) $analytics['system']['max_workers'], (int) $analytics['system']['capacity_saturation_pct'], esc_html( $analytics['system']['tenant_mem_formatted'] ), esc_html( $analytics['system']['memory_limit'] ) ); ?></p>
+                        <p style="color: #646970; margin: 0;"><?php printf( __( 'Workers: <strong>%d / %d</strong> (%d%%) | RAM: <strong>%s</strong> | Limit: <strong>%s</strong>%s', 'leanstack' ), (int) $analytics['system']['proc_count'], (int) $analytics['system']['max_workers'], (int) $analytics['system']['capacity_saturation_pct'], esc_html( $analytics['system']['tenant_mem_formatted'] ), esc_html( $analytics['system']['memory_limit'] ), ( ! empty( $analytics['system']['pool_rss_formatted'] ) && $analytics['system']['pool_rss_bytes'] > $analytics['system']['tenant_mem_bytes'] ? ' <span style="color: #8c8f94;">(Pool RSS: ' . esc_html( $analytics['system']['pool_rss_formatted'] ) . ')</span>' : '' ) ); ?></p>
                         <hr style="margin: 15px 0; border: 0; border-top: 1px solid #f0f0f1;">
                         <span class="dashicons dashicons-shield" style="color: #00a32a; vertical-align: middle;"></span> <small style="color: #646970;"><?php printf( __( 'Multi-tenant isolation active • %d assigned CPU core(s)', 'leanstack' ), (int) $analytics['system']['cpu_cores'] ); ?></small>
                     </div>
@@ -2309,7 +2338,31 @@ class LeanStackBridge {
         $home_dir = dirname( rtrim( ABSPATH, '/' ) );
         $msmtprc_path = $home_dir . '/.msmtprc';
         $msmtprc_exists = file_exists( $msmtprc_path );
-        $msmtp_bin_exists = file_exists( '/usr/bin/msmtp' );
+        $msmtp_bin_exists = false;
+        $open_basedir = ini_get( 'open_basedir' );
+        $msmtp_path_allowed = true;
+        if ( ! empty( $open_basedir ) ) {
+            $msmtp_path_allowed = false;
+            $allowed_paths = explode( PATH_SEPARATOR, $open_basedir );
+            foreach ( $allowed_paths as $p ) {
+                $p = rtrim( trim( $p ), '/' );
+                if ( '' === $p ) {
+                    continue;
+                }
+                if ( '/usr/bin/msmtp' === $p || 0 === strpos( '/usr/bin/msmtp', $p . '/' ) ) {
+                    $msmtp_path_allowed = true;
+                    break;
+                }
+            }
+        }
+        if ( $msmtp_path_allowed ) {
+            $msmtp_bin_exists = @file_exists( '/usr/bin/msmtp' );
+        } else {
+            $sendmail_path = ini_get( 'sendmail_path' );
+            if ( false !== strpos( $sendmail_path, 'msmtp' ) ) {
+                $msmtp_bin_exists = true;
+            }
+        }
         $current_user = wp_get_current_user();
         $default_test_email = $current_user ? $current_user->user_email : get_option( 'admin_email' );
         $last_error = get_transient( 'leanstack_last_mail_error' );

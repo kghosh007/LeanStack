@@ -134,8 +134,13 @@ ensure_ssl_fallback() {
             -keyout /etc/angie/ssl/default.key \
             -out /etc/angie/ssl/default.crt \
             -subj "/CN=leanstack-fallback/O=LeanStack/C=US" 2>/dev/null || true
-        chmod 600 /etc/angie/ssl/default.key 2>/dev/null || true
+        chown root:angie /etc/angie/ssl/default.key 2>/dev/null || chown root:www-data /etc/angie/ssl/default.key 2>/dev/null || true
+        chmod 640 /etc/angie/ssl/default.key 2>/dev/null || true
         chmod 644 /etc/angie/ssl/default.crt 2>/dev/null || true
+    fi
+    if [ -f /etc/angie/ssl/default.key ]; then
+        chown root:angie /etc/angie/ssl/default.key 2>/dev/null || chown root:www-data /etc/angie/ssl/default.key 2>/dev/null || true
+        chmod 640 /etc/angie/ssl/default.key 2>/dev/null || true
     fi
     # Reconcile Angie snippets in /etc/angie/snippets
     if [ -d "/etc/angie" ]; then
@@ -196,6 +201,7 @@ Commands:
   update          Autonomous zero-downtime upgrade & migration engine
   migrate         Run database schema migrations only
   sync-tenants    Reconcile MU-plugins and configs across all sites
+  stack-upgrade   Upgrade server stack component (mariadb|angie|valkey|all) [version]
   qm              Manage Query Monitor db.php drop-in (enable|disable|status)
 
 Options for wp:create:
@@ -352,6 +358,23 @@ PY
             /usr/local/bin/cp-upgrade --sync-tenants-only "$@"
         else
             bash "${SCRIPT_DIR}/cp-upgrade" --sync-tenants-only "$@"
+        fi
+        exit 0
+        ;;
+
+    stack-upgrade|stack:upgrade)
+        require_root
+        shift
+        if [ -f "/opt/leanstack/core/bin/ls-upgrade" ]; then
+            python3 /opt/leanstack/core/bin/ls-upgrade --stack-upgrade "$@"
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 "${SCRIPT_DIR}/ls-upgrade" --stack-upgrade "$@"
+        elif [ -x "/usr/local/bin/ls-upgrade" ]; then
+            python3 /usr/local/bin/ls-upgrade --stack-upgrade "$@"
+        elif [ -x "/usr/local/bin/cp-upgrade" ]; then
+            /usr/local/bin/cp-upgrade --stack-upgrade "$@"
+        else
+            bash "${SCRIPT_DIR}/cp-upgrade" --stack-upgrade "$@"
         fi
         exit 0
         ;;

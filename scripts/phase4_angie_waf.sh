@@ -272,8 +272,13 @@ if [ ! -f /etc/angie/ssl/default.crt ] || [ ! -f /etc/angie/ssl/default.key ]; t
         -keyout /etc/angie/ssl/default.key \
         -out /etc/angie/ssl/default.crt \
         -subj "/CN=leanstack-fallback/O=LeanStack/C=US" 2>/dev/null || true
-    chmod 600 /etc/angie/ssl/default.key 2>/dev/null || true
+    chown root:angie /etc/angie/ssl/default.key 2>/dev/null || chown root:www-data /etc/angie/ssl/default.key 2>/dev/null || true
+    chmod 640 /etc/angie/ssl/default.key 2>/dev/null || true
     chmod 644 /etc/angie/ssl/default.crt 2>/dev/null || true
+fi
+if [ -f /etc/angie/ssl/default.key ]; then
+    chown root:angie /etc/angie/ssl/default.key 2>/dev/null || chown root:www-data /etc/angie/ssl/default.key 2>/dev/null || true
+    chmod 640 /etc/angie/ssl/default.key 2>/dev/null || true
 fi
 
 mkdir -p /etc/angie/cache-zones /var/cache/angie/sites

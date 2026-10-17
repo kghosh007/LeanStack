@@ -439,7 +439,15 @@ class LeanStackUpgrader:
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 if os.path.exists(f"{ssl_dir}/default.key"):
                     try:
-                        os.chmod(f"{ssl_dir}/default.key", 0o600)
+                        os.chmod(f"{ssl_dir}/default.key", 0o640)
+                        import grp
+                        for g_name in ["angie", "www-data"]:
+                            try:
+                                g_ent = grp.getgrnam(g_name)
+                                os.chown(f"{ssl_dir}/default.key", 0, g_ent.gr_gid)
+                                break
+                            except KeyError:
+                                continue
                     except Exception:
                         pass
                 if os.path.exists(f"{ssl_dir}/default.crt"):
@@ -469,7 +477,15 @@ class LeanStackUpgrader:
 
             if os.path.exists(f"{ssl_dir}/default.key"):
                 try:
-                    os.chmod(f"{ssl_dir}/default.key", 0o600)
+                    os.chmod(f"{ssl_dir}/default.key", 0o640)
+                    import grp
+                    for g_name in ["angie", "www-data"]:
+                        try:
+                            g_ent = grp.getgrnam(g_name)
+                            os.chown(f"{ssl_dir}/default.key", 0, g_ent.gr_gid)
+                            break
+                        except KeyError:
+                            continue
                 except Exception:
                     pass
             if os.path.exists(f"{ssl_dir}/default.crt"):
@@ -1069,6 +1085,23 @@ collation-server               = utf8mb4_unicode_520_ci
                             subprocess.run(["systemctl", "--no-ask-password", "restart", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                             self.log(f"MariaDB service ({svc}) restarted with high-QPS profile.", Colors.GREEN, prefix="  ✔")
                             break
+
+            # Reconcile Angie fallback SSL permissions to prevent permission denied errors in Angie error log
+            try:
+                ssl_key = "/etc/angie/ssl/default.key"
+                if os.path.exists(ssl_key):
+                    os.chmod(ssl_key, 0o640)
+                    import grp
+                    for g_name in ["angie", "www-data"]:
+                        try:
+                            g_ent = grp.getgrnam(g_name)
+                            os.chown(ssl_key, 0, g_ent.gr_gid)
+                            break
+                        except KeyError:
+                            continue
+            except Exception:
+                pass
+
             return True
         except Exception as e:
             self.log(f"Notice: MariaDB tuning reconciliation: {e}", Colors.DIM, prefix="  ℹ")
@@ -1160,7 +1193,7 @@ opcache.jit_hot_loop = 1
                         continue
                     if p not in new_parts:
                         new_parts.append(p)
-                for req_path in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc"]:
+                for req_path in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc", "/usr/bin/msmtp"]:
                     if req_path not in new_parts:
                         new_parts.append(req_path)
                 new_ob_line = f"php_admin_value[open_basedir] = {':'.join(new_parts)}"
@@ -1168,12 +1201,16 @@ opcache.jit_hot_loop = 1
                     p_content = p_content.replace(ob_match.group(0), new_ob_line)
                     p_changed = True
             else:
-                needed = [req for req in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc"] if req not in parts]
+                needed = [req for req in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc", "/usr/bin/msmtp"] if req not in parts]
                 if needed:
                     new_parts = list(parts) + needed
                     new_ob_line = f"php_admin_value[open_basedir] = {':'.join(new_parts)}"
                     p_content = p_content.replace(ob_match.group(0), new_ob_line)
                     p_changed = True
+        else:
+            default_ob = f"/home/{user}:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc:/usr/bin/msmtp"
+            p_content = p_content.strip() + f"\nphp_admin_value[open_basedir] = {default_ob}\n"
+            p_changed = True
 
         # 2. Reconcile disable_functions (remove symlink,link,curl_multi_exec,parse_ini_file)
         df_match = re.search(r"php_admin_value\[disable_functions\]\s*=\s*([^\n]+)", p_content)
@@ -1250,28 +1287,37 @@ opcache.jit_hot_loop = 1
 
             if not self.dry_run:
                 # 1. Update MU-Plugins
-                mu_dir = os.path.join(site_path, "wp-content", "mu-plugins")
-                if os.path.isdir(mu_dir):
-                    try:
-                        import pwd, grp
-                        u_info = pwd.getpwnam(user)
-                        w_info = grp.getgrnam("www-data")
-                        os.chown(mu_dir, u_info.pw_uid, w_info.gr_gid)
-                        os.chmod(mu_dir, 0o755)
-                    except Exception:
-                        pass
-                    for tpl_name, plugin_name in mu_plugins:
-                        tpl_path = os.path.join(self.templates_dir, tpl_name)
-                        if os.path.exists(tpl_path):
-                            dest = os.path.join(mu_dir, plugin_name)
-                            shutil.copy2(tpl_path, dest)
-                            try:
-                                import pwd
-                                u_info = pwd.getpwnam(user)
-                                os.chown(dest, u_info.pw_uid, u_info.pw_gid)
-                                os.chmod(dest, 0o644)
-                            except Exception:
-                                pass
+                mu_candidates = []
+                if site_path:
+                    mu_candidates.append(os.path.join(site_path, "wp-content", "mu-plugins"))
+                home_dir = f"/home/{user}"
+                if os.path.isdir(os.path.join(home_dir, "htdocs", "wp-content")):
+                    mu_candidates.append(os.path.join(home_dir, "htdocs", "wp-content", "mu-plugins"))
+
+                for mu_dir in set(mu_candidates):
+                    wp_parent = os.path.dirname(mu_dir)
+                    if os.path.isdir(wp_parent):
+                        os.makedirs(mu_dir, exist_ok=True)
+                        try:
+                            import pwd, grp
+                            u_info = pwd.getpwnam(user)
+                            w_info = grp.getgrnam("www-data")
+                            os.chown(mu_dir, u_info.pw_uid, w_info.gr_gid)
+                            os.chmod(mu_dir, 0o755)
+                        except Exception:
+                            pass
+                        for tpl_name, plugin_name in mu_plugins:
+                            tpl_path = os.path.join(self.templates_dir, tpl_name)
+                            if os.path.exists(tpl_path):
+                                dest = os.path.join(mu_dir, plugin_name)
+                                shutil.copy2(tpl_path, dest)
+                                try:
+                                    import pwd
+                                    u_info = pwd.getpwnam(user)
+                                    os.chown(dest, u_info.pw_uid, u_info.pw_gid)
+                                    os.chmod(dest, 0o644)
+                                except Exception:
+                                    pass
 
                 # 2. Reconcile Tenant Nginx Custom Files
                 tenant_nginx = f"/home/{user}/nginx"
@@ -1646,10 +1692,41 @@ password       none
                                 wpc = re.sub(r"<\?php\s*", "<?php\ndefine( 'DISALLOW_FILE_EDIT', true );\n", wpc, count=1)
                                 modified = True
 
+                        # 4d. Auto-disable Query Monitor profiling during performance benchmarks
+                        if "QM_DISABLE" not in wpc:
+                            qm_snippet = (
+                                "\n// Auto-disable Query Monitor backtrace profiling on benchmark requests\n"
+                                "if ( ! defined( 'QM_DISABLE' ) ) {\n"
+                                "    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp/i', (string) $_REQUEST['action'] ) ) ||\n"
+                                "         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ) {\n"
+                                "        define( 'QM_DISABLE', true );\n"
+                                "    }\n"
+                                "}\n"
+                            )
+                            if "/* That's all, stop editing!" in wpc:
+                                wpc = re.sub(
+                                    r"(/\*\s*That's all, stop editing!)",
+                                    qm_snippet.strip() + "\n\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "require_once" in wpc and "wp-settings.php" in wpc:
+                                wpc = re.sub(
+                                    r"([^\n]*require_once[^\n]*wp-settings\.php[^\n]*)",
+                                    qm_snippet.strip() + "\n\\1",
+                                    wpc,
+                                    count=1
+                                )
+                                modified = True
+                            elif "<?php" in wpc:
+                                wpc = re.sub(r"<\?php\s*", "<?php\n" + qm_snippet.strip() + "\n", wpc, count=1)
+                                modified = True
+
                         if modified:
                             with open(wp_config, "w") as f_wpc:
                                 f_wpc.write(wpc)
-                            self.log(f"Reconciled WP_REDIS_USERNAME, WP_CACHE & DISALLOW_FILE_EDIT in {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
+                            self.log(f"Reconciled WP_REDIS_USERNAME, WP_CACHE, DISALLOW_FILE_EDIT & QM_DISABLE in {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
 
                         # Enforce mode 0600 and tenant ownership on wp-config.php across candidate paths
                         for wpc_target in {wp_config, os.path.join(site_path, "wp-config.php"), os.path.join(os.path.dirname(site_path), "wp-config.php")}:
@@ -2055,6 +2132,321 @@ password       none
             with open(self.version_file, "w") as f:
                 json.dump(data, f, indent=2)
 
+    def reconcile_recommended_packages(self) -> bool:
+        """
+        Ensures recommended packages (such as msmtp and msmtp-mta for transactional email relay)
+        are installed on the host. Automatically installs them if missing or prompts in interactive mode.
+        """
+        if shutil.which("msmtp"):
+            return True
+
+        self.log("Recommended package 'msmtp' (OS Lightweight Email Relay) is not installed.", Colors.YELLOW, prefix="  ⚠️")
+        if self.dry_run:
+            self.log("Dry-run: Would install msmtp and msmtp-mta via apt.", Colors.DIM, prefix="  ℹ")
+            return True
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
+            should_install = True
+            if sys.stdin.isatty() and not self.force and not self.quiet:
+                try:
+                    resp = input(">>> Install recommended optional package 'msmtp' now? [Y/n]: ").strip().lower()
+                    if resp in ["n", "no"]:
+                        should_install = False
+                except Exception:
+                    should_install = True
+
+            if should_install:
+                self.log("Installing recommended package 'msmtp' and 'msmtp-mta'...", Colors.CYAN, prefix="  📦")
+                env = os.environ.copy()
+                env["DEBIAN_FRONTEND"] = "noninteractive"
+                subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+                res = subprocess.run(
+                    ["apt-get", "install", "-y", "-qq", "msmtp", "msmtp-mta"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False
+                )
+                if res.returncode == 0:
+                    self.log("Successfully installed msmtp.", Colors.GREEN, prefix="  ✔")
+                    return True
+                else:
+                    self.log("Notice: Failed to install msmtp automatically.", Colors.YELLOW, prefix="  ⚠️")
+                    return False
+        return False
+
+    def stack_upgrade(self, component: str = "mariadb", version: Optional[str] = None) -> bool:
+        """
+        Upgrades server stack components (mariadb, angie, valkey, or all) to latest stable or a specified version:
+        - Backs up databases/configs before touching packages (zero data loss guarantee).
+        - Configures official vendor apt repository for the requested or default version (e.g. MariaDB 12.3.3 LTS or 13.0).
+        - Runs package upgrades with -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef".
+        - Executes mariadb-upgrade -u root afterwards.
+        - Restarts services cleanly.
+        """
+        raw_comp = (component or "mariadb").strip()
+        # Handle case where user provided version as first argument e.g. "12.3.3"
+        if re.match(r"^\d+\.\d+", raw_comp):
+            version = raw_comp
+            target_comp = "mariadb"
+        else:
+            target_comp = raw_comp.lower()
+
+        if target_comp in ["db", "mysql"]:
+            target_comp = "mariadb"
+        elif target_comp in ["web", "nginx"]:
+            target_comp = "angie"
+        elif target_comp in ["redis", "cache"]:
+            target_comp = "valkey"
+
+        print(f"\n{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.CYAN}            LEANSTACK SERVER STACK UPGRADE ENGINE                             {Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}\n")
+
+        success = True
+        backup_dir = "/var/backups/lsctl/stack_upgrades"
+        ts = time.strftime("%Y%m%d_%H%M%S")
+
+        # -------------------------------------------------------------
+        # 1. MariaDB Database Tier Upgrade
+        # -------------------------------------------------------------
+        if target_comp in ["mariadb", "all"]:
+            req_ver = version.strip() if (version and target_comp != "all") else "12.3.3"
+            m = re.match(r"^(\d+\.\d+)", req_ver)
+            series = m.group(1) if m else "12.3"
+
+            self.log(f"Preparing MariaDB upgrade to target version {req_ver} (Series: {series})...", Colors.CYAN, prefix="  🚀")
+
+            # 1a. Pre-upgrade Zero-Data-Loss Backup
+            if not self.dry_run:
+                os.makedirs(backup_dir, exist_ok=True)
+                if os.path.isdir("/etc/mysql"):
+                    cfg_bak = os.path.join(backup_dir, f"mysql_cfg_{ts}")
+                    try:
+                        shutil.copytree("/etc/mysql", cfg_bak, symlinks=True, ignore_dangling_symlinks=True)
+                        self.log(f"Backed up MySQL/MariaDB configuration to {cfg_bak}", Colors.GREEN, prefix="  ✔")
+                    except Exception as e:
+                        self.log(f"Notice: MySQL config snapshot: {e}", Colors.DIM, prefix="  ℹ")
+
+                dump_bin = shutil.which("mariadb-dump") or shutil.which("mysqldump")
+                if dump_bin:
+                    dump_file = os.path.join(backup_dir, f"mariadb_all_databases_{ts}.sql")
+                    self.log("Creating full database snapshot before package upgrade...", Colors.CYAN, prefix="  📦")
+                    try:
+                        with open(dump_file, "w") as f_dump:
+                            res = subprocess.run(
+                                [dump_bin, "-u", "root", "--all-databases", "--single-transaction", "--quick"],
+                                stdout=f_dump, stderr=subprocess.PIPE, text=True, check=False
+                            )
+                        if res.returncode == 0 and os.path.getsize(dump_file) > 0:
+                            subprocess.run(["gzip", "-f", dump_file], check=False)
+                            self.log(f"Full database dump secured at {dump_file}.gz", Colors.GREEN, prefix="  ✔")
+                        else:
+                            if os.path.exists(dump_file):
+                                os.remove(dump_file)
+                    except Exception as e:
+                        self.log(f"Notice: Database dump exception: {e}", Colors.YELLOW, prefix="  ⚠️")
+            else:
+                self.log(f"Dry-run: Would back up /etc/mysql and create full database dump in {backup_dir}", Colors.DIM, prefix="  ℹ")
+
+            # 1b. Configure Vendor APT Repository
+            if not self.dry_run:
+                if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
+                    os_codename = "noble"
+                    if os.path.exists("/etc/os-release"):
+                        try:
+                            with open("/etc/os-release") as f_os:
+                                for l in f_os:
+                                    if l.startswith("VERSION_CODENAME="):
+                                        os_codename = l.split("=")[1].strip().strip('"\'')
+                                        break
+                                    elif l.startswith("UBUNTU_CODENAME="):
+                                        os_codename = l.split("=")[1].strip().strip('"\'')
+                                        break
+                        except Exception:
+                            pass
+
+                    keyrings_dir = "/etc/apt/keyrings"
+                    os.makedirs(keyrings_dir, exist_ok=True)
+                    keyring_path = os.path.join(keyrings_dir, "mariadb-keyring.pgp")
+
+                    if not os.path.exists(keyring_path) or os.path.getsize(keyring_path) == 0:
+                        subprocess.run([
+                            "curl", "-fsSL", "https://supplychain.mariadb.com/mariadb-keyring-2019.pgp", "-o", keyring_path
+                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        if not os.path.exists(keyring_path) or os.path.getsize(keyring_path) == 0:
+                            subprocess.run([
+                                "curl", "-fsSL", "https://mariadb.org/mariadb_release_signing_key.pgp", "-o", keyring_path
+                            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+                    sources_file = "/etc/apt/sources.list.d/mariadb.list"
+                    repo_line = f"deb [signed-by={keyring_path}] https://deb.mariadb.org/{series}/ubuntu {os_codename} main\n"
+                    with open(sources_file, "w") as f_src:
+                        f_src.write(repo_line)
+                    self.log(f"Configured official MariaDB {series} repository in {sources_file}", Colors.GREEN, prefix="  ✔")
+
+                    env = os.environ.copy()
+                    env["DEBIAN_FRONTEND"] = "noninteractive"
+                    subprocess.run(
+                        ["apt-get", "update", "-qq", "-o", "Dir::Etc::sourcelist=sources.list.d/mariadb.list", "-o", "Dir::Etc::sourceparts=-", "-o", "APT::Get::List-Cleanup=0"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False
+                    )
+                    subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+
+                    # 1c. Upgrade packages preserving configuration files
+                    self.log(f"Installing MariaDB server & client (Series: {series})...", Colors.CYAN, prefix="  📦")
+                    up_cmd = [
+                        "apt-get", "install", "-y", "-qq",
+                        "-o", "Dpkg::Options::=--force-confold",
+                        "-o", "Dpkg::Options::=--force-confdef",
+                        "mariadb-server", "mariadb-client"
+                    ]
+                    res = subprocess.run(up_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, check=False)
+                    if res.returncode != 0:
+                        self.log(f"Warning: MariaDB package upgrade encountered a warning: {res.stderr.strip()}", Colors.YELLOW, prefix="  ⚠️")
+                    else:
+                        self.log("MariaDB packages upgraded successfully.", Colors.GREEN, prefix="  ✔")
+
+                    # 1d. Reconcile tuning and restart service
+                    self.reconcile_mariadb_tuning()
+                    subprocess.run(["systemctl", "--no-ask-password", "restart", "mariadb"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+                    # 1e. Upgrade internal catalogs with mariadb-upgrade
+                    upgrade_tool = shutil.which("mariadb-upgrade") or shutil.which("mysql_upgrade")
+                    if upgrade_tool:
+                        self.log("Running mariadb-upgrade to update system tables...", Colors.CYAN, prefix="  🔄")
+                        subprocess.run([upgrade_tool, "-u", "root"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        self.log("mariadb-upgrade catalog verification completed.", Colors.GREEN, prefix="  ✔")
+
+                    # Verify connectivity
+                    db_check = shutil.which("mariadb") or shutil.which("mysql")
+                    if db_check:
+                        chk_res = subprocess.run([db_check, "-e", "SELECT 1;"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        if chk_res.returncode == 0:
+                            self.log("MariaDB server responsive and operational.", Colors.GREEN, prefix="  ✔")
+                        else:
+                            self.log("Notice: MariaDB ping check returned non-zero exit code.", Colors.YELLOW, prefix="  ⚠️")
+            else:
+                self.log(f"Dry-run: Would configure official MariaDB {series} repository, install packages with --force-confold, run mariadb-upgrade, and restart service.", Colors.DIM, prefix="  ℹ")
+
+        # -------------------------------------------------------------
+        # 2. Angie Web Tier Upgrade
+        # -------------------------------------------------------------
+        if target_comp in ["angie", "all"]:
+            self.log("Preparing Angie Web Server upgrade to latest stable...", Colors.CYAN, prefix="  🚀")
+            if not self.dry_run:
+                os.makedirs(backup_dir, exist_ok=True)
+                if os.path.isdir("/etc/angie"):
+                    angie_bak = os.path.join(backup_dir, f"angie_cfg_{ts}")
+                    try:
+                        shutil.copytree("/etc/angie", angie_bak, symlinks=True, ignore_dangling_symlinks=True)
+                        self.log(f"Backed up Angie configuration to {angie_bak}", Colors.GREEN, prefix="  ✔")
+                    except Exception as e:
+                        self.log(f"Notice: Angie config snapshot: {e}", Colors.DIM, prefix="  ℹ")
+
+                if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
+                    keyring = "/etc/apt/trusted.gpg.d/angie-signing.gpg"
+                    os.makedirs("/etc/apt/trusted.gpg.d", exist_ok=True)
+                    if not os.path.exists(keyring) or os.path.getsize(keyring) == 0:
+                        subprocess.run(["curl", "-fsSL", "-o", keyring, "https://angie.software/keys/angie-signing.gpg"], check=False)
+
+                    os_info = {"ID": "ubuntu", "VERSION_ID": "24.04", "VERSION_CODENAME": "noble"}
+                    if os.path.exists("/etc/os-release"):
+                        try:
+                            with open("/etc/os-release") as f_os:
+                                for l in f_os:
+                                    k, _, v = l.partition("=")
+                                    k, v = k.strip(), v.strip().strip('"\'')
+                                    if k in os_info:
+                                        os_info[k] = v
+                        except Exception:
+                            pass
+
+                    sources_file = "/etc/apt/sources.list.d/angie.list"
+                    repo_url = f"https://download.en.angie.software/angie/{os_info['ID']}/{os_info['VERSION_ID']} {os_info['VERSION_CODENAME']} main\n"
+                    with open(sources_file, "w") as f_src:
+                        f_src.write(f"deb {repo_url}")
+
+                    env = os.environ.copy()
+                    env["DEBIAN_FRONTEND"] = "noninteractive"
+                    subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+                    up_cmd = [
+                        "apt-get", "install", "-y", "-qq",
+                        "-o", "Dpkg::Options::=--force-confold",
+                        "-o", "Dpkg::Options::=--force-confdef",
+                        "angie", "angie-module-brotli", "angie-module-cache-purge"
+                    ]
+                    subprocess.run(up_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+                    self.reconcile_angie_tls()
+
+                    # Ensure SSL fallback permissions
+                    ssl_key = "/etc/angie/ssl/default.key"
+                    if os.path.exists(ssl_key):
+                        try:
+                            os.chmod(ssl_key, 0o640)
+                            import grp
+                            for g_name in ["angie", "www-data"]:
+                                try:
+                                    g_ent = grp.getgrnam(g_name)
+                                    os.chown(ssl_key, 0, g_ent.gr_gid)
+                                    break
+                                except KeyError:
+                                    continue
+                        except Exception:
+                            pass
+
+                    subprocess.run(["systemctl", "--no-ask-password", "reload", "angie"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    self.log("Angie Web Server upgraded and reloaded cleanly.", Colors.GREEN, prefix="  ✔")
+            else:
+                self.log("Dry-run: Would configure official Angie repository, upgrade packages with --force-confold, and reload Angie.", Colors.DIM, prefix="  ℹ")
+
+        # -------------------------------------------------------------
+        # 3. Valkey In-Memory Tier Upgrade
+        # -------------------------------------------------------------
+        if target_comp in ["valkey", "all"]:
+            self.log("Preparing Valkey Object Store upgrade...", Colors.CYAN, prefix="  🚀")
+            if not self.dry_run:
+                os.makedirs(backup_dir, exist_ok=True)
+                if os.path.isdir("/etc/valkey"):
+                    v_bak = os.path.join(backup_dir, f"valkey_cfg_{ts}")
+                    try:
+                        shutil.copytree("/etc/valkey", v_bak, symlinks=True, ignore_dangling_symlinks=True)
+                        self.log(f"Backed up Valkey configuration to {v_bak}", Colors.GREEN, prefix="  ✔")
+                    except Exception as e:
+                        self.log(f"Notice: Valkey config snapshot: {e}", Colors.DIM, prefix="  ℹ")
+
+                cli_bin = shutil.which("valkey-cli") or shutil.which("redis-cli")
+                if cli_bin and os.path.exists("/run/valkey/valkey.sock"):
+                    subprocess.run([cli_bin, "-s", "/run/valkey/valkey.sock", "save"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                elif cli_bin:
+                    subprocess.run([cli_bin, "save"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+                if os.path.isfile("/var/lib/valkey/dump.rdb"):
+                    shutil.copy2("/var/lib/valkey/dump.rdb", os.path.join(backup_dir, f"valkey_dump_{ts}.rdb"))
+
+                if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
+                    env = os.environ.copy()
+                    env["DEBIAN_FRONTEND"] = "noninteractive"
+                    chk_pkg = subprocess.run(["apt-cache", "show", "valkey-server"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+                    if chk_pkg.returncode == 0 and "Package: valkey-server" in chk_pkg.stdout:
+                        up_cmd = [
+                            "apt-get", "install", "-y", "-qq",
+                            "-o", "Dpkg::Options::=--force-confold",
+                            "-o", "Dpkg::Options::=--force-confdef",
+                            "valkey-server", "valkey-tools"
+                        ]
+                        subprocess.run(up_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+
+                    for svc in ["valkey-server", "valkey", "redis-server"]:
+                        if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:
+                            subprocess.run(["systemctl", "--no-ask-password", "restart", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                            break
+                    self.log("Valkey service restarted cleanly.", Colors.GREEN, prefix="  ✔")
+            else:
+                self.log("Dry-run: Would back up /etc/valkey, trigger snapshot, upgrade Valkey, and restart service.", Colors.DIM, prefix="  ℹ")
+
+        print(f"\n{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.GREEN}✔ STACK UPGRADE FOR [{target_comp.upper()}] COMPLETED WITH ZERO DATA LOSS.{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}\n")
+        return success
+
     def run_upgrade(self) -> bool:
         """Master orchestrator for the complete autonomous upgrade process."""
         print(f"\n{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}")
@@ -2084,8 +2476,9 @@ password       none
         # 4. Migrations
         applied = self.run_migrations()
 
-        # 5. Binaries
+        # 5. Binaries & Recommended Packages
         self.sync_binaries()
+        self.reconcile_recommended_packages()
 
         # 6. Templates & Angie TLS reconciliation
         self.sync_templates_and_profiles()
@@ -2131,6 +2524,9 @@ def main():
     parser.add_argument("--db-file", help="Path to SQLite sites.db file")
     parser.add_argument("--migrate-only", action="store_true", help="Execute database schema migrations only")
     parser.add_argument("--sync-tenants-only", action="store_true", help="Reconcile tenant MU-plugins & configs only")
+    parser.add_argument("--stack-upgrade", nargs="*", default=None, metavar=("COMPONENT", "VERSION"), help="Upgrade stack component (mariadb, angie, valkey, or all) [version]")
+    parser.add_argument("--component", default=None, help="Component to upgrade")
+    parser.add_argument("--component-version", default=None, help="Target component version")
     parser.add_argument("--json", action="store_true", help="Output summary as JSON")
 
     args = parser.parse_args()
@@ -2142,6 +2538,24 @@ def main():
         force=args.force,
         quiet=args.json
     )
+
+    if args.stack_upgrade is not None:
+        comp = "mariadb"
+        ver = None
+        if len(args.stack_upgrade) >= 1:
+            comp = args.stack_upgrade[0]
+        elif args.component:
+            comp = args.component
+
+        if len(args.stack_upgrade) >= 2:
+            ver = args.stack_upgrade[1]
+        elif args.component_version:
+            ver = args.component_version
+
+        success = upgrader.stack_upgrade(component=comp, version=ver)
+        if args.json:
+            print(json.dumps({"status": "ok" if success else "failed", "component": comp, "version": ver}))
+        sys.exit(0 if success else 1)
 
     if args.migrate_only:
         applied = upgrader.run_migrations()

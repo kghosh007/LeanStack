@@ -119,7 +119,7 @@ EOF
 
 # Install Utilities & ZRAM
 echo ">>> [Phase 1] Installing core performance tools & ZRAM..."
-apt-get install -y -qq zram-tools cpufrequtils htop iotop iftop net-tools >/dev/null 2>&1 || true
+apt-get install -y -qq zram-tools cpufrequtils htop iotop iftop net-tools msmtp msmtp-mta >/dev/null 2>&1 || true
 
 # Configure ZRAM (50% of RAM, zstd compression)
 cat << 'EOF' > /etc/default/zramswap

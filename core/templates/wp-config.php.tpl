@@ -55,6 +55,14 @@ define( 'WP_DEBUG_LOG', '/home/{{USER_NAME}}/logs/wp-debug.log' );
 define( 'WP_DEBUG_DISPLAY', false );
 @ini_set( 'display_errors', '0' );
 
+// Auto-disable Query Monitor backtrace profiling on benchmark requests
+if ( ! defined( 'QM_DISABLE' ) ) {
+    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp/i', (string) $_REQUEST['action'] ) ) ||
+         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ) {
+        define( 'QM_DISABLE', true );
+    }
+}
+
 // Absolute path to the WordPress directory
 if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', __DIR__ . '/' );

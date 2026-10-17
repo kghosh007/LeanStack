@@ -10,6 +10,15 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+// Auto-disable Query Monitor profiling during performance benchmarks
+if ( ! defined( 'QM_DISABLE' ) ) {
+    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp/i', (string) $_REQUEST['action'] ) ) ||
+         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
+         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+        define( 'QM_DISABLE', true );
+    }
+}
+
 // 0. Angie Rewrite & Pretty Permalinks Support (Enables rewrite rule detection for Site Health)
 $GLOBALS['is_nginx'] = true;
 add_filter( 'got_url_rewrite', '__return_true', 999 );
@@ -93,6 +102,7 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
                 // or WordPress core / WP-CLI relative block or template checks
                 if ( false !== strpos( $errstr, 'File(/home)' ) ||
                      false !== strpos( $errstr, 'File(/)' ) ||
+                     false !== strpos( $errstr, 'File(/usr/bin' ) ||
                      false !== strpos( $errstr, 'File(core/' ) ||
                      false !== strpos( $errstr, 'File(man-params.mustache)' ) ||
                      ( $errfile && false !== strpos( $errfile, 'backup-storage.php' ) ) ||

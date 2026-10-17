@@ -12,9 +12,34 @@ fi
 echo ">>> [Phase 3] Installing and configuring MariaDB Database Tier..."
 export DEBIAN_FRONTEND=noninteractive
 
-# Install MariaDB Server
-if ! command -v mariadb &>/dev/null; then
+# Install MariaDB Server (Default: 12.3 LTS stable - 12.3.3)
+TARGET_MARIADB_VER="${MARIADB_VERSION:-12.3.3}"
+if [[ "$TARGET_MARIADB_VER" =~ ^([0-9]+\.[0-9]+) ]]; then
+    MARIADB_SERIES="${BASH_REMATCH[1]}"
+else
+    MARIADB_SERIES="12.3"
+fi
+
+if ! command -v mariadb &>/dev/null || [ "${MARIADB_UPGRADE:-0}" == "1" ]; then
+    echo ">>> [Phase 3] Configuring official MariaDB ${MARIADB_SERIES} repository (Target: ${TARGET_MARIADB_VER})..."
     apt-get update -qq
+    apt-get install -y -qq ca-certificates curl gnupg >/dev/null 2>&1 || true
+
+    mkdir -p /etc/apt/keyrings /etc/apt/trusted.gpg.d
+    curl -fsSL https://supplychain.mariadb.com/mariadb-keyring-2019.pgp -o /etc/apt/keyrings/mariadb-keyring.pgp 2>/dev/null || \
+    curl -fsSL https://mariadb.org/mariadb_release_signing_key.pgp -o /etc/apt/keyrings/mariadb-keyring.pgp 2>/dev/null || true
+
+    OS_CODENAME="noble"
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-noble}}"
+    fi
+
+    echo "deb [signed-by=/etc/apt/keyrings/mariadb-keyring.pgp] https://deb.mariadb.org/${MARIADB_SERIES}/ubuntu ${OS_CODENAME} main" \
+        > /etc/apt/sources.list.d/mariadb.list
+
+    apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/mariadb.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" 2>/dev/null || apt-get update -qq || true
+    apt-get install -y -qq -o Dpkg::Options::="--force-confold" mariadb-server mariadb-client >/dev/null 2>&1 || \
     apt-get install -y -qq mariadb-server mariadb-client >/dev/null
 fi
 
@@ -148,6 +173,9 @@ collation-server               = utf8mb4_unicode_520_ci
 EOF
 
 systemctl restart mariadb
+
+# Run mariadb-upgrade to ensure internal system tables and catalogs are up-to-date
+mariadb-upgrade -u root 2>/dev/null || mysql_upgrade -u root 2>/dev/null || true
 
 # Verify connectivity
 mariadb -e "SELECT 1;" >/dev/null

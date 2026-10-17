@@ -743,6 +743,109 @@ server {
         with open(cnf_path, "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), cnf_content)
 
+    def test_reconcile_pool_content_ensures_msmtp_in_open_basedir(self):
+        """Verify reconcile_pool_content always adds /usr/bin/msmtp to open_basedir."""
+        pool_cfg = (
+            "[tenant_abc]\n"
+            "user = tenant_abc\n"
+            "php_admin_value[open_basedir] = /home/tenant_abc:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc\n"
+        )
+        reconciled, changed = self.upgrader.reconcile_pool_content(pool_cfg, "tenant_abc")
+        self.assertTrue(changed)
+        self.assertIn("/usr/bin/msmtp", reconciled)
+        self.assertIn("/home/tenant_abc", reconciled)
+
+        # Idempotency check: running again makes no changes
+        reconciled2, changed2 = self.upgrader.reconcile_pool_content(reconciled, "tenant_abc")
+        self.assertFalse(changed2)
+        self.assertEqual(reconciled, reconciled2)
+
+    def test_sync_tenants_reconciles_qm_disable_in_wp_config(self):
+        """Verify sync_tenants injects QM_DISABLE benchmark bypass into wp-config.php."""
+        self.upgrader.run_migrations()
+        site_root = os.path.join(self.test_dir, "home", "tenant_qm", "htdocs")
+        os.makedirs(site_root, exist_ok=True)
+        wp_config_path = os.path.join(site_root, "wp-config.php")
+        with open(wp_config_path, "w") as f:
+            f.write("<?php\ndefine( 'DB_NAME', 'test_db' );\n/* That's all, stop editing! */\n")
+
+        conn = sqlite3.connect(self.db_file)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO sites (domain, user, php_version, pool_type, site_path, db_name, db_user, db_pass, admin_user, admin_pass, admin_email)
+            VALUES ('qm.example.com', 'tenant_qm', '8.5', 'dedicated', ?, 'tdb', 'tu', 'pass', 'admin', 'pass', 'a@e.com');
+        """, (site_root,))
+        conn.commit()
+        conn.close()
+
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            wpc = f.read()
+
+        self.assertIn("QM_DISABLE", wpc)
+        self.assertIn("benchmark", wpc)
+        self.assertIn("divewp", wpc)
+
+        # Idempotency: second run does not duplicate QM_DISABLE
+        self.upgrader.sync_tenants()
+        with open(wp_config_path, "r") as f:
+            wpc2 = f.read()
+        self.assertEqual(wpc.count("defined( 'QM_DISABLE' )"), 1)
+        self.assertEqual(wpc, wpc2)
+
+    def test_reconcile_recommended_packages_dry_run(self):
+        """Verify reconcile_recommended_packages returns True in dry-run mode."""
+        dry_upgrader = LeanStackUpgrader(
+            repo_dir=BASE_DIR,
+            db_file=self.db_file,
+            dry_run=True,
+            force=False
+        )
+        res = dry_upgrader.reconcile_recommended_packages()
+        self.assertTrue(res)
+
+    def test_stack_upgrade_mariadb_default_and_versioned(self):
+        """Verify stack_upgrade handles default (12.3.3) and custom version (13.0.2) in dry-run."""
+        dry_upgrader = LeanStackUpgrader(
+            repo_dir=BASE_DIR,
+            db_file=self.db_file,
+            dry_run=True,
+            force=False
+        )
+        # Default MariaDB upgrade
+        res_default = dry_upgrader.stack_upgrade(component="mariadb")
+        self.assertTrue(res_default)
+
+        # Version specified MariaDB upgrade
+        res_ver = dry_upgrader.stack_upgrade(component="mariadb", version="13.0.2")
+        self.assertTrue(res_ver)
+
+        # Version as first argument
+        res_arg = dry_upgrader.stack_upgrade(component="12.3.3")
+        self.assertTrue(res_arg)
+
+        # Angie & Valkey & All
+        self.assertTrue(dry_upgrader.stack_upgrade(component="angie"))
+        self.assertTrue(dry_upgrader.stack_upgrade(component="valkey"))
+        self.assertTrue(dry_upgrader.stack_upgrade(component="all"))
+
+    def test_reconcile_mariadb_tuning_ssl_key_chmod(self):
+        """Verify reconcile_mariadb_tuning applies 0640 permissions to fallback SSL key if present."""
+        temp_mariadb_dir = os.path.join(self.test_dir, "mariadb_conf_d3")
+        os.makedirs(temp_mariadb_dir, exist_ok=True)
+
+        import unittest.mock as mock
+        real_exists = os.path.exists
+        with mock.patch("os.path.exists", side_effect=lambda p: True if p == "/etc/angie/ssl/default.key" else real_exists(p)):
+            with mock.patch("os.chmod") as mock_chmod:
+                self.upgrader.reconcile_mariadb_tuning(conf_dir=temp_mariadb_dir)
+                mock_chmod.assert_any_call("/etc/angie/ssl/default.key", 0o640)
+
+    def test_lsctl_stack_upgrade_command_in_help(self):
+        """Verify lsctl help contains the stack-upgrade command."""
+        res_help = subprocess.run([CPCTL_BIN, "help"], stdout=subprocess.PIPE, text=True, check=True)
+        self.assertIn("stack-upgrade", res_help.stdout)
+
 if __name__ == "__main__":
     unittest.main()
 

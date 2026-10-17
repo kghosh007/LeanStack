@@ -171,6 +171,21 @@ server {
     include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/custom-rules.conf;
 
     # ==========================================================================
+    # Crawlers & AI Agents Studio Endpoints (robots.txt & llms.txt)
+    # ==========================================================================
+    location = /robots.txt {
+        try_files $uri /index.php?$args;
+        access_log off;
+        log_not_found off;
+    }
+
+    location = /llms.txt {
+        try_files $uri /index.php?$args;
+        access_log off;
+        log_not_found off;
+    }
+
+    # ==========================================================================
     # WordPress Core Router
     # ==========================================================================
     location / {

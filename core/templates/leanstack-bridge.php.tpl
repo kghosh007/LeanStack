@@ -108,6 +108,14 @@ class LeanStackBridge {
         add_action( 'save_post', array( $this, 'on_post_change' ), 10, 2 );
         add_action( 'deleted_post', array( $this, 'on_post_change' ), 10, 2 );
         add_action( 'wp_trash_post', array( $this, 'on_post_change' ), 10, 2 );
+
+        // Crawlers & AI Agents Studio Handlers
+        add_action( 'admin_post_leanstack_save_robots', array( $this, 'handle_save_robots' ) );
+        add_action( 'admin_post_leanstack_save_llms', array( $this, 'handle_save_llms' ) );
+        add_filter( 'robots_txt', array( $this, 'filter_robots_txt' ), 999, 2 );
+        add_action( 'init', array( $this, 'maybe_serve_dynamic_llms' ) );
+        add_action( 'publish_post', array( $this, 'maybe_auto_sync_llms' ), 20, 2 );
+        add_action( 'publish_page', array( $this, 'maybe_auto_sync_llms' ), 20, 2 );
     }
 
     private function detect_paths() {
@@ -184,6 +192,15 @@ class LeanStackBridge {
             'manage_options',
             'leanstack-logs',
             array( $this, 'render_logs_page' )
+        );
+
+        // 6. Settings > Crawlers & AI
+        add_options_page(
+            __( 'Crawlers & AI Agents Studio', 'leanstack' ),
+            __( 'Crawlers & AI', 'leanstack' ),
+            'manage_options',
+            'leanstack-crawlers',
+            array( $this, 'render_crawlers_page' )
         );
     }
 
@@ -3103,6 +3120,374 @@ class LeanStackBridge {
         }
 
         return $success;
+    }
+
+    // =========================================================================
+    // Crawlers & AI Agents Studio (robots.txt & llms.txt Managers)
+    // =========================================================================
+
+    public function get_robots_preset( $preset ) {
+        $sitemap_url = esc_url( home_url( '/sitemap_index.xml' ) );
+        switch ( $preset ) {
+            case 'seo':
+                return "User-agent: *\nDisallow: /wp-admin/\nAllow: /wp-admin/admin-ajax.php\n\nSitemap: {$sitemap_url}\n";
+
+            case 'block_ai':
+                return "User-agent: *\nDisallow: /wp-admin/\nAllow: /wp-admin/admin-ajax.php\n\n" .
+                    "# Block AI Crawlers & Scrapers\n" .
+                    "User-agent: GPTBot\nDisallow: /\n\n" .
+                    "User-agent: ChatGPT-User\nDisallow: /\n\n" .
+                    "User-agent: ClaudeBot\nDisallow: /\n\n" .
+                    "User-agent: Claude-Web\nDisallow: /\n\n" .
+                    "User-agent: Anthropic-AI\nDisallow: /\n\n" .
+                    "User-agent: Bytespider\nDisallow: /\n\n" .
+                    "User-agent: CCBot\nDisallow: /\n\n" .
+                    "User-agent: Google-Extended\nDisallow: /\n\n" .
+                    "User-agent: PerplexityBot\nDisallow: /\n\n" .
+                    "User-agent: Diffbot\nDisallow: /\n\n" .
+                    "User-agent: FacebookBot\nDisallow: /\n\n" .
+                    "User-agent: Cohere-AI\nDisallow: /\n\n" .
+                    "User-agent: Omgilibot\nDisallow: /\n\n" .
+                    "Sitemap: {$sitemap_url}\n";
+
+            case 'staging':
+                return "User-agent: *\nDisallow: /\n";
+
+            default:
+                return "";
+        }
+    }
+
+    public function filter_robots_txt( $output, $public ) {
+        $custom = get_option( 'leanstack_robots_content', '' );
+        if ( ! empty( $custom ) ) {
+            return $custom . "\n";
+        }
+        return $output;
+    }
+
+    public function handle_save_robots() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_save_robots_action', 'leanstack_nonce' );
+
+        $content = isset( $_POST['robots_content'] ) ? trim( wp_unslash( $_POST['robots_content'] ) ) : '';
+        update_option( 'leanstack_robots_content', $content );
+
+        $robots_file = ABSPATH . 'robots.txt';
+        @file_put_contents( $robots_file, $content . "\n" );
+        @chmod( $robots_file, 0644 );
+
+        $this->purge_fastcgi_url( home_url( '/robots.txt' ) );
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-crawlers', 'tab' => 'robots', 'saved' => '1' ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
+    public function generate_llms_markdown() {
+        $site_name = get_bloginfo( 'name' );
+        $site_desc = get_bloginfo( 'description' );
+        $site_url  = home_url();
+
+        $md = "# {$site_name}\n\n";
+        if ( ! empty( $site_desc ) ) {
+            $md .= "> {$site_desc}\n\n";
+        }
+        $md .= "Canonical URL: {$site_url}\n\n";
+
+        // Query published pages
+        $pages = get_posts( array(
+            'post_type'      => 'page',
+            'post_status'    => 'publish',
+            'posts_per_page' => 20,
+            'orderby'        => 'menu_order title',
+            'order'          => 'ASC',
+        ) );
+
+        if ( ! empty( $pages ) ) {
+            $md .= "## Core Pages & Documentation\n\n";
+            foreach ( $pages as $p ) {
+                $title = get_the_title( $p );
+                $link  = get_permalink( $p );
+                $excerpt = ! empty( $p->post_excerpt ) ? trim( $p->post_excerpt ) : wp_strip_all_tags( wp_trim_words( $p->post_content, 25 ) );
+                $md .= "- [{$title}]({$link})";
+                if ( ! empty( $excerpt ) ) {
+                    $cleaned_excerpt = preg_replace( '/\s+/', ' ', $excerpt );
+                    $md .= ": " . trim( $cleaned_excerpt );
+                }
+                $md .= "\n";
+            }
+            $md .= "\n";
+        }
+
+        // Query published posts
+        $posts = get_posts( array(
+            'post_type'      => 'post',
+            'post_status'    => 'publish',
+            'posts_per_page' => 20,
+            'orderby'        => 'date',
+            'order'          => 'DESC',
+        ) );
+
+        if ( ! empty( $posts ) ) {
+            $md .= "## Recent Articles & Updates\n\n";
+            foreach ( $posts as $p ) {
+                $title = get_the_title( $p );
+                $link  = get_permalink( $p );
+                $excerpt = ! empty( $p->post_excerpt ) ? trim( $p->post_excerpt ) : wp_strip_all_tags( wp_trim_words( $p->post_content, 25 ) );
+                $md .= "- [{$title}]({$link})";
+                if ( ! empty( $excerpt ) ) {
+                    $cleaned_excerpt = preg_replace( '/\s+/', ' ', $excerpt );
+                    $md .= ": " . trim( $cleaned_excerpt );
+                }
+                $md .= "\n";
+            }
+            $md .= "\n";
+        }
+
+        $feed = get_feed_link();
+        $md .= "## Technical Resources\n\n";
+        if ( ! empty( $feed ) ) {
+            $md .= "- [RSS Feed]({$feed})\n";
+        }
+        $md .= "- [Sitemap]({$site_url}/sitemap_index.xml)\n";
+
+        return $md;
+    }
+
+    public function handle_save_llms() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_save_llms_action', 'leanstack_nonce' );
+
+        $action_mode = isset( $_POST['action_mode'] ) ? sanitize_text_field( $_POST['action_mode'] ) : 'save';
+        if ( 'regenerate' === $action_mode ) {
+            $content = $this->generate_llms_markdown();
+        } else {
+            $content = isset( $_POST['llms_content'] ) ? trim( wp_unslash( $_POST['llms_content'] ) ) : '';
+        }
+
+        update_option( 'leanstack_llms_content', $content );
+        update_option( 'leanstack_llms_auto_sync', isset( $_POST['llms_auto_sync'] ) ? 1 : 0 );
+
+        $llms_file = ABSPATH . 'llms.txt';
+        @file_put_contents( $llms_file, $content . "\n" );
+        @chmod( $llms_file, 0644 );
+
+        $this->purge_fastcgi_url( home_url( '/llms.txt' ) );
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-crawlers', 'tab' => 'llms', 'saved' => '1' ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
+    public function maybe_auto_sync_llms( $post_id = 0, $post = null ) {
+        if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+            return;
+        }
+        if ( $post_id && wp_is_post_revision( $post_id ) ) {
+            return;
+        }
+        if ( ! get_option( 'leanstack_llms_auto_sync', 1 ) ) {
+            return;
+        }
+
+        $content = $this->generate_llms_markdown();
+        update_option( 'leanstack_llms_content', $content );
+
+        $llms_file = ABSPATH . 'llms.txt';
+        @file_put_contents( $llms_file, $content . "\n" );
+        @chmod( $llms_file, 0644 );
+
+        $this->purge_fastcgi_url( home_url( '/llms.txt' ) );
+    }
+
+    public function maybe_serve_dynamic_llms() {
+        if ( ! empty( $_SERVER['REQUEST_URI'] ) ) {
+            $req_path = parse_url( $_SERVER['REQUEST_URI'], PHP_URL_PATH );
+            if ( '/llms.txt' === $req_path ) {
+                header( 'Content-Type: text/markdown; charset=utf-8' );
+                header( 'X-Robots-Tag: noindex, follow' );
+                $content = get_option( 'leanstack_llms_content', '' );
+                if ( empty( $content ) ) {
+                    if ( file_exists( ABSPATH . 'llms.txt' ) ) {
+                        $content = @file_get_contents( ABSPATH . 'llms.txt' );
+                    } else {
+                        $content = $this->generate_llms_markdown();
+                    }
+                }
+                echo $content;
+                exit;
+            }
+        }
+    }
+
+    public function render_crawlers_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+
+        $active_tab = isset( $_GET['tab'] ) && 'llms' === $_GET['tab'] ? 'llms' : 'robots';
+
+        $robots_file = ABSPATH . 'robots.txt';
+        if ( file_exists( $robots_file ) ) {
+            $robots_content = file_get_contents( $robots_file );
+        } else {
+            $robots_content = get_option( 'leanstack_robots_content', $this->get_robots_preset( 'seo' ) );
+        }
+
+        $llms_file = ABSPATH . 'llms.txt';
+        if ( file_exists( $llms_file ) ) {
+            $llms_content = file_get_contents( $llms_file );
+        } else {
+            $llms_content = get_option( 'leanstack_llms_content', '' );
+            if ( empty( $llms_content ) ) {
+                $llms_content = $this->generate_llms_markdown();
+            }
+        }
+        $llms_auto_sync = (int) get_option( 'leanstack_llms_auto_sync', 1 );
+
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'Crawlers & AI Agents Studio', 'leanstack' ); ?></h1>
+            <p><?php _e( 'Enterprise robots.txt manager, AI scraper controls, and automated llms.txt generation for modern LLMs.', 'leanstack' ); ?></p>
+
+            <?php $this->render_status_banner(); ?>
+
+            <?php if ( isset( $_GET['saved'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Configuration saved successfully, disk file updated, and edge cache invalidated.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+
+            <h2 class="nav-tab-wrapper">
+                <a href="<?php echo esc_url( admin_url( 'options-general.php?page=leanstack-crawlers&tab=robots' ) ); ?>" class="nav-tab <?php echo 'robots' === $active_tab ? 'nav-tab-active' : ''; ?>">
+                    <span class="dashicons dashicons-search" style="vertical-align: text-bottom;"></span> <?php _e( 'robots.txt Studio & AI Blockers', 'leanstack' ); ?>
+                </a>
+                <a href="<?php echo esc_url( admin_url( 'options-general.php?page=leanstack-crawlers&tab=llms' ) ); ?>" class="nav-tab <?php echo 'llms' === $active_tab ? 'nav-tab-active' : ''; ?>">
+                    <span class="dashicons dashicons-admin-site" style="vertical-align: text-bottom;"></span> <?php _e( 'llms.txt Studio & Markdown Index', 'leanstack' ); ?>
+                </a>
+            </h2>
+
+            <?php if ( 'robots' === $active_tab ) : ?>
+                <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; margin-top: 15px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid #f0f0f1; padding-bottom: 12px;">
+                        <div>
+                            <h3 style="margin: 0 0 4px 0; color: #1d2327;"><?php _e( 'robots.txt Configuration', 'leanstack' ); ?></h3>
+                            <span style="font-size: 13px; color: #646970;">
+                                <?php if ( file_exists( $robots_file ) ) : ?>
+                                    <span class="dashicons dashicons-yes" style="color: #00a32a; vertical-align: text-bottom;"></span> <?php printf( __( 'Physical file: <code>%s</code> (mode: 0644)', 'leanstack' ), esc_html( $robots_file ) ); ?>
+                                <?php else : ?>
+                                    <span class="dashicons dashicons-info" style="color: #2271b1; vertical-align: text-bottom;"></span> <?php _e( 'Dynamic WordPress filter fallback active (file will be written on save)', 'leanstack' ); ?>
+                                <?php endif; ?>
+                            </span>
+                        </div>
+                        <div>
+                            <a href="<?php echo esc_url( home_url( '/robots.txt' ) ); ?>" target="_blank" class="button button-secondary">
+                                <span class="dashicons dashicons-external" style="vertical-align: text-bottom;"></span> <?php _e( 'View Live robots.txt', 'leanstack' ); ?>
+                            </a>
+                        </div>
+                    </div>
+
+                    <div style="background: #f6f7f7; border: 1px solid #dcdcde; border-radius: 4px; padding: 12px 16px; margin-bottom: 15px;">
+                        <label for="ls-robots-preset" style="font-weight: 600; margin-right: 10px;"><?php _e( 'Load Preset Template:', 'leanstack' ); ?></label>
+                        <select id="ls-robots-preset" style="max-width: 380px;">
+                            <option value=""><?php _e( '-- Choose a Preset Template --', 'leanstack' ); ?></option>
+                            <option value="seo"><?php _e( 'SEO Recommended (Standard Crawlers Allowed)', 'leanstack' ); ?></option>
+                            <option value="block_ai"><?php _e( 'Block AI Scrapers & Data Miners (GPTBot, ClaudeBot, Bytespider, etc.)', 'leanstack' ); ?></option>
+                            <option value="staging"><?php _e( 'Staging / Discourage All Search Engines (Disallow: /)', 'leanstack' ); ?></option>
+                        </select>
+                        <button type="button" id="ls-apply-preset" class="button button-secondary" style="margin-left: 8px;"><?php _e( 'Insert Preset', 'leanstack' ); ?></button>
+                    </div>
+
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_save_robots_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_save_robots">
+
+                        <p>
+                            <textarea id="ls-robots-editor" name="robots_content" rows="18" style="width: 100%; font-family: Consolas, 'Liberation Mono', Menlo, Courier, monospace; font-size: 13px; background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; box-sizing: border-box; line-height: 1.5;"><?php echo esc_textarea( $robots_content ); ?></textarea>
+                        </p>
+
+                        <p class="submit" style="margin-top: 15px;">
+                            <button type="submit" class="button button-primary button-large"><?php _e( 'Save & Publish robots.txt', 'leanstack' ); ?></button>
+                        </p>
+                    </form>
+                </div>
+
+                <script>
+                (function() {
+                    var presets = {
+                        seo: <?php echo json_encode( $this->get_robots_preset( 'seo' ) ); ?>,
+                        block_ai: <?php echo json_encode( $this->get_robots_preset( 'block_ai' ) ); ?>,
+                        staging: <?php echo json_encode( $this->get_robots_preset( 'staging' ) ); ?>
+                    };
+                    var select = document.getElementById('ls-robots-preset');
+                    var applyBtn = document.getElementById('ls-apply-preset');
+                    var editor = document.getElementById('ls-robots-editor');
+
+                    if (applyBtn && select && editor) {
+                        applyBtn.addEventListener('click', function() {
+                            var val = select.value;
+                            if (val && presets[val]) {
+                                if (editor.value.trim() === '' || confirm(<?php echo json_encode( __( 'Replace existing robots.txt editor content with the selected preset?', 'leanstack' ) ); ?>)) {
+                                    editor.value = presets[val];
+                                }
+                            }
+                        });
+                    }
+                })();
+                </script>
+
+            <?php else : ?>
+                <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; margin-top: 15px; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid #f0f0f1; padding-bottom: 12px;">
+                        <div>
+                            <h3 style="margin: 0 0 4px 0; color: #1d2327;"><?php _e( 'llms.txt Markdown Index Studio', 'leanstack' ); ?></h3>
+                            <span style="font-size: 13px; color: #646970;">
+                                <?php if ( file_exists( $llms_file ) ) : ?>
+                                    <span class="dashicons dashicons-yes" style="color: #00a32a; vertical-align: text-bottom;"></span> <?php printf( __( 'Physical file: <code>%s</code> (mode: 0644)', 'leanstack' ), esc_html( $llms_file ) ); ?>
+                                <?php else : ?>
+                                    <span class="dashicons dashicons-info" style="color: #2271b1; vertical-align: text-bottom;"></span> <?php _e( 'Dynamic endpoint fallback active (file will be written on save)', 'leanstack' ); ?>
+                                <?php endif; ?>
+                            </span>
+                        </div>
+                        <div>
+                            <a href="<?php echo esc_url( home_url( '/llms.txt' ) ); ?>" target="_blank" class="button button-secondary">
+                                <span class="dashicons dashicons-external" style="vertical-align: text-bottom;"></span> <?php _e( 'View Live llms.txt', 'leanstack' ); ?>
+                            </a>
+                        </div>
+                    </div>
+
+                    <div style="background: #e7f5fa; border-left: 4px solid #2271b1; padding: 12px 16px; margin-bottom: 20px; border-radius: 0 4px 4px 0;">
+                        <p style="margin: 0; color: #1d2327; font-size: 13px; line-height: 1.5;">
+                            <strong><?php _e( 'About /llms.txt Standard:', 'leanstack' ); ?></strong>
+                            <?php _e( 'Provides AI agents (ChatGPT, Claude, Perplexity, Cursor) with structured markdown context, curated descriptions, and key page links to prevent hallucination and improve LLM search accuracy.', 'leanstack' ); ?>
+                        </p>
+                    </div>
+
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_save_llms_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_save_llms">
+
+                        <p>
+                            <textarea name="llms_content" rows="18" style="width: 100%; font-family: Consolas, 'Liberation Mono', Menlo, Courier, monospace; font-size: 13px; background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; box-sizing: border-box; line-height: 1.5;"><?php echo esc_textarea( $llms_content ); ?></textarea>
+                        </p>
+
+                        <div style="margin: 15px 0;">
+                            <label>
+                                <input type="checkbox" name="llms_auto_sync" value="1" <?php checked( $llms_auto_sync, 1 ); ?>>
+                                <strong><?php _e( 'Automatically regenerate and sync llms.txt whenever posts or pages are published or updated', 'leanstack' ); ?></strong>
+                            </label>
+                        </div>
+
+                        <p class="submit" style="display: flex; gap: 10px; align-items: center;">
+                            <button type="submit" name="action_mode" value="save" class="button button-primary button-large"><?php _e( 'Save & Publish llms.txt', 'leanstack' ); ?></button>
+                            <button type="submit" name="action_mode" value="regenerate" class="button button-secondary button-large" onclick="return confirm(<?php echo esc_attr( json_encode( __( 'Regenerate llms.txt markdown from current site pages and articles?', 'leanstack' ) ) ); ?>);"><?php _e( 'Regenerate from Site Content', 'leanstack' ); ?></button>
+                        </p>
+                    </form>
+                </div>
+            <?php endif; ?>
+        </div>
+        <?php
     }
 }
 

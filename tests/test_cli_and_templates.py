@@ -879,7 +879,68 @@ class TestProfilesAndTemplates(unittest.TestCase):
             res_dup = subprocess.run([lsctl_path, "doctor"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, env=env)
             self.assertIn("Duplicate TLS directives detected in both angie.conf and 00-optimization.conf", res_dup.stdout)
 
+    def test_robots_and_llms_gui_and_angie_directives(self):
+        """Verify vhost.conf.tpl has explicit Angie locations for robots.txt and llms.txt, and bridge registers Crawlers & AI Studio."""
+        vhost_tpl = os.path.join(BASE_DIR, "core", "templates", "vhost.conf.tpl")
+        with open(vhost_tpl, "r") as f:
+            vhost_content = f.read()
+
+        self.assertIn("location = /robots.txt {", vhost_content)
+        self.assertIn("location = /llms.txt {", vhost_content)
+        self.assertIn("try_files $uri /index.php?$args;", vhost_content)
+
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge_content = f.read()
+
+        self.assertIn("'leanstack-crawlers'", bridge_content)
+        self.assertIn("render_crawlers_page", bridge_content)
+        self.assertIn("handle_save_robots", bridge_content)
+        self.assertIn("handle_save_llms", bridge_content)
+        self.assertIn("filter_robots_txt", bridge_content)
+        self.assertIn("generate_llms_markdown", bridge_content)
+        self.assertIn("maybe_auto_sync_llms", bridge_content)
+        self.assertIn("maybe_serve_dynamic_llms", bridge_content)
+        self.assertIn("GPTBot", bridge_content)
+        self.assertIn("ClaudeBot", bridge_content)
+
+    def test_privacy_safe_tenant_telemetry_in_bridge(self):
+        """Verify leanstack-bridge provides normalized percentage telemetry and status badges instead of raw host load/uptime."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            content = f.read()
+
+        self.assertIn("'memory_usage_pct'", content)
+        self.assertIn("'capacity_saturation_pct'", content)
+        self.assertIn("'status_badge'", content)
+        self.assertIn("'Optimal'", content)
+        self.assertIn("'Moderate'", content)
+        self.assertIn("'Elevated'", content)
+        self.assertNotIn("$analytics['system']['load_avg']", content)
+        self.assertNotIn("$analytics['system']['uptime']", content)
+
+    def test_wp_content_permissions_hardening_0755(self):
+        """Verify lsctl, ls-upgrade, and ls-watcher enforce 0755 permissions on wp-content and its subdirectories."""
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_path, "r") as f:
+            lsctl_content = f.read()
+        self.assertIn('chmod 755 "${WEB_ROOT}/wp-content"', lsctl_content)
+        self.assertIn('chmod 755 "${WEB_ROOT}/wp-content/mu-plugins"', lsctl_content)
+
+        upgrade_path = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_path, "r") as f:
+            upgrade_content = f.read()
+        self.assertIn("os.chmod(wp_content_dir, 0o755)", upgrade_content)
+        self.assertIn('for sub in ["plugins", "themes", "uploads", "mu-plugins"]:', upgrade_content)
+
+        watcher_path = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
+        with open(watcher_path, "r") as f:
+            watcher_content = f.read()
+        self.assertIn('chmod 755 "${web_root}/wp-content"', watcher_content)
+        self.assertIn('for sub in plugins themes uploads mu-plugins; do', watcher_content)
+
 if __name__ == "__main__":
     unittest.main()
+
 
 

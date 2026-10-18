@@ -1060,6 +1060,22 @@ table_definition_cache         = 2048
 # --- Character Sets ---
 character-set-server           = utf8mb4
 collation-server               = utf8mb4_unicode_520_ci
+
+[mariadb]
+# Explicit MariaDB server section to enforce High-QPS buffer pool precedence over distribution defaults
+innodb_buffer_pool_size        = {bp_mb}M
+innodb_buffer_pool_dump_at_shutdown = ON
+innodb_buffer_pool_load_at_startup  = ON
+transaction_isolation          = READ-COMMITTED
+aria_pagecache_buffer_size     = {aria_page}
+aria_sort_buffer_size          = 32M
+sort_buffer_size               = {sort_buf}
+join_buffer_size               = {join_buf}
+read_buffer_size               = 512K
+read_rnd_buffer_size           = {read_rnd}
+max_connections                = {max_conn}
+table_open_cache               = 4096
+table_definition_cache         = 2048
 """
             changed = self.force
             if os.path.exists(conf_path):

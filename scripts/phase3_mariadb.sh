@@ -161,6 +161,22 @@ table_definition_cache         = 2048
 # --- Character Sets ---
 character-set-server           = utf8mb4
 collation-server               = utf8mb4_unicode_520_ci
+
+[mariadb]
+# Explicit MariaDB server section to enforce High-QPS buffer pool precedence over distribution defaults
+innodb_buffer_pool_size        = ${BP_MB}M
+innodb_buffer_pool_dump_at_shutdown = ON
+innodb_buffer_pool_load_at_startup  = ON
+transaction_isolation          = READ-COMMITTED
+aria_pagecache_buffer_size     = ${ARIA_PAGE}
+aria_sort_buffer_size          = 32M
+sort_buffer_size               = ${SORT_BUF}
+join_buffer_size               = ${JOIN_BUF}
+read_buffer_size               = 512K
+read_rnd_buffer_size           = ${READ_RND}
+max_connections                = ${MAX_CONN}
+table_open_cache               = 4096
+table_definition_cache         = 2048
 EOF
 
 systemctl restart mariadb

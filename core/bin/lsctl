@@ -202,6 +202,7 @@ Commands:
   migrate         Run database schema migrations only
   sync-tenants    Reconcile MU-plugins and configs across all sites
   stack-upgrade   Upgrade server stack component (mariadb|angie|valkey|all) [version]
+  db:restore      Selectively restore tenant databases from pre-upgrade backup
   qm              Manage Query Monitor db.php drop-in (enable|disable|status)
 
 Options for wp:create:
@@ -375,6 +376,21 @@ PY
             /usr/local/bin/cp-upgrade --stack-upgrade "$@"
         else
             bash "${SCRIPT_DIR}/cp-upgrade" --stack-upgrade "$@"
+        fi
+        exit 0
+        ;;
+
+    db:restore|db-restore)
+        require_root
+        shift || true
+        if [ -f "/opt/leanstack/scripts/restore_tenant_dbs.py" ]; then
+            python3 /opt/leanstack/scripts/restore_tenant_dbs.py "$@"
+        elif [ -f "${SCRIPT_DIR}/../../scripts/restore_tenant_dbs.py" ]; then
+            python3 "${SCRIPT_DIR}/../../scripts/restore_tenant_dbs.py" "$@"
+        elif [ -f "${SCRIPT_DIR}/../scripts/restore_tenant_dbs.py" ]; then
+            python3 "${SCRIPT_DIR}/../scripts/restore_tenant_dbs.py" "$@"
+        else
+            python3 "/opt/leanstack/scripts/restore_tenant_dbs.py" "$@"
         fi
         exit 0
         ;;

@@ -846,6 +846,19 @@ server {
         res_help = subprocess.run([CPCTL_BIN, "help"], stdout=subprocess.PIPE, text=True, check=True)
         self.assertIn("stack-upgrade", res_help.stdout)
 
+    def test_lsctl_db_restore_command_in_help(self):
+        """Verify lsctl help contains the db:restore command."""
+        res_help = subprocess.run([CPCTL_BIN, "help"], stdout=subprocess.PIPE, text=True, check=True)
+        self.assertIn("db:restore", res_help.stdout)
+
+    def test_restore_tenant_dbs_script_syntax(self):
+        """Verify scripts/restore_tenant_dbs.py parses and compiles with valid syntax."""
+        import py_compile
+        restore_script = os.path.join(BASE_DIR, "scripts", "restore_tenant_dbs.py")
+        self.assertTrue(os.path.isfile(restore_script))
+        py_compile.compile(restore_script, doraise=True)
+
 if __name__ == "__main__":
     unittest.main()
+
 

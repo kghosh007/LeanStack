@@ -12,6 +12,7 @@ Provides zero-downtime, safe, and automated upgrades across multi-server fleets:
 - Version tracking in /etc/leanstack/version.json
 """
 
+from __future__ import annotations
 import sys
 import os
 import re
@@ -22,7 +23,7 @@ import time
 import argparse
 import json
 import importlib.util
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 
 class Colors:
@@ -2246,48 +2247,34 @@ password       none
             else:
                 self.log(f"Dry-run: Would back up /etc/mysql and create full database dump in {backup_dir}", Colors.DIM, prefix="  ℹ")
 
-            # 1b. Configure Vendor APT Repository
+            # 1b. Configure Vendor APT Repository via official mariadb_repo_setup
             if not self.dry_run:
                 if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
-                    os_codename = "noble"
-                    if os.path.exists("/etc/os-release"):
-                        try:
-                            with open("/etc/os-release") as f_os:
-                                for l in f_os:
-                                    if l.startswith("VERSION_CODENAME="):
-                                        os_codename = l.split("=")[1].strip().strip('"\'')
-                                        break
-                                    elif l.startswith("UBUNTU_CODENAME="):
-                                        os_codename = l.split("=")[1].strip().strip('"\'')
-                                        break
-                        except Exception:
-                            pass
+                    # Clean up any stale or invalid manual keyrings or lists
+                    for stale in [
+                        "/etc/apt/keyrings/mariadb-keyring.pgp",
+                        "/etc/apt/sources.list.d/mariadb.list",
+                        "/etc/apt/sources.list.d/mariadb.list.save",
+                    ]:
+                        if os.path.exists(stale):
+                            try:
+                                os.remove(stale)
+                            except Exception:
+                                pass
 
-                    keyrings_dir = "/etc/apt/keyrings"
-                    os.makedirs(keyrings_dir, exist_ok=True)
-                    keyring_path = os.path.join(keyrings_dir, "mariadb-keyring.pgp")
-
-                    if not os.path.exists(keyring_path) or os.path.getsize(keyring_path) == 0:
-                        subprocess.run([
-                            "curl", "-fsSL", "https://supplychain.mariadb.com/mariadb-keyring-2019.pgp", "-o", keyring_path
-                        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                        if not os.path.exists(keyring_path) or os.path.getsize(keyring_path) == 0:
-                            subprocess.run([
-                                "curl", "-fsSL", "https://mariadb.org/mariadb_release_signing_key.pgp", "-o", keyring_path
-                            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-
-                    sources_file = "/etc/apt/sources.list.d/mariadb.list"
-                    repo_line = f"deb [signed-by={keyring_path}] https://deb.mariadb.org/{series}/ubuntu {os_codename} main\n"
-                    with open(sources_file, "w") as f_src:
-                        f_src.write(repo_line)
-                    self.log(f"Configured official MariaDB {series} repository in {sources_file}", Colors.GREEN, prefix="  ✔")
+                    server_ver_arg = f"mariadb-{series}" if not req_ver.startswith("mariadb-") else req_ver
+                    self.log(f"Configuring official MariaDB repository for {server_ver_arg} via mariadb_repo_setup...", Colors.CYAN, prefix="  📦")
 
                     env = os.environ.copy()
                     env["DEBIAN_FRONTEND"] = "noninteractive"
-                    subprocess.run(
-                        ["apt-get", "update", "-qq", "-o", "Dir::Etc::sourcelist=sources.list.d/mariadb.list", "-o", "Dir::Etc::sourceparts=-", "-o", "APT::Get::List-Cleanup=0"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False
-                    )
+                    repo_cmd = f"curl -LsS https://r.mariadb.com/downloads/mariadb_repo_setup | bash -s -- --skip-maxscale --mariadb-server-version='{server_ver_arg}'"
+                    res = subprocess.run(["bash", "-c", repo_cmd], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                    if res.returncode == 0:
+                        self.log(f"Official MariaDB repository configured successfully ({server_ver_arg}).", Colors.GREEN, prefix="  ✔")
+                    else:
+                        err_detail = (res.stderr or res.stdout or "").strip()
+                        self.log(f"Notice: mariadb_repo_setup: {err_detail}", Colors.YELLOW, prefix="  ⚠️")
+
                     subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
 
                     # 1c. Upgrade packages preserving configuration files

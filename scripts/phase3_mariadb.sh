@@ -21,25 +21,18 @@ else
 fi
 
 if ! command -v mariadb &>/dev/null || [ "${MARIADB_UPGRADE:-0}" == "1" ]; then
-    echo ">>> [Phase 3] Configuring official MariaDB ${MARIADB_SERIES} repository (Target: ${TARGET_MARIADB_VER})..."
+    echo ">>> [Phase 3] Configuring official MariaDB ${MARIADB_SERIES} repository via mariadb_repo_setup (Target: ${TARGET_MARIADB_VER})..."
     apt-get update -qq
-    apt-get install -y -qq ca-certificates curl gnupg >/dev/null 2>&1 || true
+    apt-get install -y -qq ca-certificates curl gnupg apt-transport-https >/dev/null 2>&1 || true
 
-    mkdir -p /etc/apt/keyrings /etc/apt/trusted.gpg.d
-    curl -fsSL https://supplychain.mariadb.com/mariadb-keyring-2019.pgp -o /etc/apt/keyrings/mariadb-keyring.pgp 2>/dev/null || \
-    curl -fsSL https://mariadb.org/mariadb_release_signing_key.pgp -o /etc/apt/keyrings/mariadb-keyring.pgp 2>/dev/null || true
+    # Clean up any stale or invalid manual keyrings/lists
+    rm -f /etc/apt/keyrings/mariadb-keyring.pgp /etc/apt/sources.list.d/mariadb.list /etc/apt/sources.list.d/mariadb.list.save
 
-    OS_CODENAME="noble"
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-noble}}"
-    fi
+    # Run official MariaDB Corporation repository setup tool
+    curl -LsS https://r.mariadb.com/downloads/mariadb_repo_setup | bash -s -- --skip-maxscale --mariadb-server-version="mariadb-${MARIADB_SERIES}"
 
-    echo "deb [signed-by=/etc/apt/keyrings/mariadb-keyring.pgp] https://deb.mariadb.org/${MARIADB_SERIES}/ubuntu ${OS_CODENAME} main" \
-        > /etc/apt/sources.list.d/mariadb.list
-
-    apt-get update -qq -o Dir::Etc::sourcelist="sources.list.d/mariadb.list" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" 2>/dev/null || apt-get update -qq || true
-    apt-get install -y -qq -o Dpkg::Options::="--force-confold" mariadb-server mariadb-client >/dev/null 2>&1 || \
+    apt-get update -qq
+    apt-get install -y -qq -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" mariadb-server mariadb-client >/dev/null 2>&1 || \
     apt-get install -y -qq mariadb-server mariadb-client >/dev/null
 fi
 

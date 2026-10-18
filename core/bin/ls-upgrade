@@ -1019,7 +1019,6 @@ transaction_isolation          = READ-COMMITTED
 
 # --- InnoDB Buffer Pool ---
 innodb_buffer_pool_size        = {bp_mb}M
-innodb_buffer_pool_instances   = {bp_inst}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 
@@ -1030,7 +1029,6 @@ innodb_flush_log_at_trx_commit = 2
 innodb_flush_method            = O_DIRECT
 innodb_autoinc_lock_mode       = 2
 innodb_adaptive_hash_index     = 1
-innodb_change_buffering        = all
 
 # --- NVMe Storage & I/O Tuning ---
 innodb_io_capacity             = 4000
@@ -1263,7 +1261,9 @@ opcache.jit_hot_loop = 1
         cur = conn.cursor()
 
         try:
-            cur.execute("SELECT domain, user, site_path, php_version FROM sites;")
+            cols = [c[1] for c in cur.execute("PRAGMA table_info(sites);").fetchall()]
+            extra_cols = ", db_name, db_user, db_pass" if all(k in cols for k in ["db_name", "db_user", "db_pass"]) else ""
+            cur.execute(f"SELECT domain, user, site_path, php_version{extra_cols} FROM sites;")
             sites = cur.fetchall()
         except sqlite3.OperationalError:
             conn.close()
@@ -1745,6 +1745,26 @@ password       none
                     except Exception as e:
                         self.log(f"Warning: Reconciling wp-config.php for {domain}: {e}", Colors.YELLOW, prefix="  ⚠️")
 
+                # 4b. Reconcile MariaDB Tenant Database & User Permissions
+                db_name = s["db_name"] if "db_name" in s.keys() and s["db_name"] else None
+                db_user = s["db_user"] if "db_user" in s.keys() and s["db_user"] else None
+                db_pass = s["db_pass"] if "db_pass" in s.keys() and s["db_pass"] else None
+
+                if db_name and db_user and db_pass and hasattr(os, "geteuid") and os.geteuid() == 0:
+                    mariadb_bin = shutil.which("mariadb") or shutil.which("mysql")
+                    if mariadb_bin:
+                        try:
+                            sql = (
+                                f"CREATE DATABASE IF NOT EXISTS `{db_name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci; "
+                                f"CREATE USER IF NOT EXISTS '{db_user}'@'localhost' IDENTIFIED BY '{db_pass}'; "
+                                f"ALTER USER '{db_user}'@'localhost' IDENTIFIED BY '{db_pass}'; "
+                                f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO '{db_user}'@'localhost'; "
+                                "FLUSH PRIVILEGES;"
+                            )
+                            subprocess.run([mariadb_bin, "-e", sql], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        except Exception as e:
+                            self.log(f"Notice: Reconciling database user for {domain}: {e}", Colors.DIM, prefix="  ℹ")
+
                 # 5. Reconcile Valkey ACL User & Permissions
                 acl_file = "/etc/valkey/users.acl"
                 if os.path.isfile(acl_file) or os.path.isdir("/etc/valkey"):
@@ -2055,6 +2075,15 @@ password       none
         """Sanitizes cron log files by stripping legacy benign open_basedir warnings and obsolete sudo '--chdir' errors."""
         self.sanitize_cron_log_paths(["/var/log/lsctl/cron.log", "/var/log/cpctl/cron.log"])
 
+        # Resolve Ubuntu duplicate cloud-init logrotate configuration bug
+        if not self.dry_run and os.path.exists("/etc/logrotate.d/cloud-init") and os.path.exists("/etc/logrotate.d/cloud-init-base"):
+            try:
+                os.remove("/etc/logrotate.d/cloud-init-base")
+                if shutil.which("systemctl") and hasattr(os, "geteuid") and os.geteuid() == 0:
+                    subprocess.run(["systemctl", "--no-ask-password", "restart", "logrotate.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            except Exception:
+                pass
+
     def sanitize_cron_log_paths(self, log_paths: List[str] = None):
         """Sanitizes specific cron log file paths."""
         if self.dry_run:
@@ -2293,14 +2322,24 @@ password       none
 
                     # 1d. Reconcile tuning and restart service
                     self.reconcile_mariadb_tuning()
-                    subprocess.run(["systemctl", "--no-ask-password", "restart", "mariadb"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    res_restart = subprocess.run(["systemctl", "--no-ask-password", "restart", "mariadb"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                    if res_restart.returncode != 0:
+                        self.log(f"Warning: MariaDB service restart returned non-zero code. Attempting fallback start...", Colors.YELLOW, prefix="  ⚠️")
+                        subprocess.run(["systemctl", "--no-ask-password", "start", "mariadb"], check=False)
 
                     # 1e. Upgrade internal catalogs with mariadb-upgrade
                     upgrade_tool = shutil.which("mariadb-upgrade") or shutil.which("mysql_upgrade")
                     if upgrade_tool:
                         self.log("Running mariadb-upgrade to update system tables...", Colors.CYAN, prefix="  🔄")
-                        subprocess.run([upgrade_tool, "-u", "root"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                        self.log("mariadb-upgrade catalog verification completed.", Colors.GREEN, prefix="  ✔")
+                        res_up = subprocess.run([upgrade_tool, "-u", "root"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                        if res_up.returncode == 0:
+                            self.log("mariadb-upgrade catalog verification completed.", Colors.GREEN, prefix="  ✔")
+                        else:
+                            self.log(f"Notice: mariadb-upgrade: {res_up.stderr.strip() or res_up.stdout.strip()}", Colors.YELLOW, prefix="  ⚠️")
+
+                    # 1f. Reconcile registered tenant database permissions
+                    self.log("Reconciling registered tenant database permissions...", Colors.CYAN, prefix="  🔄")
+                    self.sync_active_tenants()
 
                     # Verify connectivity
                     db_check = shutil.which("mariadb") or shutil.which("mysql")

@@ -117,7 +117,6 @@ transaction_isolation          = READ-COMMITTED
 
 # --- InnoDB Buffer Pool ---
 innodb_buffer_pool_size        = ${BP_MB}M
-innodb_buffer_pool_instances   = ${BP_INST}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 
@@ -128,7 +127,6 @@ innodb_flush_log_at_trx_commit = 2
 innodb_flush_method            = O_DIRECT
 innodb_autoinc_lock_mode       = 2
 innodb_adaptive_hash_index     = 1
-innodb_change_buffering        = all
 
 # --- NVMe Storage & I/O Tuning ---
 innodb_io_capacity             = 4000

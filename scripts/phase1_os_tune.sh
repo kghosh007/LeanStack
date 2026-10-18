@@ -154,4 +154,11 @@ for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
     [ -f "$cpu" ] && echo "performance" > "$cpu" 2>/dev/null || true
 done
 
+# Resolve Ubuntu duplicate cloud-init logrotate configuration bug
+if [ -f /etc/logrotate.d/cloud-init ] && [ -f /etc/logrotate.d/cloud-init-base ]; then
+    rm -f /etc/logrotate.d/cloud-init-base
+    systemctl restart logrotate.service 2>/dev/null || true
+fi
+
 echo "✅ [Phase 1] Base OS Cleanup, THP Lockout & Sysctl Tuning Complete!"
+

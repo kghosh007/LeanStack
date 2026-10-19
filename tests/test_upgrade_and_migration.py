@@ -736,6 +736,9 @@ server {
         self.assertIn("semijoin=on", cnf_content)
         self.assertIn("index_condition_pushdown=on", cnf_content)
         self.assertIn("innodb_adaptive_hash_index     = 1", cnf_content)
+        self.assertIn("innodb_buffer_pool_instances", cnf_content)
+        self.assertIn("innodb_io_capacity", cnf_content)
+        self.assertIn("table_open_cache_instances", cnf_content)
 
         # Idempotency check: running again produces True without overwriting differently
         res_second = self.upgrader.reconcile_mariadb_tuning(conf_dir=temp_mariadb_dir)
@@ -857,6 +860,73 @@ server {
         restore_script = os.path.join(BASE_DIR, "scripts", "restore_tenant_dbs.py")
         self.assertTrue(os.path.isfile(restore_script))
         py_compile.compile(restore_script, doraise=True)
+
+    def test_reconcile_valkey_tuning(self):
+        """Verify Valkey maxmemory reconciliation based on host RAM."""
+        valkey_conf = os.path.join(self.test_dir, "valkey.conf")
+        with open(valkey_conf, "w") as f:
+            f.write("port 0\nunixsocket /run/valkey/valkey.sock\nmaxmemory 100mb\nmaxmemory-policy allkeys-lru\n")
+
+        res = self.upgrader.reconcile_valkey_tuning(valkey_conf=valkey_conf)
+        self.assertTrue(res)
+
+        with open(valkey_conf, "r") as f:
+            updated = f.read()
+        self.assertRegex(updated, r"maxmemory\s+\d+mb")
+        self.assertNotIn("maxmemory 100mb", updated)
+
+        # Idempotency check
+        res2 = self.upgrader.reconcile_valkey_tuning(valkey_conf=valkey_conf)
+        self.assertTrue(res2)
+        with open(valkey_conf, "r") as f:
+            self.assertEqual(f.read(), updated)
+
+    def test_reconcile_angie_tuning(self):
+        """Verify Angie worker connections and FastCGI microcache max size reconciliation."""
+        angie_conf = os.path.join(self.test_dir, "angie.conf")
+        with open(angie_conf, "w") as f:
+            f.write("events {\n    worker_connections 1024;\n}\nhttp {\n    fastcgi_cache_path /var/cache/angie/fastcgi keys_zone=WORDPRESS:100m max_size=100m;\n}\n")
+
+        res = self.upgrader.reconcile_angie_tuning(angie_conf=angie_conf)
+        self.assertTrue(res)
+
+        with open(angie_conf, "r") as f:
+            updated = f.read()
+        self.assertRegex(updated, r"worker_connections\s+(4096|8192|16384);")
+        self.assertRegex(updated, r"max_size=(256m|512m|1024m);")
+
+        # Idempotency check
+        res2 = self.upgrader.reconcile_angie_tuning(angie_conf=angie_conf)
+        self.assertTrue(res2)
+        with open(angie_conf, "r") as f:
+            self.assertEqual(f.read(), updated)
+
+    def test_lsctl_db_tune_and_sys_tune_in_help(self):
+        """Verify lsctl help contains db:tune and sys:tune commands."""
+        res_help = subprocess.run([CPCTL_BIN, "help"], stdout=subprocess.PIPE, text=True, check=True)
+        self.assertIn("db:tune", res_help.stdout)
+        self.assertIn("sys:tune", res_help.stdout)
+
+    def test_reconcile_kernel_tuning(self):
+        """Verify reconcile_kernel_tuning creates sysctl and limits configuration files."""
+        temp_sysctl = os.path.join(self.test_dir, "99-leanstack.conf")
+        temp_limits = os.path.join(self.test_dir, "99-limits.conf")
+        res = self.upgrader.reconcile_kernel_tuning(conf_path=temp_sysctl, limits_path=temp_limits)
+        self.assertTrue(res)
+        self.assertTrue(os.path.isfile(temp_sysctl))
+        self.assertTrue(os.path.isfile(temp_limits))
+        with open(temp_sysctl, "r") as f:
+            content = f.read()
+        self.assertIn("fs.file-max", content)
+        self.assertIn("net.core.somaxconn", content)
+        with open(temp_limits, "r") as f:
+            l_content = f.read()
+        self.assertIn("soft nofile 65535", l_content)
+
+        # Also verify unprivileged default run returns True safely
+        res_default = self.upgrader.reconcile_kernel_tuning()
+        self.assertTrue(res_default)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -140,6 +140,25 @@ else
     rm -f /etc/angie/modules.d/cache-purge.conf
 fi
 
+# Dynamic Hardware Probing for Angie
+CPU_CORES=$(nproc)
+RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+if [ "$CPU_CORES" -le 2 ]; then
+    WORKER_CONN=4096
+elif [ "$CPU_CORES" -le 4 ]; then
+    WORKER_CONN=8192
+else
+    WORKER_CONN=16384
+fi
+
+if [ "$RAM_TOTAL_MB" -le 4096 ]; then
+    CACHE_MAX="256m"
+elif [ "$RAM_TOTAL_MB" -le 8192 ]; then
+    CACHE_MAX="512m"
+else
+    CACHE_MAX="1024m"
+fi
+
 # 4. Deploy Global Master Angie Configuration
 cat << 'EOF' > /etc/angie/angie.conf
 user www-data;
@@ -264,6 +283,9 @@ http {
     include /etc/angie/http.d/*.conf;
 }
 EOF
+
+sed -i "s/worker_connections 8192;/worker_connections ${WORKER_CONN};/" /etc/angie/angie.conf
+sed -i "s/max_size=256m;/max_size=${CACHE_MAX};/" /etc/angie/angie.conf
 
 # Generate Self-Signed Default / Fallback SSL Certificate
 mkdir -p /etc/angie/ssl

@@ -324,7 +324,8 @@ class LeanStackInstaller:
         # Install all control plane binaries into /usr/local/bin
         legacy_names = {
             "cpctl", "cp-upgrade", "cp-gatekeeper", "cp-nginx-linter",
-            "cp-cron-queue", "cp-cf-sync", "cp-watcher", "cp-autoupdate"
+            "cp-cron-queue", "cp-cf-sync", "cp-watcher", "cp-autoupdate",
+            "cp-db-tune"
         }
         bin_dir = os.path.join(self.base_dir, "core", "bin")
         if os.path.exists(bin_dir):
@@ -349,7 +350,8 @@ class LeanStackInstaller:
                 ("cp-cron-queue", "ls-cron-queue"),
                 ("cp-cf-sync", "ls-cf-sync"),
                 ("cp-watcher", "ls-watcher"),
-                ("cp-autoupdate", "ls-autoupdate")
+                ("cp-autoupdate", "ls-autoupdate"),
+                ("cp-db-tune", "ls-db-tune")
             ]
             for leg_name, target_name in legacy_links:
                 leg_path = f"/usr/local/bin/{leg_name}"
@@ -394,11 +396,11 @@ class LeanStackInstaller:
 
         # Load centralized version configuration
         v_file = os.path.join(self.base_dir, "core", "version.json")
-        v_num = "1.2.0"
+        v_num = "1.3.0"
         if os.path.exists(v_file):
             try:
                 with open(v_file, "r") as f_v:
-                    v_num = json.load(f_v).get("version", "1.2.0")
+                    v_num = json.load(f_v).get("version", "1.3.0")
             except Exception:
                 pass
 

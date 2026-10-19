@@ -61,16 +61,30 @@ systemctl enable --now disable-thp.service || true
 
 # Dynamic Hardware Probing
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-CPU_CORES=$(nproc)
+RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+[ -z "$RAM_TOTAL_MB" ] || [ "$RAM_TOTAL_MB" -le 0 ] && RAM_TOTAL_MB=2048
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
 
-echo ">>> [Phase 1] Probed: ${CPU_CORES} vCPUs, ${RAM_TOTAL_MB} MB RAM"
+# Dynamically scale file descriptor limits and socket buffers according to system RAM
+if [ "$RAM_TOTAL_MB" -le 2048 ]; then
+    FILE_MAX=524288
+    RMEM_MAX=4194304
+elif [ "$RAM_TOTAL_MB" -le 4096 ]; then
+    FILE_MAX=1048576
+    RMEM_MAX=8388608
+else
+    FILE_MAX=2097152
+    RMEM_MAX=16777216
+fi
+WMEM_MAX=$RMEM_MAX
+
+echo ">>> [Phase 1] Probed: ${CPU_CORES} vCPUs, ${RAM_TOTAL_MB} MB RAM (file-max: ${FILE_MAX}, rmem-max: ${RMEM_MAX})"
 
 # Kernel Sysctl Network & Memory Tuning
 echo ">>> [Phase 1] Applying high-throughput sysctl parameters..."
 cat << EOF > /etc/sysctl.d/99-leanstack.conf
 # File & Socket Limits
-fs.file-max = 2097152
+fs.file-max = ${FILE_MAX}
 fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 1024
 
@@ -87,11 +101,11 @@ net.ipv4.tcp_fastopen = 3
 
 # Buffer memory scaling for 10Gbps / Cloud VPS networks
 net.core.rmem_default = 262144
-net.core.rmem_max = 16777216
+net.core.rmem_max = ${RMEM_MAX}
 net.core.wmem_default = 262144
-net.core.wmem_max = 16777216
-net.ipv4.tcp_rmem = 4096 87380 16777216
-net.ipv4.tcp_wmem = 4096 65536 16777216
+net.core.wmem_max = ${WMEM_MAX}
+net.ipv4.tcp_rmem = 4096 87380 ${RMEM_MAX}
+net.ipv4.tcp_wmem = 4096 65536 ${WMEM_MAX}
 
 # TCP Congestion Control: BBR
 net.core.default_qdisc = fq
@@ -119,7 +133,7 @@ EOF
 
 # Install Utilities & ZRAM
 echo ">>> [Phase 1] Installing core performance tools & ZRAM..."
-apt-get install -y -qq zram-tools cpufrequtils htop iotop iftop net-tools msmtp msmtp-mta >/dev/null 2>&1 || true
+apt-get install -y -qq zram-tools cpufrequtils htop iotop iftop net-tools msmtp msmtp-mta mysqltuner >/dev/null 2>&1 || true
 
 # Configure ZRAM (50% of RAM, zstd compression)
 cat << 'EOF' > /etc/default/zramswap
@@ -130,8 +144,9 @@ EOF
 
 systemctl restart zramswap 2>/dev/null || true
 
-# Fallback 2GB Swapfile if none exists
-if [ ! -f /swapfile ] && [ "$(swapon --show | wc -l)" -le 1 ]; then
+# Fallback 2GB Swapfile if none exists and at least 5GB free disk space
+FREE_DISK_MB=$(df -m / 2>/dev/null | awk 'NR==2 {print $4}' || echo 0)
+if [ ! -f /swapfile ] && [ "$(swapon --show | wc -l)" -le 1 ] && [ "$FREE_DISK_MB" -ge 5000 ]; then
     echo ">>> [Phase 1] Creating 2GB emergency swap safety file..."
     fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
     chmod 600 /swapfile

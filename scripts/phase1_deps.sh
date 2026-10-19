@@ -15,7 +15,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
     curl ca-certificates gnupg lsb-release sqlite3 git \
-    msmtp msmtp-mta \
+    msmtp msmtp-mta mysqltuner \
     zram-tools cpufrequtils htop iotop iftop net-tools >/dev/null 2>&1 || true
 
 echo "✔ Base dependencies and msmtp relay confirmed."

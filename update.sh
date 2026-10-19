@@ -30,9 +30,12 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+TUNE_ONLY=0
 for arg in "$@"; do
     if [ "$arg" == "--dry-run" ]; then
         DRY_RUN=1
+    elif [ "$arg" == "--tune" ] || [ "$arg" == "--auto-tune" ] || [ "$arg" == "--reconcile-tuning" ]; then
+        TUNE_ONLY=1
     fi
 done
 
@@ -45,6 +48,36 @@ echo "  ███████╗███████╗██║  ██║█�
 echo "  ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝"
 echo -e "${NC}"
 echo -e "${GREEN}>>> LeanStack Autonomous Upgrade Engine${NC}"
+echo "------------------------------------------------------------------------------"
+
+# Probed Host Hardware Resources
+RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+[ -z "$RAM_TOTAL_MB" ] || [ "$RAM_TOTAL_MB" -le 0 ] && RAM_TOTAL_MB=2048
+CPU_CORES=$(nproc 2>/dev/null || echo 1)
+DISK_TYPE="SATA SSD"
+ROOT_DEV=""
+if [ -f /proc/mounts ]; then
+    ROOT_DEV=$(awk '$2 == "/" {print $1}' /proc/mounts 2>/dev/null | xargs basename 2>/dev/null || true)
+fi
+if [[ "$ROOT_DEV" == *"nvme"* ]] || ls /dev/nvme* &>/dev/null; then
+    DISK_TYPE="NVMe SSD"
+elif [ -n "$ROOT_DEV" ] && [ -f "/sys/block/$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//')/queue/rotational" ]; then
+    if [ "$(cat "/sys/block/$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//')/queue/rotational" 2>/dev/null)" == "1" ]; then
+        DISK_TYPE="HDD (Rotational)"
+    fi
+elif ls /sys/block/*/queue/rotational &>/dev/null; then
+    for bp in /sys/block/*/queue/rotational; do
+        bdev=$(basename "$(dirname "$(dirname "$bp")")")
+        case "$bdev" in loop*|ram*) continue ;; esac
+        if [[ "$bdev" == *"nvme"* ]]; then
+            DISK_TYPE="NVMe SSD"
+            break
+        elif [ "$(cat "$bp" 2>/dev/null)" == "1" ]; then
+            DISK_TYPE="HDD (Rotational)"
+        fi
+    done
+fi
+echo -e "${GREEN}✔ Probed Resources:${NC} ${CPU_CORES} vCPUs, ${RAM_TOTAL_MB} MB RAM, Storage: ${DISK_TYPE}"
 echo "------------------------------------------------------------------------------"
 
 # Root validation
@@ -97,7 +130,8 @@ if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/core/bin" ]; then
     # Legacy compatibility links: safely unlink before creating fresh symlinks
     for leg in cpctl:lsctl cp-upgrade:ls-upgrade cp-gatekeeper:ls-gatekeeper \
                cp-nginx-linter:ls-nginx-linter cp-cron-queue:ls-cron-queue \
-               cp-cf-sync:ls-cf-sync cp-watcher:ls-watcher cp-autoupdate:ls-autoupdate; do
+               cp-cf-sync:ls-cf-sync cp-watcher:ls-watcher cp-autoupdate:ls-autoupdate \
+               cp-db-tune:ls-db-tune; do
         leg_name="${leg%%:*}"
         target_name="${leg##*:}"
         rm -f "/usr/local/bin/${leg_name}"
@@ -129,14 +163,29 @@ fi
 
 # 3. Execute Master Upgrade Orchestrator with the latest core/bin/ls-upgrade
 if [ -f "${INSTALL_DIR}/core/bin/ls-upgrade" ]; then
-    echo -e "${GREEN}✔ Executing upgrade via ${INSTALL_DIR}/core/bin/ls-upgrade...${NC}"
-    exec python3 "${INSTALL_DIR}/core/bin/ls-upgrade" "$@"
+    if [ "$TUNE_ONLY" -eq 1 ]; then
+        echo -e "${GREEN}✔ Executing hardware auto-tuning via ${INSTALL_DIR}/core/bin/ls-upgrade...${NC}"
+        exec python3 "${INSTALL_DIR}/core/bin/ls-upgrade" --reconcile-tuning "$@"
+    else
+        echo -e "${GREEN}✔ Executing upgrade via ${INSTALL_DIR}/core/bin/ls-upgrade...${NC}"
+        exec python3 "${INSTALL_DIR}/core/bin/ls-upgrade" "$@"
+    fi
 elif command -v lsctl >/dev/null 2>&1; then
-    echo -e "${GREEN}✔ Executing upgrade via lsctl...${NC}"
-    exec lsctl update "$@"
+    if [ "$TUNE_ONLY" -eq 1 ]; then
+        echo -e "${GREEN}✔ Executing hardware auto-tuning via lsctl sys:tune...${NC}"
+        exec lsctl sys:tune "$@"
+    else
+        echo -e "${GREEN}✔ Executing upgrade via lsctl...${NC}"
+        exec lsctl update "$@"
+    fi
 elif command -v cpctl >/dev/null 2>&1; then
-    echo -e "${GREEN}✔ Executing upgrade via cpctl alias...${NC}"
-    exec cpctl update "$@"
+    if [ "$TUNE_ONLY" -eq 1 ]; then
+        echo -e "${GREEN}✔ Executing hardware auto-tuning via cpctl sys:tune...${NC}"
+        exec cpctl sys:tune "$@"
+    else
+        echo -e "${GREEN}✔ Executing upgrade via cpctl alias...${NC}"
+        exec cpctl update "$@"
+    fi
 else
     echo -e "${RED}❌ Error: LeanStack does not appear to be installed on this host.${NC}" >&2
     echo -e "To install LeanStack, run:" >&2

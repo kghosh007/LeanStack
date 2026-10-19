@@ -8,7 +8,7 @@
 # ==============================================================================
 set -euo pipefail
 
-LEANSTACK_VERSION="1.2.0"
+LEANSTACK_VERSION="1.3.0"
 DEFAULT_REPO_URL="${LEANSTACK_REPO_URL:-https://github.com/kghosh007/LeanStack.git}"
 
 # Auto-detect local development clone vs default production target (pipe-safe)
@@ -28,7 +28,7 @@ fi
 
 # Load centralized version if repository clone exists
 if [ -f "${INSTALL_DIR}/core/version.json" ] && command -v python3 >/dev/null 2>&1; then
-    LEANSTACK_VERSION="$(python3 -c "import json; print(json.load(open('${INSTALL_DIR}/core/version.json')).get('version', '1.2.0'))" 2>/dev/null || echo "1.2.0")"
+    LEANSTACK_VERSION="$(python3 -c "import json; print(json.load(open('${INSTALL_DIR}/core/version.json')).get('version', '1.3.0'))" 2>/dev/null || echo "1.3.0")"
 fi
 
 DRY_RUN=0
@@ -82,6 +82,51 @@ if [ -f /etc/os-release ]; then
         echo -e "${GREEN}✔ Validated Operating System: Ubuntu ${VERSION_ID} LTS${NC}"
     fi
 fi
+
+# 2b. Hardware Resource Probing & Telemetry Calculation
+TOTAL_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+[ -z "$TOTAL_RAM_MB" ] || [ "$TOTAL_RAM_MB" -le 0 ] && TOTAL_RAM_MB=2048
+TOTAL_CORES=$(nproc 2>/dev/null || echo 1)
+DISK_TYPE="SATA SSD"
+ROOT_DEV=""
+if [ -f /proc/mounts ]; then
+    ROOT_DEV=$(awk '$2 == "/" {print $1}' /proc/mounts 2>/dev/null | xargs basename 2>/dev/null || true)
+fi
+if [[ "$ROOT_DEV" == *"nvme"* ]] || ls /dev/nvme* &>/dev/null; then
+    DISK_TYPE="NVMe SSD"
+elif [ -n "$ROOT_DEV" ] && [ -f "/sys/block/$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//')/queue/rotational" ]; then
+    if [ "$(cat "/sys/block/$(echo "$ROOT_DEV" | sed -E 's/p?[0-9]+$//')/queue/rotational" 2>/dev/null)" == "1" ]; then
+        DISK_TYPE="HDD (Rotational)"
+    fi
+elif ls /sys/block/*/queue/rotational &>/dev/null; then
+    for bp in /sys/block/*/queue/rotational; do
+        bdev=$(basename "$(dirname "$(dirname "$bp")")")
+        case "$bdev" in loop*|ram*) continue ;; esac
+        if [[ "$bdev" == *"nvme"* ]]; then
+            DISK_TYPE="NVMe SSD"
+            break
+        elif [ "$(cat "$bp" 2>/dev/null)" == "1" ]; then
+            DISK_TYPE="HDD (Rotational)"
+        fi
+    done
+fi
+
+# Resource Calculations
+if [ "$TOTAL_RAM_MB" -le 2048 ]; then
+    CALC_BP="512M"
+    CALC_VALKEY="128MB"
+elif [ "$TOTAL_RAM_MB" -le 4096 ]; then
+    CALC_BP="$(( TOTAL_RAM_MB * 35 / 100 ))M"
+    CALC_VALKEY="$(( TOTAL_RAM_MB * 10 / 100 ))MB"
+elif [ "$TOTAL_RAM_MB" -le 8192 ]; then
+    CALC_BP="2800M"
+    CALC_VALKEY="$(( TOTAL_RAM_MB * 10 / 100 ))MB"
+else
+    CALC_BP="$(( TOTAL_RAM_MB * 55 / 100 ))M"
+    CALC_VALKEY="2048MB"
+fi
+echo -e "${GREEN}✔ Probed Resources:${NC} ${TOTAL_CORES} vCPUs, ${TOTAL_RAM_MB} MB RAM (~$(( (TOTAL_RAM_MB + 512) / 1024 )) GB), Storage: ${DISK_TYPE}"
+echo -e "${CYAN}  Auto-calculated Baseline:${NC} MariaDB Buffer Pool: ${CALC_BP} | Valkey Cache: ${CALC_VALKEY}"
 
 # 3. Prerequisites Installation & Pre-Flight APT Sanitization
 if [ "$DRY_RUN" -eq 0 ] && [ "$EUID" -eq 0 ]; then

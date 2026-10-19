@@ -297,7 +297,8 @@ class LeanStackUpgrader:
 
         legacy_names = {
             "cpctl", "cp-upgrade", "cp-gatekeeper", "cp-nginx-linter",
-            "cp-cron-queue", "cp-cf-sync", "cp-watcher", "cp-autoupdate"
+            "cp-cron-queue", "cp-cf-sync", "cp-watcher", "cp-autoupdate",
+            "cp-db-tune"
         }
         for b in os.listdir(self.bin_dir):
             if b in legacy_names or b.startswith("cp-") or b == "cpctl":
@@ -326,7 +327,8 @@ class LeanStackUpgrader:
             ("cp-cron-queue", "ls-cron-queue"),
             ("cp-cf-sync", "ls-cf-sync"),
             ("cp-watcher", "ls-watcher"),
-            ("cp-autoupdate", "ls-autoupdate")
+            ("cp-autoupdate", "ls-autoupdate"),
+            ("cp-db-tune", "ls-db-tune")
         ]
         for leg_name, target_name in legacy_links:
             leg_path = os.path.join(target_dir, leg_name)
@@ -990,6 +992,57 @@ class LeanStackUpgrader:
             table_inst = min(cores, 16)
             log_mb = min(bp_mb // 4, 1024)
 
+            # Storage-aware I/O capacity and thread scaling
+            is_nvme = False
+            is_rotational = False
+            try:
+                root_dev = ""
+                if os.path.exists("/proc/mounts"):
+                    with open("/proc/mounts", "r") as f_m:
+                        for line in f_m:
+                            parts = line.split()
+                            if len(parts) >= 2 and parts[1] == "/":
+                                root_dev = os.path.basename(parts[0])
+                                break
+
+                if "nvme" in root_dev or glob.glob("/dev/nvme*"):
+                    is_nvme = True
+                else:
+                    base_root_dev = re.sub(r'p?\d+$', '', root_dev) if root_dev else ""
+                    if base_root_dev and os.path.exists(f"/sys/block/{base_root_dev}/queue/rotational"):
+                        with open(f"/sys/block/{base_root_dev}/queue/rotational", "r") as f_rot:
+                            if f_rot.read().strip() == "1":
+                                is_rotational = True
+                    else:
+                        for b_path in glob.glob("/sys/block/*/queue/rotational"):
+                            dev = b_path.split("/")[3]
+                            if dev.startswith("loop") or dev.startswith("ram"):
+                                continue
+                            if "nvme" in dev:
+                                is_nvme = True
+                                break
+                            with open(b_path, "r") as f_rot:
+                                if f_rot.read().strip() == "1":
+                                    is_rotational = True
+            except Exception:
+                pass
+
+            if is_nvme:
+                io_capacity = 4000 if cores <= 2 else (8000 if cores <= 8 else 15000)
+                io_capacity_max = io_capacity * 2
+                io_threads = min(8, max(4, cores))
+                flush_neighbors = 0
+            elif not is_rotational:
+                io_capacity = 1000 if cores <= 2 else 2000
+                io_capacity_max = io_capacity * 2
+                io_threads = min(4, max(2, cores))
+                flush_neighbors = 0
+            else:
+                io_capacity = 200
+                io_capacity_max = 400
+                io_threads = 2
+                flush_neighbors = 1
+
             conf_path = os.path.join(conf_dir, "99-leanstack-highqps.cnf")
             conf_content = f"""[mysqld]
 # ==============================================================================
@@ -1019,6 +1072,7 @@ transaction_isolation          = READ-COMMITTED
 
 # --- InnoDB Buffer Pool ---
 innodb_buffer_pool_size        = {bp_mb}M
+innodb_buffer_pool_instances   = {bp_inst}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 
@@ -1030,12 +1084,12 @@ innodb_flush_log_at_trx_commit = 2
 innodb_autoinc_lock_mode       = 2
 innodb_adaptive_hash_index     = 1
 
-# --- NVMe Storage & I/O Tuning ---
-innodb_io_capacity             = 4000
-innodb_io_capacity_max         = 8000
-innodb_read_io_threads         = 4
-innodb_write_io_threads        = 4
-innodb_flush_neighbors         = 0
+# --- Storage & I/O Tuning (Hardware-Aware) ---
+innodb_io_capacity             = {io_capacity}
+innodb_io_capacity_max         = {io_capacity_max}
+innodb_read_io_threads         = {io_threads}
+innodb_write_io_threads        = {io_threads}
+innodb_flush_neighbors         = {flush_neighbors}
 
 # --- In-Memory Sorting & Query Buffers ---
 sort_buffer_size               = {sort_buf}
@@ -1064,6 +1118,7 @@ collation-server               = utf8mb4_unicode_520_ci
 [mariadb]
 # Explicit MariaDB server section to enforce High-QPS buffer pool precedence over distribution defaults
 innodb_buffer_pool_size        = {bp_mb}M
+innodb_buffer_pool_instances   = {bp_inst}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 transaction_isolation          = READ-COMMITTED
@@ -1075,7 +1130,13 @@ read_buffer_size               = 512K
 read_rnd_buffer_size           = {read_rnd}
 max_connections                = {max_conn}
 table_open_cache               = 4096
+table_open_cache_instances     = {table_inst}
 table_definition_cache         = 2048
+innodb_io_capacity             = {io_capacity}
+innodb_io_capacity_max         = {io_capacity_max}
+innodb_read_io_threads         = {io_threads}
+innodb_write_io_threads        = {io_threads}
+innodb_flush_neighbors         = {flush_neighbors}
 """
             changed = self.force
             if os.path.exists(conf_path):
@@ -1126,13 +1187,26 @@ table_definition_cache         = 2048
         """
         Reconciles OPcache & JIT and global date.timezone across all installed PHP versions:
         - Drops /etc/php/{p_ver}/fpm/conf.d/99-leanstack-opcache.ini ensuring JIT is active.
+        - Scales opcache.memory_consumption dynamically based on available system RAM (128M - 512M).
         - Sets date.timezone = UTC in php.ini to eliminate filesystem stat(/etc/localtime) calls.
         """
+        ram_mb = 2048
+        if os.path.exists("/proc/meminfo"):
+            try:
+                with open("/proc/meminfo", "r") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            ram_mb = int(line.split()[1]) // 1024
+                            break
+            except Exception:
+                pass
+        opcache_mb = max(128, min(512, int(ram_mb * 0.05)))
+
         reloaded = False
-        opcache_ini_content = """; --- LeanStack High-Performance OPcache & JIT Profile ---
+        opcache_ini_content = f"""; --- LeanStack High-Performance OPcache & JIT Profile ---
 opcache.enable = 1
 opcache.enable_cli = 0
-opcache.memory_consumption = 256
+opcache.memory_consumption = {opcache_mb}
 opcache.interned_strings_buffer = 32
 opcache.max_accelerated_files = 30000
 opcache.revalidate_freq = 60
@@ -1181,8 +1255,220 @@ opcache.jit_hot_loop = 1
             except Exception as e:
                 self.log(f"Notice: PHP OPcache reconciliation for {p_ver}: {e}", Colors.DIM, prefix="  ℹ")
         if reloaded:
-            self.log("Reconciled PHP OPcache JIT & date.timezone=UTC across installed PHP versions.", Colors.GREEN, prefix="  ✔")
+            self.log(f"Reconciled PHP OPcache ({opcache_mb}M) & date.timezone=UTC across installed PHP versions.", Colors.GREEN, prefix="  ✔")
         return reloaded
+
+    def reconcile_valkey_tuning(self, valkey_conf: str = "/etc/valkey/valkey.conf") -> bool:
+        """
+        Reconciles Valkey in-memory cache memory bounds:
+        - Automatically scales maxmemory to 10% of total host RAM (clamped between 128MB and 2048MB).
+        - Ensures unix domain socket (/run/valkey/valkey.sock) and disabled TCP port 0.
+        - Dynamic live update via valkey-cli if service is active.
+        """
+        if not os.path.isfile(valkey_conf):
+            return False
+
+        try:
+            ram_mb = 2048
+            if os.path.exists("/proc/meminfo"):
+                try:
+                    with open("/proc/meminfo", "r") as f:
+                        for line in f:
+                            if line.startswith("MemTotal:"):
+                                ram_mb = int(line.split()[1]) // 1024
+                                break
+                except Exception:
+                    pass
+            valkey_mb = max(128, min(int(ram_mb * 0.10), 2048))
+
+            with open(valkey_conf, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            modified = False
+            m_mem = re.search(r"^[ \t]*maxmemory\s+(\d+)(mb|m)?", content, re.M | re.I)
+            if not m_mem or int(m_mem.group(1)) != valkey_mb:
+                if m_mem:
+                    content = re.sub(r"^[ \t]*maxmemory\s+.*", f"maxmemory {valkey_mb}mb", content, flags=re.M)
+                else:
+                    content += f"\nmaxmemory {valkey_mb}mb\n"
+                modified = True
+
+            if modified and not self.dry_run:
+                with open(valkey_conf, "w", encoding="utf-8") as f:
+                    f.write(content)
+                self.log(f"Reconciled Valkey maxmemory ({valkey_mb}mb) in {valkey_conf}", Colors.GREEN, prefix="  ✔")
+
+                # Live apply if running
+                cli_bin = shutil.which("valkey-cli") or shutil.which("redis-cli")
+                sock_candidates = ["/run/valkey/valkey.sock", "/run/redis/redis-server.sock"]
+                v_sock = next((s for s in sock_candidates if os.path.exists(s)), None)
+                if cli_bin and v_sock:
+                    subprocess.run([cli_bin, "-s", v_sock, "config", "set", "maxmemory", f"{valkey_mb}mb"],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            return True
+        except Exception as e:
+            self.log(f"Notice: Valkey tuning reconciliation: {e}", Colors.DIM, prefix="  ℹ")
+            return False
+
+    def reconcile_angie_tuning(self, angie_conf: str = "/etc/angie/angie.conf") -> bool:
+        """
+        Reconciles Angie web server worker parameters and microcache limits:
+        - Scales worker_connections (4096 / 8192 / 16384) based on CPU cores.
+        - Scales fastcgi_cache_path max_size (256m / 512m / 1024m) based on RAM.
+        """
+        if not os.path.isfile(angie_conf):
+            return False
+
+        try:
+            cores = os.cpu_count() or 1
+            ram_mb = 2048
+            if os.path.exists("/proc/meminfo"):
+                try:
+                    with open("/proc/meminfo", "r") as f:
+                        for line in f:
+                            if line.startswith("MemTotal:"):
+                                ram_mb = int(line.split()[1]) // 1024
+                                break
+                except Exception:
+                    pass
+
+            worker_conn = 4096 if cores <= 2 else (8192 if cores <= 4 else 16384)
+            cache_max = "256m" if ram_mb <= 4096 else ("512m" if ram_mb <= 8192 else "1024m")
+
+            with open(angie_conf, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            modified = False
+            m_conn = re.search(r"worker_connections\s+(\d+);", content)
+            if not m_conn or int(m_conn.group(1)) != worker_conn:
+                content = re.sub(r"worker_connections\s+\d+;", f"worker_connections {worker_conn};", content)
+                modified = True
+
+            m_cache = re.search(r"max_size=([0-9a-zA-Z]+);", content)
+            if m_cache and m_cache.group(1).lower() != cache_max.lower():
+                content = re.sub(r"max_size=[0-9a-zA-Z]+;", f"max_size={cache_max};", content)
+                modified = True
+
+            if modified and not self.dry_run:
+                with open(angie_conf, "w", encoding="utf-8") as f:
+                    f.write(content)
+                self.log(f"Reconciled Angie worker_connections ({worker_conn}) and cache max_size ({cache_max})", Colors.GREEN, prefix="  ✔")
+            return True
+        except Exception as e:
+            self.log(f"Notice: Angie tuning reconciliation: {e}", Colors.DIM, prefix="  ℹ")
+            return False
+
+    def reconcile_kernel_tuning(self, conf_path: str = "/etc/sysctl.d/99-leanstack.conf", limits_path: str = "/etc/security/limits.d/99-leanstack.conf") -> bool:
+        """
+        Reconciles Linux kernel sysctl (/etc/sysctl.d/99-leanstack.conf)
+        and file limits (/etc/security/limits.d/99-leanstack.conf) based on hardware resources.
+        """
+        try:
+            ram_mb = 2048
+            if os.path.exists("/proc/meminfo"):
+                try:
+                    with open("/proc/meminfo", "r") as f:
+                        for line in f:
+                            if line.startswith("MemTotal:"):
+                                ram_mb = int(line.split()[1]) // 1024
+                                break
+                except Exception:
+                    pass
+
+            file_max = 2097152 if ram_mb >= 4096 else (1048576 if ram_mb >= 2048 else 524288)
+            rmem_max = 16777216 if ram_mb >= 4096 else (8388608 if ram_mb >= 2048 else 4194304)
+            wmem_max = rmem_max
+
+            sysctl_content = f"""# File & Socket Limits
+fs.file-max = {file_max}
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024
+
+# Network Backlog & Fast Connection Recycling
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 16384
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.ip_local_port_range = 1024 65535
+
+# TCP Fast Open (3 = Client & Server enabled)
+net.ipv4.tcp_fastopen = 3
+
+# Buffer memory scaling for 10Gbps / Cloud VPS networks
+net.core.rmem_default = 262144
+net.core.rmem_max = {rmem_max}
+net.core.wmem_default = 262144
+net.core.wmem_max = {wmem_max}
+net.ipv4.tcp_rmem = 4096 87380 {rmem_max}
+net.ipv4.tcp_wmem = 4096 65536 {wmem_max}
+
+# TCP Congestion Control: BBR
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# Memory & I/O management
+vm.swappiness = 10
+vm.dirty_ratio = 10
+vm.dirty_background_ratio = 5
+vm.vfs_cache_pressure = 50
+vm.overcommit_memory = 1
+"""
+            limits_content = """* soft nofile 65535
+* hard nofile 65535
+root soft nofile 65535
+root hard nofile 65535
+www-data soft nofile 65535
+www-data hard nofile 65535
+"""
+            modified = False
+            if not os.path.exists(conf_path):
+                modified = True
+            else:
+                with open(conf_path, "r", encoding="utf-8") as f:
+                    if f.read().strip() != sysctl_content.strip():
+                        modified = True
+
+            if modified and not self.dry_run:
+                try:
+                    os.makedirs(os.path.dirname(conf_path), exist_ok=True)
+                    with open(conf_path, "w", encoding="utf-8") as f:
+                        f.write(sysctl_content)
+                    if shutil.which("sysctl") and hasattr(os, "geteuid") and os.geteuid() == 0:
+                        subprocess.run(["sysctl", "--system"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    self.log(f"Reconciled kernel sysctl parameters at {conf_path}", Colors.GREEN, prefix="  ✔")
+                except PermissionError as pe:
+                    if hasattr(os, "geteuid") and os.geteuid() != 0 and conf_path.startswith("/etc"):
+                        self.log(f"Notice: Kernel sysctl tuning reconciliation skipped (unprivileged): {pe}", Colors.DIM, prefix="  ℹ")
+                    else:
+                        raise
+
+            limits_modified = False
+            if not os.path.exists(limits_path):
+                limits_modified = True
+            else:
+                try:
+                    with open(limits_path, "r", encoding="utf-8") as f:
+                        if f.read().strip() != limits_content.strip():
+                            limits_modified = True
+                except Exception:
+                    limits_modified = True
+
+            if limits_modified and not self.dry_run:
+                try:
+                    os.makedirs(os.path.dirname(limits_path), exist_ok=True)
+                    with open(limits_path, "w", encoding="utf-8") as f:
+                        f.write(limits_content)
+                except PermissionError as pe:
+                    if hasattr(os, "geteuid") and os.geteuid() != 0 and limits_path.startswith("/etc"):
+                        self.log(f"Notice: Kernel limits tuning reconciliation skipped (unprivileged): {pe}", Colors.DIM, prefix="  ℹ")
+                    else:
+                        raise
+
+            return True
+        except Exception as e:
+            self.log(f"Notice: Kernel sysctl tuning reconciliation: {e}", Colors.DIM, prefix="  ℹ")
+            return False
 
     def reconcile_pool_content(self, content: str, user: str) -> tuple[str, bool]:
         """
@@ -2167,8 +2453,17 @@ password       none
         except Exception:
             pass
 
+        version_str = "1.3.0"
+        try:
+            repo_ver_path = os.path.join(self.base_dir, "core", "version.json")
+            if os.path.exists(repo_ver_path):
+                with open(repo_ver_path, "r") as f:
+                    version_str = json.load(f).get("version", "1.3.0")
+        except Exception:
+            pass
+
         data = {
-            "version": "1.1.0",
+            "version": version_str,
             "git_commit": git_commit,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "last_migrations_applied": applied_count
@@ -2178,43 +2473,50 @@ password       none
             with open(self.version_file, "w") as f:
                 json.dump(data, f, indent=2)
 
+
     def reconcile_recommended_packages(self) -> bool:
         """
-        Ensures recommended packages (such as msmtp and msmtp-mta for transactional email relay)
+        Ensures recommended packages (such as msmtp for email relay and mysqltuner for database diagnostics)
         are installed on the host. Automatically installs them if missing or prompts in interactive mode.
         """
-        if shutil.which("msmtp"):
+        missing = []
+        if not shutil.which("msmtp"):
+            missing.extend(["msmtp", "msmtp-mta"])
+        if not shutil.which("mysqltuner"):
+            missing.append("mysqltuner")
+
+        if not missing:
             return True
 
-        self.log("Recommended package 'msmtp' (OS Lightweight Email Relay) is not installed.", Colors.YELLOW, prefix="  ⚠️")
+        self.log(f"Recommended package(s) missing: {', '.join(missing)}.", Colors.YELLOW, prefix="  ⚠️")
         if self.dry_run:
-            self.log("Dry-run: Would install msmtp and msmtp-mta via apt.", Colors.DIM, prefix="  ℹ")
+            self.log(f"Dry-run: Would install {', '.join(missing)} via apt.", Colors.DIM, prefix="  ℹ")
             return True
 
         if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
             should_install = True
             if sys.stdin.isatty() and not self.force and not self.quiet:
                 try:
-                    resp = input(">>> Install recommended optional package 'msmtp' now? [Y/n]: ").strip().lower()
+                    resp = input(f">>> Install recommended packages ({', '.join(missing)}) now? [Y/n]: ").strip().lower()
                     if resp in ["n", "no"]:
                         should_install = False
                 except Exception:
                     should_install = True
 
             if should_install:
-                self.log("Installing recommended package 'msmtp' and 'msmtp-mta'...", Colors.CYAN, prefix="  📦")
+                self.log(f"Installing recommended packages ({', '.join(missing)})...", Colors.CYAN, prefix="  📦")
                 env = os.environ.copy()
                 env["DEBIAN_FRONTEND"] = "noninteractive"
                 subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
                 res = subprocess.run(
-                    ["apt-get", "install", "-y", "-qq", "msmtp", "msmtp-mta"],
+                    ["apt-get", "install", "-y", "-qq"] + missing,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False
                 )
                 if res.returncode == 0:
-                    self.log("Successfully installed msmtp.", Colors.GREEN, prefix="  ✔")
+                    self.log(f"Successfully installed {', '.join(missing)}.", Colors.GREEN, prefix="  ✔")
                     return True
                 else:
-                    self.log("Notice: Failed to install msmtp automatically.", Colors.YELLOW, prefix="  ⚠️")
+                    self.log(f"Notice: Failed to install some recommended packages automatically.", Colors.YELLOW, prefix="  ⚠️")
                     return False
         return False
 
@@ -2527,9 +2829,12 @@ password       none
         if not self.reconcile_angie_tls():
             return False
 
-        # 7. Database Engine & PHP OPcache High-QPS Tuning Reconciliation
+        # 7. Hardware-Aware Auto-Tuning Reconciliation (MariaDB, Valkey, Angie, PHP OPcache, Kernel)
         self.reconcile_mariadb_tuning()
+        self.reconcile_valkey_tuning()
+        self.reconcile_angie_tuning()
         self.reconcile_php_opcache()
+        self.reconcile_kernel_tuning()
 
         # 8. Tenant reconciliation
         self.sync_tenants()
@@ -2566,6 +2871,7 @@ def main():
     parser.add_argument("--db-file", help="Path to SQLite sites.db file")
     parser.add_argument("--migrate-only", action="store_true", help="Execute database schema migrations only")
     parser.add_argument("--sync-tenants-only", action="store_true", help="Reconcile tenant MU-plugins & configs only")
+    parser.add_argument("--reconcile-tuning", "--tune", "--auto-tune", action="store_true", dest="reconcile_tuning", help="Reconcile hardware-aware auto-tuning profiles across MariaDB, Valkey, Angie, PHP OPcache, Kernel")
     parser.add_argument("--stack-upgrade", nargs="*", default=None, metavar=("COMPONENT", "VERSION"), help="Upgrade stack component (mariadb, angie, valkey, or all) [version]")
     parser.add_argument("--component", default=None, help="Component to upgrade")
     parser.add_argument("--component-version", default=None, help="Target component version")
@@ -2580,6 +2886,28 @@ def main():
         force=args.force,
         quiet=args.json
     )
+
+    if args.reconcile_tuning:
+        ok_m = upgrader.reconcile_mariadb_tuning()
+        ok_v = upgrader.reconcile_valkey_tuning()
+        ok_a = upgrader.reconcile_angie_tuning()
+        ok_p = upgrader.reconcile_php_opcache()
+        ok_k = upgrader.reconcile_kernel_tuning()
+        success = ok_m and ok_v and ok_a and ok_p and ok_k
+        if not args.dry_run:
+            upgrader.reload_services()
+        if args.json:
+            print(json.dumps({
+                "status": "ok" if success else "failed",
+                "mariadb": ok_m,
+                "valkey": ok_v,
+                "angie": ok_a,
+                "php_opcache": ok_p,
+                "kernel": ok_k
+            }))
+        else:
+            print(f"\n{Colors.GREEN}{Colors.BOLD}✔ Hardware-aware auto-tuning reconciliation complete across all tiers.{Colors.RESET}")
+        sys.exit(0 if success else 1)
 
     if args.stack_upgrade is not None:
         comp = "mariadb"

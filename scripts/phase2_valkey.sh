@@ -49,7 +49,8 @@ chown valkey:tenants /run/valkey
 chmod 775 /run/valkey
 
 # Dynamically Scale Valkey Memory (10% of total RAM, min 128MB, capped at 2048MB)
-RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+[ -z "$RAM_TOTAL_MB" ] || [ "$RAM_TOTAL_MB" -le 0 ] && RAM_TOTAL_MB=2048
 VALKEY_MEM_MB=$(( RAM_TOTAL_MB * 10 / 100 ))
 [ "$VALKEY_MEM_MB" -lt 128 ] && VALKEY_MEM_MB=128
 [ "$VALKEY_MEM_MB" -gt 2048 ] && VALKEY_MEM_MB=2048

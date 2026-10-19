@@ -7,9 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.3.0] - 2026-10-19 - *Codename: Hyperion*
 
 ### Added
+- **Storage-Aware MariaDB Dynamic I/O Capacity & Thread Scaling**:
+  - Dynamically calculates `innodb_io_capacity` based on underlying block storage hardware: 4,000–15,000 IOPS on NVMe SSDs, 1,000–2,000 IOPS on SATA SSDs, and 200 IOPS on rotational HDDs.
+  - Automatically scales `innodb_io_capacity_max` to double the base capacity.
+  - Dynamically tunes `innodb_read_io_threads` and `innodb_write_io_threads` (8–16 threads on NVMe, 4–8 on SATA SSD, 4 on HDD) and sets `innodb_flush_neighbors` to 0 for SSD/NVMe (eliminating write amplification) and 1 for rotational drives.
+  - Synchronized across the initial probe (`installer/probe.py`), installation provisioning (`scripts/phase3_mariadb.sh`), and runtime upgrades (`core/bin/ls-upgrade`).
+- **Autonomous Database Performance Tuner (`ls-db-tune` / `lsctl db:tune` / `lsctl db:optimize`)**:
+  - Introduced built-in autonomous database tuner in `core/bin/ls-db-tune` (and legacy alias `core/bin/cp-db-tune`).
+  - Performs live metric extraction inspecting InnoDB buffer pool hit ratio, dirty page flush ratio, sort merge passes, temporary disk table creation, table open cache efficiency, thread cache efficiency, InnoDB lock waits, redo log throughput, and table fragmentation.
+  - Computes composite database performance health score (0–100) with prioritized, actionable recommendations.
+  - Supports non-disruptive autonomous optimization via `--apply`, dynamically tuning runtime variables via local socket without restarting the database daemon.
+  - Includes full integration and fallback to `mysqltuner` via `--mysqltuner` flag.
+  - Added CLI routing in `core/bin/lsctl`: `lsctl db:tune` and `lsctl db:optimize`.
+- **System-Wide Hardware-Aware Auto-Tuning Engine (`lsctl sys:tune` & `ls-upgrade --reconcile-tuning`)**:
+  - Angie: Dynamic `worker_connections` (4,096 to 16,384) and FastCGI microcache `max_size` (256m, 512m, 1024m) based on CPU cores and RAM across `probe.py`, `scripts/phase4_angie_waf.sh`, and `ls-upgrade`.
+  - Valkey: Dynamic memory allocation (`maxmemory` dynamically sized to 10% RAM, bounded 128MB–2048MB) with `volatile-lru` eviction policy, applied to configuration files and live runtime via `valkey-cli`.
+  - PHP-FPM: Dynamic OPcache memory sizing (128MB to 512MB) based on total RAM. Dynamic hardware-aware PHP worker limits in `lsctl wp:create` and `lsctl site:php` calculating tenant `max_children`, `start_servers`, and spare server bounds.
+  - Added `lsctl sys:tune` command to re-evaluate hardware and harmonize tuning across the entire stack.
+  - Package reconciliation: Automated installation of `mysqltuner` alongside `msmtp` across installation and upgrade phases.
 - **Ultra-Lightweight Autonomous Watcher & Health Recovery Engine (`ls-watcher`)**: Introduced `core/bin/ls-watcher` (<3MB peak RAM, 0MB idle via systemd timer `ls-watcher.timer` every 60s) providing dual-tier autonomous health checks: Angie syntax check with automated quarantine of broken tenant virtual hosts (`/etc/angie/quarantine/`) and HTTP loopback probe; MariaDB and Valkey socket connectivity, ping probes, and stale socket/PID file cleanup; multi-version PHP-FPM pool socket verification against `sites.db`; automated self-healing of tenant filesystem permission drift; and emergency disk/inode vacuum (`journalctl` and temporary session cleanup when usage exceeds 90%). Governed by mutual-exclusion lock `/run/ls-maintenance.lock`.
 - **Systemd Drop-In Overrides for Instant Crash Recovery**: Scaffolded systemd drop-in override configurations in `systemd/overrides/` (`angie.service.d`, `mariadb.service.d`, `valkey.service.d`, `php*-fpm.service.d`) enforcing `Restart=on-failure` and `RestartSec=2s` for instant sub-2s PID 1 crash recovery.
 - **Zero-Downtime Autonomous Software & Security Updater (`ls-autoupdate`)**: Introduced `core/bin/ls-autoupdate` executed via `ls-autoupdate.timer` nightly at 03:30 with randomized delays: performs pre-flight syntax checks, atomic snapshot of database and configuration state (`/var/backups/lsctl/pre_upgrade_*`), non-interactive APT package upgrades targeting Angie, PHP, MariaDB, Valkey, and CrowdSec (`--force-confdef`, `--force-confold`), CrowdSec hub updates, WP-CLI binary update, LeanStack core migration, post-upgrade syntax verification with automated rollback on failure, and zero-downtime graceful reloads.
@@ -20,13 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Angie Dynamic Cache-Purge Module & Resilient Purge Fallback**: Added `angie-module-cache-purge` package installation alongside `angie` and `angie-module-brotli` in `scripts/phase4_angie_waf.sh`. Automated dynamic module loader scaffolding (`/etc/angie/modules.d/cache-purge.conf`) and `include /etc/angie/modules.d/*.conf;` verification in `angie.conf` across `phase4_angie_waf.sh`, `core/bin/lsctl`, and `core/bin/ls-upgrade`. Introduced `{{PURGE_DIRECTIVE}}` placeholder in `vhost.conf.tpl`, allowing `lsctl` to dynamically substitute `fastcgi_cache_purge` when the module is present with automatic runtime fallback to `return 204;` if Angie syntax validation fails. Cleaned up orphaned module loaders when shared objects are absent. Added loopback surgical purge endpoint to Port 80 server block before redirecting to avoid 301 HTTPS interception on local WP cache purge requests.
 - **8G Firewall HTTP PURGE Method Support**: Updated request method whitelist regex in `core/snippets/8g-firewall.conf` to explicitly permit the `PURGE` HTTP method (`GET|POST|HEAD|PUT|DELETE|OPTIONS|PURGE`), preventing 8G WAF from blocking legitimate cache invalidation requests with 405 Method Not Allowed.
 - **Security Headers Deduplication in Virtual Host Template**: Eliminated duplicate inclusions of `ssl-headers.conf` in `core/templates/vhost.conf.tpl` across server block, `/wp-login.php`, static assets, and PHP execution blocks. All security headers (HSTS, nosniff, SAMEORIGIN, CSP, Permissions-Policy, Alt-Svc) are now exclusively managed through per-tenant `/etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/security-headers.conf`, eliminating duplicate response headers and maintaining tenant customizability. Added automatic reconciliation of missing tenant `security-headers.conf` files in `ls-upgrade`.
-- **Correct Path Traversal in Holepunch SSI Endpoint**: Fixed fatal path resolution error in `core/templates/leanstack-holepunch.php.tpl` when handling `/leanstack-esi/` subrequests. Corrected directory traversal from `dirname( dirname( dirname( __DIR__ ) ) )` to `dirname( __DIR__, 2 ) . '/wp-load.php'`, ensuring proper resolution to `/home/<user>/htdocs/wp-load.php`.
+- **Holepunch SSI Endpoint Path Traversal**: Fixed fatal path resolution error in `core/templates/leanstack-holepunch.php.tpl` when handling `/leanstack-esi/` subrequests. Corrected directory traversal from `dirname( dirname( dirname( __DIR__ ) ) )` to `dirname( __DIR__, 2 ) . '/wp-load.php'`, ensuring proper resolution to `/home/<user>/htdocs/wp-load.php`.
 - **SQLite Database Path Harmonization in Helper Scripts**: Harmonized SQLite database resolution in `core/bin/ls-gatekeeper` and `core/bin/ls-cron-queue`. Helper tools now sequentially evaluate `$LEANSTACK_DB` environment override, `/var/lib/lsctl/sites.db`, and fallback to `/var/lib/cpctl/sites.db`, eliminating silent execution exits when operating under modern `lsctl` filesystem layouts.
 - **Cloudflare Real-IP Snippet File Permissions**: Explicitly enforced readable file permissions (`chmod 644 "$TARGET_SNIPPET"`) in `core/bin/ls-cf-sync` upon moving the temporary file generated by `mktemp`, preventing restrictive `0600` default permissions from blocking Angie worker access. Ensured snippet directory creation if missing.
 
-### Planned
-- Lightweight Go/Rust Unix socket RPC daemon for optional administrative dashboard.
-- Automated multi-server fleet health telemetry aggregation.
 
 ---
 

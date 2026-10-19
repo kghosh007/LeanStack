@@ -1,0 +1,1055 @@
+#!/usr/bin/env python3
+"""
+LeanStack Autonomous MariaDB & MySQL Performance Tuner (ls-db-tune)
+Analyzes live database telemetry, InnoDB buffer pool hit rates, lock wait times,
+sort merge passes, table caches, and query execution patterns.
+Provides intelligent performance scoring (0-100), actionable tuning recommendations,
+and autonomous hardware-synchronized auto-tuning (--apply).
+Zero external pip dependencies; runs on standard Python 3.8+.
+"""
+
+import os
+import sys
+import json
+import re
+import glob
+import shutil
+import argparse
+import subprocess
+from typing import Dict, Any, List, Optional, Tuple
+
+# ANSI Colors & Formatting
+class Colors:
+    GREEN = "\033[32m"
+    CYAN = "\033[36m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    MAGENTA = "\033[35m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+
+def format_bytes(b: int) -> str:
+    """Converts bytes to human readable string (KB, MB, GB)."""
+    if b >= 1024 ** 3:
+        return f"{round(b / (1024 ** 3), 1)}GB"
+    elif b >= 1024 ** 2:
+        return f"{round(b / (1024 ** 2), 1)}MB"
+    elif b >= 1024:
+        return f"{round(b / 1024, 1)}KB"
+    return f"{b}B"
+
+def parse_size_to_mb(val: Any) -> int:
+    """Parses human-readable size string (e.g. '512M', '2G', '64K', or bytes integer) to MB."""
+    if isinstance(val, (int, float)):
+        return max(1, int(val // (1024 * 1024)))
+    s = str(val).strip().upper()
+    if s.endswith("G") or s.endswith("GB"):
+        num = float(re.sub(r"[^0-9.]", "", s))
+        return int(num * 1024)
+    elif s.endswith("M") or s.endswith("MB"):
+        num = float(re.sub(r"[^0-9.]", "", s))
+        return int(num)
+    elif s.endswith("K") or s.endswith("KB"):
+        num = float(re.sub(r"[^0-9.]", "", s))
+        return max(1, int(num // 1024))
+    try:
+        b = int(float(s))
+        return max(1, b // (1024 * 1024))
+    except Exception:
+        return 512
+
+def parse_size_to_bytes(val: Any) -> int:
+    """Parses human-readable size string to bytes."""
+    if isinstance(val, (int, float)):
+        return int(val)
+    s = str(val).strip().upper()
+    if s.endswith("G") or s.endswith("GB"):
+        num = float(re.sub(r"[^0-9.]", "", s))
+        return int(num * 1024 * 1024 * 1024)
+    elif s.endswith("M") or s.endswith("MB"):
+        num = float(re.sub(r"[^0-9.]", "", s))
+        return int(num * 1024 * 1024)
+    elif s.endswith("K") or s.endswith("KB"):
+        num = float(re.sub(r"[^0-9.]", "", s))
+        return int(num * 1024)
+    try:
+        return int(float(s))
+    except Exception:
+        return 0
+
+class HostProbe:
+    """Probes host hardware resources (RAM, CPU cores, Storage type, NVMe)."""
+    @staticmethod
+    def get_hardware() -> Dict[str, Any]:
+        ram_mb = 2048
+        if os.path.exists("/proc/meminfo"):
+            try:
+                with open("/proc/meminfo", "r") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            ram_mb = int(line.split()[1]) // 1024
+                            break
+            except Exception:
+                pass
+        cores = os.cpu_count() or 1
+
+        is_nvme = False
+        is_rotational = False
+        disk_type = "SATA SSD"
+
+        # Prioritize root mount device if inspectable via /proc/mounts
+        root_dev = ""
+        try:
+            if os.path.exists("/proc/mounts"):
+                with open("/proc/mounts", "r") as f_m:
+                    for line in f_m:
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1] == "/":
+                            root_dev = os.path.basename(parts[0])
+                            break
+        except Exception:
+            pass
+
+        if "nvme" in root_dev or glob.glob("/dev/nvme*"):
+            is_nvme = True
+            is_rotational = False
+            disk_type = "NVMe SSD"
+        else:
+            base_root_dev = re.sub(r'p?\d+$', '', root_dev) if root_dev else ""
+            if base_root_dev and os.path.exists(f"/sys/block/{base_root_dev}/queue/rotational"):
+                try:
+                    with open(f"/sys/block/{base_root_dev}/queue/rotational", "r") as f:
+                        rot = f.read().strip()
+                    if "nvme" in base_root_dev:
+                        is_nvme = True
+                        is_rotational = False
+                        disk_type = "NVMe SSD"
+                    elif rot == "0":
+                        is_nvme = False
+                        is_rotational = False
+                        disk_type = "SATA SSD"
+                    elif rot == "1":
+                        is_rotational = True
+                        is_nvme = False
+                        disk_type = "HDD (Rotational)"
+                except Exception:
+                    pass
+            else:
+                for block_path in glob.glob("/sys/block/*/queue/rotational"):
+                    try:
+                        dev = block_path.split("/")[3]
+                        if dev.startswith("loop") or dev.startswith("ram"):
+                            continue
+                        with open(block_path, "r") as f:
+                            rot = f.read().strip()
+                        if "nvme" in dev:
+                            is_nvme = True
+                            is_rotational = False
+                            disk_type = "NVMe SSD"
+                            break
+                        elif rot == "0":
+                            is_nvme = False
+                            is_rotational = False
+                            disk_type = "SATA SSD"
+                        elif rot == "1":
+                            is_rotational = True
+                            is_nvme = False
+                            disk_type = "HDD (Rotational)"
+                    except Exception:
+                        pass
+
+        return {
+            "ram_mb": ram_mb,
+            "cores": cores,
+            "is_nvme": is_nvme,
+            "is_rotational": is_rotational,
+            "disk_type": disk_type
+        }
+
+class MariaDBLiveCollector:
+    """Collects real-time performance telemetry from MariaDB / MySQL server."""
+    def __init__(self, socket_path: Optional[str] = None):
+        self.socket_path = socket_path or self._find_socket()
+        self.cli_cmd = self._find_cli()
+
+    def _find_socket(self) -> Optional[str]:
+        candidates = [
+            "/run/mysqld/mysqld.sock",
+            "/var/run/mysqld/mysqld.sock",
+            "/tmp/mysql.sock"
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                return c
+        return None
+
+    def _find_cli(self) -> Optional[str]:
+        for bin_name in ["mariadb", "mysql"]:
+            p = shutil.which(bin_name)
+            if p:
+                return p
+        return None
+
+    def query(self, sql: str) -> Optional[List[List[str]]]:
+        if not self.cli_cmd:
+            return None
+        cmd = [self.cli_cmd, "--batch", "--skip-column-names"]
+        if self.socket_path:
+            cmd.extend(["-S", self.socket_path])
+        cmd.extend(["-e", sql])
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+            if res.returncode == 0:
+                rows = []
+                for line in res.stdout.strip().splitlines():
+                    rows.append(line.split("\t"))
+                return rows
+        except Exception:
+            pass
+        return None
+
+    def get_key_value_map(self, sql: str) -> Dict[str, str]:
+        rows = self.query(sql)
+        res = {}
+        if rows:
+            for r in rows:
+                if len(r) >= 2:
+                    res[r[0]] = r[1]
+                elif len(r) == 1:
+                    res[r[0]] = ""
+        return res
+
+    def collect(self) -> Tuple[bool, Dict[str, str], Dict[str, str], List[Dict[str, Any]]]:
+        """
+        Returns (is_live, status_vars, global_vars, fragmented_tables)
+        """
+        status = self.get_key_value_map("SHOW GLOBAL STATUS;")
+        variables = self.get_key_value_map("SHOW GLOBAL VARIABLES;")
+        if not status or not variables:
+            return False, {}, {}, []
+
+        # Collect fragmented tenant tables
+        frag_sql = (
+            "SELECT table_schema, table_name, data_free, data_length, index_length "
+            "FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') "
+            "AND data_free > 5242880 "
+            "ORDER BY data_free DESC LIMIT 10;"
+        )
+        frag_rows = self.query(frag_sql) or []
+        frag_tables = []
+        for r in frag_rows:
+            if len(r) >= 5:
+                try:
+                    frag_tables.append({
+                        "schema": r[0],
+                        "table": r[1],
+                        "data_free": int(r[2]),
+                        "data_length": int(r[3]),
+                        "index_length": int(r[4])
+                    })
+                except Exception:
+                    pass
+
+        return True, status, variables, frag_tables
+
+
+class DatabaseTuningAnalyzer:
+    """
+    Performs deterministic and telemetry-based performance auditing,
+    scoring, and actionable recommendation generation.
+    """
+    def __init__(self, hardware: Dict[str, Any], is_live: bool, status: Dict[str, str], variables: Dict[str, str], fragmented_tables: List[Dict[str, Any]]):
+        self.hw = hardware
+        self.is_live = is_live
+        self.status = status
+        self.vars = variables
+        self.frag_tables = fragmented_tables
+        self.score = 100
+        self.checks: List[Dict[str, Any]] = []
+        self.recommendations: List[str] = []
+        self.tuning_actions: Dict[str, Any] = {}
+
+    def get_status_int(self, key: str, default: int = 0) -> int:
+        try:
+            return int(self.status.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
+    def get_var_int(self, key: str, default: int = 0) -> int:
+        try:
+            return int(self.vars.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
+    def analyze(self) -> Dict[str, Any]:
+        hw = self.hw
+        ram_mb = hw["ram_mb"]
+        cores = hw["cores"]
+        is_nvme = hw["is_nvme"]
+        is_rot = hw["is_rotational"]
+
+        # Calculate ideal baseline parameters
+        if ram_mb <= 2048:
+            ideal_bp_mb = 512
+            ideal_bp_inst = 1
+            ideal_sort_buf = "1M"
+            ideal_join_buf = "1M"
+            ideal_read_rnd = "512K"
+            ideal_aria_page = "64M"
+            ideal_max_conn = 150
+        elif ram_mb <= 4096:
+            ideal_bp_mb = int(ram_mb * 0.35)
+            ideal_bp_inst = 2
+            ideal_sort_buf = "2M"
+            ideal_join_buf = "2M"
+            ideal_read_rnd = "1M"
+            ideal_aria_page = "128M"
+            ideal_max_conn = 300
+        elif ram_mb <= 8192:
+            ideal_bp_mb = 2800 if ram_mb >= 6000 else int(ram_mb * 0.40)
+            ideal_bp_inst = 2
+            ideal_sort_buf = "2M"
+            ideal_join_buf = "2M"
+            ideal_read_rnd = "1M"
+            ideal_aria_page = "128M"
+            ideal_max_conn = 300
+        else:
+            ideal_bp_mb = int(ram_mb * 0.55)
+            ideal_bp_inst = min(cores, max(1, ideal_bp_mb // 1024))
+            ideal_sort_buf = "4M"
+            ideal_join_buf = "4M"
+            ideal_read_rnd = "2M"
+            ideal_aria_page = "256M"
+            ideal_max_conn = 500
+
+        ideal_table_inst = min(cores, 16)
+        ideal_log_mb = min(ideal_bp_mb // 4, 1024)
+
+        if is_nvme:
+            ideal_io_cap = 4000 if cores <= 2 else (8000 if cores <= 8 else 15000)
+            ideal_io_cap_max = ideal_io_cap * 2
+            ideal_io_threads = min(8, max(4, cores))
+            ideal_flush_neigh = 0
+        elif not is_rot:
+            ideal_io_cap = 1000 if cores <= 2 else 2000
+            ideal_io_cap_max = ideal_io_cap * 2
+            ideal_io_threads = min(4, max(2, cores))
+            ideal_flush_neigh = 0
+        else:
+            ideal_io_cap = 200
+            ideal_io_cap_max = 400
+            ideal_io_threads = 2
+            ideal_flush_neigh = 1
+
+        self.tuning_actions = {
+            "innodb_buffer_pool_size": f"{ideal_bp_mb}M",
+            "innodb_buffer_pool_size_mb": ideal_bp_mb,
+            "innodb_buffer_pool_instances": ideal_bp_inst,
+            "innodb_log_file_size": f"{ideal_log_mb}M",
+            "innodb_log_buffer_size": "64M",
+            "sort_buffer_size": ideal_sort_buf,
+            "join_buffer_size": ideal_join_buf,
+            "read_buffer_size": "512K",
+            "read_rnd_buffer_size": ideal_read_rnd,
+            "aria_pagecache_buffer_size": ideal_aria_page,
+            "aria_sort_buffer_size": "32M",
+            "table_open_cache": 4096,
+            "table_open_cache_instances": ideal_table_inst,
+            "max_connections": ideal_max_conn,
+            "transaction_isolation": "READ-COMMITTED",
+            "mrr_cost_based": "on",
+            "innodb_io_capacity": ideal_io_cap,
+            "innodb_io_capacity_max": ideal_io_cap_max,
+            "innodb_read_io_threads": ideal_io_threads,
+            "innodb_write_io_threads": ideal_io_threads,
+            "innodb_flush_neighbors": ideal_flush_neigh
+        }
+
+        # 1. Server Uptime & Engine Version
+        uptime_sec = self.get_status_int("Uptime", 0)
+        version_str = self.vars.get("version", "MariaDB 12+ (Probed / Configured)")
+        if self.is_live:
+            days = uptime_sec // 86400
+            hours = (uptime_sec % 86400) // 3600
+            mins = (uptime_sec % 3600) // 60
+            uptime_formatted = f"{days}d {hours}h {mins}m ({uptime_sec}s)"
+            if uptime_sec < 86400:
+                self.checks.append({
+                    "name": "Server Uptime",
+                    "status": "WARN",
+                    "value": uptime_formatted,
+                    "desc": "Server has been running for less than 24 hours; workload statistics are still warming up."
+                })
+            else:
+                self.checks.append({
+                    "name": "Server Uptime",
+                    "status": "PASS",
+                    "value": uptime_formatted,
+                    "desc": "Sufficient uptime for accurate workload metric sampling."
+                })
+        else:
+            self.checks.append({
+                "name": "Engine State",
+                "status": "INFO",
+                "value": "Offline / Config Mode",
+                "desc": "MariaDB server is not running or unprivileged. Auditing static hardware profile."
+            })
+
+        # 2. InnoDB Buffer Pool Sizing & Hit Ratio
+        cur_bp_bytes = parse_size_to_bytes(self.vars.get("innodb_buffer_pool_size", f"{ideal_bp_mb}M"))
+        cur_bp_mb = cur_bp_bytes // (1024 * 1024)
+        bp_read_req = self.get_status_int("Innodb_buffer_pool_read_requests", 0)
+        bp_reads = self.get_status_int("Innodb_buffer_pool_reads", 0)
+        
+        if bp_read_req > 0:
+            bp_hit_rate = round((1.0 - (bp_reads / bp_read_req)) * 100.0, 2)
+        else:
+            bp_hit_rate = 100.0
+
+        if self.is_live and bp_read_req > 1000:
+            if bp_hit_rate >= 99.0:
+                self.checks.append({
+                    "name": "InnoDB Buffer Pool Hit Rate",
+                    "status": "PASS",
+                    "value": f"{bp_hit_rate}%",
+                    "desc": f"Outstanding memory cache efficiency ({format_bytes(cur_bp_bytes)} pool, {bp_reads} disk reads out of {bp_read_req} requests)."
+                })
+            elif bp_hit_rate >= 95.0:
+                self.checks.append({
+                    "name": "InnoDB Buffer Pool Hit Rate",
+                    "status": "INFO",
+                    "value": f"{bp_hit_rate}%",
+                    "desc": "Acceptable hit rate, but disk reads are occurring."
+                })
+                self.score -= 5
+            else:
+                self.checks.append({
+                    "name": "InnoDB Buffer Pool Hit Rate",
+                    "status": "WARN",
+                    "value": f"{bp_hit_rate}%",
+                    "desc": f"High disk read ratio ({bp_reads} disk reads). Increase buffer pool size to {ideal_bp_mb}M."
+                })
+                self.recommendations.append(f"Increase innodb_buffer_pool_size from {cur_bp_mb}M to {ideal_bp_mb}M to eliminate disk I/O bottlenecks.")
+                self.score -= 15
+        else:
+            bp_diff = abs(cur_bp_mb - ideal_bp_mb)
+            if bp_diff <= 128:
+                self.checks.append({
+                    "name": "InnoDB Buffer Pool Sizing",
+                    "status": "PASS",
+                    "value": f"{cur_bp_mb}MB",
+                    "desc": f"Optimally sized for {ram_mb}MB host RAM (Leaves balanced headroom for PHP & Valkey)."
+                })
+            else:
+                self.checks.append({
+                    "name": "InnoDB Buffer Pool Sizing",
+                    "status": "TUNE",
+                    "value": f"{cur_bp_mb}MB (Optimal: {ideal_bp_mb}MB)",
+                    "desc": f"Buffer pool does not match the hardware-aware optimal sizing of {ideal_bp_mb}MB."
+                })
+                self.recommendations.append(f"Adjust innodb_buffer_pool_size to {ideal_bp_mb}M for host tier.")
+                self.score -= 10
+
+        # 3. Transaction Isolation & Gap-Lock Elimination
+        tx_iso = (self.vars.get("transaction_isolation") or self.vars.get("tx_isolation") or "READ-COMMITTED").upper()
+        if tx_iso == "READ-COMMITTED":
+            self.checks.append({
+                "name": "Transaction Isolation",
+                "status": "PASS",
+                "value": "READ-COMMITTED",
+                "desc": "Next-key gap locking eliminated; eliminates serialization deadlocks during concurrent WooCommerce checkouts."
+            })
+        else:
+            self.checks.append({
+                "name": "Transaction Isolation",
+                "status": "WARN",
+                "value": tx_iso,
+                "desc": f"Found {tx_iso}. REPEATABLE-READ causes extensive gap locks and deadlock aborts in WordPress."
+            })
+            self.recommendations.append("Set transaction_isolation = READ-COMMITTED to eliminate InnoDB next-key gap locks.")
+            self.score -= 15
+
+        # 4. In-Memory Sorting & Sort Merge Passes
+        sort_merges = self.get_status_int("Sort_merge_passes", 0)
+        sort_buf_str = self.vars.get("sort_buffer_size", ideal_sort_buf)
+        sort_buf_bytes = parse_size_to_bytes(sort_buf_str)
+        
+        if sort_buf_bytes > 4 * 1024 * 1024:
+            self.checks.append({
+                "name": "Sort Buffer Safety Limit",
+                "status": "WARN",
+                "value": sort_buf_str,
+                "desc": "CRITICAL RISK: sort_buffer_size exceeds 4MB (never set 16MB). Causes glibc mmap/munmap CPU spikes."
+            })
+            self.recommendations.append(f"Reduce sort_buffer_size from {sort_buf_str} to {ideal_sort_buf} (L2 cache fitted).")
+            self.score -= 15
+        elif sort_merges > 0:
+            self.checks.append({
+                "name": "Sort Merge Passes",
+                "status": "TUNE",
+                "value": f"{sort_merges} pass(es) spilled to disk",
+                "desc": f"Queries are spilling sorts to temporary disk files. Slightly increment sort_buffer_size to {ideal_sort_buf}."
+            })
+            self.recommendations.append(f"Increment sort_buffer_size to {ideal_sort_buf} to keep sorting in RAM.")
+            self.score -= 10
+        else:
+            self.checks.append({
+                "name": "Sort Buffer Efficiency",
+                "status": "PASS",
+                "value": f"{sort_buf_str} (0 disk merge spills)",
+                "desc": "Zero disk sort merge passes; all ORDER BY / GROUP BY operations resolve entirely in RAM."
+            })
+
+        # 5. In-Memory vs On-Disk Temporary Tables
+        tmp_disk = self.get_status_int("Created_tmp_disk_tables", 0)
+        tmp_tot = self.get_status_int("Created_tmp_tables", 0)
+        if tmp_tot > 0:
+            disk_tmp_pct = round((tmp_disk / tmp_tot) * 100.0, 1)
+        else:
+            disk_tmp_pct = 0.0
+
+        if self.is_live and tmp_tot > 50:
+            if disk_tmp_pct <= 15.0:
+                self.checks.append({
+                    "name": "Temporary Tables In-Memory",
+                    "status": "PASS",
+                    "value": f"{disk_tmp_pct}% disk ratio",
+                    "desc": f"{tmp_tot - tmp_disk} tables created in-memory, {tmp_disk} on disk."
+                })
+            else:
+                self.checks.append({
+                    "name": "Temporary Tables On-Disk Spill",
+                    "status": "WARN",
+                    "value": f"{disk_tmp_pct}% on disk ({tmp_disk}/{tmp_tot})",
+                    "desc": "High percentage of temporary tables spilling to disk. Ensure Aria pagecache is >= 128MB."
+                })
+                self.recommendations.append(f"Ensure aria_pagecache_buffer_size = {ideal_aria_page} and tmp_table_size = 64M.")
+                self.score -= 10
+        else:
+            self.checks.append({
+                "name": "Temporary Table Engine",
+                "status": "PASS",
+                "value": f"Aria Pagecache: {ideal_aria_page}",
+                "desc": "Aria storage engine configured to buffer internal temporary tables with TEXT/BLOB."
+            })
+
+        # 6. Table Open Cache & CPU Partitioning
+        open_tbls = self.get_status_int("Open_tables", 0)
+        opened_tbls = self.get_status_int("Opened_tables", 0)
+        cur_tbl_cache = self.get_var_int("table_open_cache", 4096)
+        cur_tbl_inst = self.get_var_int("table_open_cache_instances", ideal_table_inst)
+
+        if cur_tbl_inst != ideal_table_inst:
+            self.checks.append({
+                "name": "Table Cache Instances",
+                "status": "TUNE",
+                "value": f"{cur_tbl_inst} inst (Ideal: {ideal_table_inst})",
+                "desc": f"table_open_cache_instances should match vCPUs ({cores}) to eliminate mutex lock contention."
+            })
+            self.recommendations.append(f"Set table_open_cache_instances = {ideal_table_inst} to partition table locks across CPU cores.")
+            self.score -= 5
+        else:
+            self.checks.append({
+                "name": "Table Cache Instances",
+                "status": "PASS",
+                "value": f"{cur_tbl_inst} instances",
+                "desc": "Table cache instances partitioned across CPU cores; zero global table lock serialization."
+            })
+
+        # 7. Hardware Storage Class & I/O Capacity
+        cur_io_cap = self.get_var_int("innodb_io_capacity", ideal_io_cap)
+        if cur_io_cap < 1000 and is_nvme:
+            self.checks.append({
+                "name": "Storage I/O Capacity",
+                "status": "TUNE",
+                "value": f"{cur_io_cap} IOPS (Detected: {hw['disk_type']})",
+                "desc": f"Host has high-throughput NVMe storage, but innodb_io_capacity is restricted to {cur_io_cap}."
+            })
+            self.recommendations.append(f"Increase innodb_io_capacity to {ideal_io_cap} (max {ideal_io_cap_max}) to utilize NVMe queues.")
+            self.score -= 10
+        elif cur_io_cap > 1000 and is_rot:
+            self.checks.append({
+                "name": "Storage I/O Capacity",
+                "status": "WARN",
+                "value": f"{cur_io_cap} IOPS (Detected: Rotational HDD)",
+                "desc": "Host has mechanical HDD, but io_capacity is set too high; risk of write head starvation."
+            })
+            self.recommendations.append("Reduce innodb_io_capacity to 200 (max 400) for mechanical HDD storage.")
+            self.score -= 10
+        else:
+            self.checks.append({
+                "name": "Storage I/O Capacity",
+                "status": "PASS",
+                "value": f"{cur_io_cap} IOPS ({hw['disk_type']})",
+                "desc": f"Hardware-aligned I/O throughput (read/write threads: {ideal_io_threads}, flush_neighbors: {ideal_flush_neigh})."
+            })
+
+        # 8. Query Cache & Performance Schema
+        qc_type = self.get_var_int("query_cache_type", 0)
+        perf_schema = (self.vars.get("performance_schema") or "OFF").upper()
+
+        if qc_type != 0:
+            self.checks.append({
+                "name": "Query Cache Elimination",
+                "status": "WARN",
+                "value": f"type={qc_type}",
+                "desc": "Legacy query cache is enabled! Global mutex contention severely limits multi-core QPS."
+            })
+            self.recommendations.append("Explicitly set query_cache_type = 0 and query_cache_size = 0.")
+            self.score -= 15
+        else:
+            self.checks.append({
+                "name": "Query Cache Elimination",
+                "status": "PASS",
+                "value": "Disabled (type=0, size=0)",
+                "desc": "Global query cache mutex eliminated; maximum concurrent thread scaling achieved."
+            })
+
+        if perf_schema == "ON":
+            self.checks.append({
+                "name": "Performance Schema Overhead",
+                "status": "INFO",
+                "value": "ON (~100MB RAM & 5-15% CPU overhead)",
+                "desc": "Performance schema adds CPU latency on high-density LEMP hosts."
+            })
+            self.recommendations.append("Set performance_schema = OFF in production to reclaim RAM and CPU cycles.")
+            self.score -= 5
+        else:
+            self.checks.append({
+                "name": "Performance Schema Overhead",
+                "status": "PASS",
+                "value": "OFF",
+                "desc": "Zero runtime profiling overhead."
+            })
+
+        # 9. Table Fragmentation Analysis
+        if self.frag_tables:
+            total_waste_bytes = sum(t["data_free"] for t in self.frag_tables)
+            self.checks.append({
+                "name": "Tenant Table Overhead",
+                "status": "WARN",
+                "value": f"{len(self.frag_tables)} fragmented table(s) ({format_bytes(total_waste_bytes)} reclaimable)",
+                "desc": f"Fragmented tables detected: {', '.join(t['table'] for t in self.frag_tables[:3])}"
+            })
+            self.recommendations.append(f"Execute 'lsctl db:optimize' to reclaim {format_bytes(total_waste_bytes)} of fragmented space.")
+            self.score -= 5
+        else:
+            self.checks.append({
+                "name": "Tenant Table Overhead",
+                "status": "PASS",
+                "value": "Clean (Zero fragmented tables >5MB)",
+                "desc": "All active WordPress database tables are compacted."
+            })
+
+        # 10. Thread Cache Efficiency (Threads_created vs Connections)
+        threads_created = self.get_status_int("Threads_created", 0)
+        connections = self.get_status_int("Connections", 0)
+        cur_tc_size = self.get_var_int("thread_cache_size", 128)
+        if self.is_live and connections > 100:
+            tc_hit_rate = round((1.0 - (threads_created / connections)) * 100.0, 1)
+            if tc_hit_rate >= 98.0:
+                self.checks.append({
+                    "name": "Thread Cache Efficiency",
+                    "status": "PASS",
+                    "value": f"{tc_hit_rate}% hit rate ({threads_created} created / {connections} conn)",
+                    "desc": f"Excellent thread reuse; thread_cache_size={cur_tc_size} prevents thread creation overhead."
+                })
+            else:
+                self.checks.append({
+                    "name": "Thread Cache Efficiency",
+                    "status": "WARN",
+                    "value": f"{tc_hit_rate}% hit rate ({threads_created} threads created)",
+                    "desc": "Low thread reuse; excessive thread creation overhead under load."
+                })
+                self.recommendations.append(f"Increase thread_cache_size to 128 (currently {cur_tc_size}) to reduce fork/thread creation latency.")
+                self.score -= 5
+        else:
+            self.checks.append({
+                "name": "Thread Cache Sizing",
+                "status": "PASS",
+                "value": f"thread_cache_size = {cur_tc_size}",
+                "desc": "High capacity thread cache configured to eliminate thread creation latency."
+            })
+
+        # 11. InnoDB Row Lock Waits & Contention
+        lock_waits = self.get_status_int("Innodb_row_lock_waits", 0)
+        lock_time_avg = self.get_status_int("Innodb_row_lock_time_avg", 0)
+        if self.is_live and lock_waits > 0:
+            if lock_time_avg > 500:
+                self.checks.append({
+                    "name": "InnoDB Lock Waits",
+                    "status": "WARN",
+                    "value": f"{lock_waits} waits (avg {lock_time_avg}ms)",
+                    "desc": "Significant transaction lock wait time detected. Check concurrent UPDATE queries and ensure READ-COMMITTED."
+                })
+                self.recommendations.append("High lock wait latency detected. Ensure READ-COMMITTED isolation and index foreign/lookup columns.")
+                self.score -= 10
+            else:
+                self.checks.append({
+                    "name": "InnoDB Lock Waits",
+                    "status": "INFO",
+                    "value": f"{lock_waits} waits (avg {lock_time_avg}ms)",
+                    "desc": "Minor lock contention observed within acceptable bounds."
+                })
+        else:
+            self.checks.append({
+                "name": "InnoDB Lock Contention",
+                "status": "PASS",
+                "value": "0 lock waits",
+                "desc": "Zero transaction row lock waits; smooth concurrent transaction flow."
+            })
+
+        # 12. InnoDB Dirty Page Flushing & Redo Log Throughput
+        pages_dirty = self.get_status_int("Innodb_buffer_pool_pages_dirty", 0)
+        pages_total = self.get_status_int("Innodb_buffer_pool_pages_total", 0)
+        if self.is_live and pages_total > 0:
+            dirty_pct = round((pages_dirty / pages_total) * 100.0, 1)
+            if dirty_pct > 30.0:
+                self.checks.append({
+                    "name": "InnoDB Dirty Page Ratio",
+                    "status": "WARN",
+                    "value": f"{dirty_pct}% dirty ({pages_dirty}/{pages_total} pages)",
+                    "desc": "High dirty page backlog. InnoDB background page flushing may lag behind write throughput."
+                })
+                self.recommendations.append(f"Ensure innodb_io_capacity is at least {ideal_io_cap} to accelerate background dirty page flushing.")
+                self.score -= 5
+            else:
+                self.checks.append({
+                    "name": "InnoDB Dirty Page Ratio",
+                    "status": "PASS",
+                    "value": f"{dirty_pct}% dirty pages",
+                    "desc": "Buffer pool flushing is keeping pace with transaction write throughput."
+                })
+        else:
+            self.checks.append({
+                "name": "InnoDB Page Flushing",
+                "status": "PASS",
+                "value": f"IO Capacity: {ideal_io_cap} IOPS",
+                "desc": "Dynamic asynchronous I/O threads and capacity configured for hardware storage tier."
+            })
+
+        # Clamp composite score between 0 and 100
+        self.score = max(0, min(100, self.score))
+
+        return {
+            "score": self.score,
+            "version": version_str,
+            "is_live": self.is_live,
+            "checks": self.checks,
+            "recommendations": self.recommendations,
+            "ideal_tuning": self.tuning_actions,
+            "fragmented_tables": self.frag_tables
+        }
+
+    def render_report(self, analysis: Dict[str, Any]) -> str:
+        score = analysis["score"]
+        if score >= 90:
+            score_color = Colors.GREEN
+            badge = "EXCELLENT (HIGH-QPS OPTIMIZED)"
+        elif score >= 75:
+            score_color = Colors.CYAN
+            badge = "GOOD (MINOR TUNING POSSIBLE)"
+        elif score >= 50:
+            score_color = Colors.YELLOW
+            badge = "FAIR (OPTIMIZATION RECOMMENDED)"
+        else:
+            score_color = Colors.RED
+            badge = "POOR (CRITICAL BOTTLENECKS DETECTED)"
+
+        lines = [
+            f"{Colors.BOLD}{Colors.CYAN}┌────────────────────────────────────────────────────────────────────────┐{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│          LEANSTACK AUTONOMOUS MARIADB / MYSQL PERFORMANCE TUNER        │{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+            f"│ Engine Version:    {analysis['version'][:50]:<50} │",
+            f"│ Server Health:     {score_color}{score}/100 - {badge:<42}{Colors.RESET} │",
+            f"│ Host Hardware:     {self.hw['cores']} vCPUs | {self.hw['ram_mb']}MB RAM | {self.hw['disk_type']:<27} │",
+            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│                         DIAGNOSTIC AUDIT LOG                           │{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+        ]
+
+        for c in analysis["checks"]:
+            st = c["status"]
+            if st == "PASS":
+                mark = f"{Colors.GREEN}✔ PASS{Colors.RESET}"
+            elif st == "WARN":
+                mark = f"{Colors.YELLOW}⚠️ WARN{Colors.RESET}"
+            elif st == "TUNE":
+                mark = f"{Colors.MAGENTA}⚡ TUNE{Colors.RESET}"
+            else:
+                mark = f"{Colors.CYAN}ℹ INFO{Colors.RESET}"
+
+            val_str = str(c["value"])[:26]
+            row_header = f" {mark} {Colors.BOLD}{c['name']:<28}{Colors.RESET} {val_str:<26}"
+            lines.append(f"│{row_header:<80}│")
+            if c.get("desc"):
+                desc_line = f"    {Colors.DIM}{c['desc'][:66]}{Colors.RESET}"
+                lines.append(f"│{desc_line:<78}│")
+
+        lines.extend([
+            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│                   ACTIONABLE TUNING RECOMMENDATIONS                    │{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+        ])
+
+        if not analysis["recommendations"]:
+            lines.append(f"│ {Colors.GREEN}✔ System is perfectly tuned! Zero database bottlenecks identified.{Colors.RESET}    │")
+        else:
+            for idx, rec in enumerate(analysis["recommendations"], 1):
+                rec_str = f" {idx}. {rec}"[:68]
+                lines.append(f"│ {Colors.YELLOW}{rec_str:<69}{Colors.RESET}│")
+
+        t = analysis["ideal_tuning"]
+        lines.extend([
+            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│                 HARDWARE-CALCULATED OPTIMAL PARAMETERS                 │{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+            f"│  Buffer Pool: {t['innodb_buffer_pool_size']:<8} (Inst: {t['innodb_buffer_pool_instances']}) | Log File: {t['innodb_log_file_size']:<8} | Sort: {t['sort_buffer_size']:<6} │",
+            f"│  I/O Capacity: {t['innodb_io_capacity']}/{t['innodb_io_capacity_max']} IOPS | Threads: {t['innodb_read_io_threads']} | Table Cache: {t['table_open_cache_instances']} inst      │",
+            f"│  Isolation: {t['transaction_isolation']:<16} | Aria Pagecache: {t['aria_pagecache_buffer_size']:<10}         │",
+            f"{Colors.BOLD}{Colors.CYAN}└────────────────────────────────────────────────────────────────────────┘{Colors.RESET}"
+        ])
+        return "\n".join(lines)
+
+
+def apply_tuning_profile(ideal: Dict[str, Any], conf_dir: str = "/etc/mysql/mariadb.conf.d", collector: Optional[MariaDBLiveCollector] = None) -> bool:
+    """Applies the calculated high-QPS parameters directly to MariaDB configuration and live runtime."""
+    os.makedirs(conf_dir, exist_ok=True)
+    conf_path = os.path.join(conf_dir, "99-leanstack-highqps.cnf")
+
+    # 1. Dynamically apply runtime variables via socket (zero downtime)
+    applied_live = []
+    if collector and collector.cli_cmd:
+        dynamic_vars = [
+            ("max_connections", ideal["max_connections"]),
+            ("table_open_cache", ideal["table_open_cache"]),
+            ("innodb_io_capacity", ideal["innodb_io_capacity"]),
+            ("innodb_io_capacity_max", ideal["innodb_io_capacity_max"]),
+            ("innodb_flush_neighbors", ideal["innodb_flush_neighbors"]),
+            ("sort_buffer_size", parse_size_to_bytes(ideal["sort_buffer_size"])),
+            ("join_buffer_size", parse_size_to_bytes(ideal["join_buffer_size"])),
+            ("read_rnd_buffer_size", parse_size_to_bytes(ideal["read_rnd_buffer_size"])),
+            ("aria_pagecache_buffer_size", parse_size_to_bytes(ideal["aria_pagecache_buffer_size"])),
+            ("aria_sort_buffer_size", parse_size_to_bytes(ideal["aria_sort_buffer_size"]))
+        ]
+        for var_name, var_val in dynamic_vars:
+            try:
+                res = collector.query(f"SET GLOBAL {var_name} = {var_val};")
+                if res is not None:
+                    applied_live.append(var_name)
+            except Exception:
+                pass
+        if applied_live:
+            print(f"{Colors.GREEN}✔ Dynamically adjusted {len(applied_live)} live MariaDB parameters via socket (zero-downtime): {', '.join(applied_live[:5])}...{Colors.RESET}")
+
+    cnf_content = f"""[mysqld]
+# ==============================================================================
+# LeanStack MariaDB High-QPS Tuning Profile (Auto-Tuned by ls-db-tune)
+# ==============================================================================
+
+# --- Security Hardening ---
+bind-address                   = 127.0.0.1
+local-infile                   = 0
+
+# --- Connection & Thread Model ---
+thread_handling                = one-thread-per-connection
+thread_cache_size              = 128
+max_connections                = {ideal['max_connections']}
+back_log                       = 512
+
+# --- Eliminate Profiling, Binary Log & Query Cache Mutex Contention ---
+performance_schema             = OFF
+skip-log-bin
+skip-name-resolve              = 1
+query_cache_type               = 0
+query_cache_size               = 0
+
+# --- Transaction Concurrency & Gap Lock Elimination ---
+transaction_isolation          = {ideal['transaction_isolation']}
+
+# --- InnoDB Buffer Pool ---
+innodb_buffer_pool_size        = {ideal['innodb_buffer_pool_size']}
+innodb_buffer_pool_instances   = {ideal['innodb_buffer_pool_instances']}
+innodb_buffer_pool_dump_at_shutdown = ON
+innodb_buffer_pool_load_at_startup  = ON
+
+# --- Redo Log & High-Throughput Transaction Writes ---
+innodb_log_file_size           = {ideal['innodb_log_file_size']}
+innodb_log_buffer_size         = 64M
+innodb_flush_log_at_trx_commit = 2
+# innodb_flush_method            = O_DIRECT
+innodb_autoinc_lock_mode       = 2
+innodb_adaptive_hash_index     = 1
+
+# --- Storage & I/O Tuning (Hardware-Aware) ---
+innodb_io_capacity             = {ideal['innodb_io_capacity']}
+innodb_io_capacity_max         = {ideal['innodb_io_capacity_max']}
+innodb_read_io_threads         = {ideal['innodb_read_io_threads']}
+innodb_write_io_threads        = {ideal['innodb_write_io_threads']}
+innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
+
+# --- In-Memory Sorting & Query Buffers ---
+sort_buffer_size               = {ideal['sort_buffer_size']}
+join_buffer_size               = {ideal['join_buffer_size']}
+read_buffer_size               = 512K
+read_rnd_buffer_size           = {ideal['read_rnd_buffer_size']}
+
+# --- Query Optimizer: Cost-Based with MRR Acceleration & Subquery Cache ---
+optimizer_switch               = mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on
+
+# --- In-Memory Temporary Tables & Aria Page Cache ---
+tmp_table_size                 = 64M
+max_heap_table_size            = 64M
+aria_pagecache_buffer_size     = {ideal['aria_pagecache_buffer_size']}
+aria_sort_buffer_size          = 32M
+
+# --- Multi-vCPU Table Cache Partitioning ---
+table_open_cache               = {ideal['table_open_cache']}
+table_open_cache_instances     = {ideal['table_open_cache_instances']}
+table_definition_cache         = 2048
+
+# --- Character Sets ---
+character-set-server           = utf8mb4
+collation-server               = utf8mb4_unicode_520_ci
+
+[mariadb]
+# Explicit MariaDB server section to enforce High-QPS buffer pool precedence over distribution defaults
+innodb_buffer_pool_size        = {ideal['innodb_buffer_pool_size']}
+innodb_buffer_pool_instances   = {ideal['innodb_buffer_pool_instances']}
+innodb_buffer_pool_dump_at_shutdown = ON
+innodb_buffer_pool_load_at_startup  = ON
+transaction_isolation          = {ideal['transaction_isolation']}
+aria_pagecache_buffer_size     = {ideal['aria_pagecache_buffer_size']}
+aria_sort_buffer_size          = 32M
+sort_buffer_size               = {ideal['sort_buffer_size']}
+join_buffer_size               = {ideal['join_buffer_size']}
+read_buffer_size               = 512K
+read_rnd_buffer_size           = {ideal['read_rnd_buffer_size']}
+max_connections                = {ideal['max_connections']}
+table_open_cache               = {ideal['table_open_cache']}
+table_open_cache_instances     = {ideal['table_open_cache_instances']}
+table_definition_cache         = 2048
+innodb_io_capacity             = {ideal['innodb_io_capacity']}
+innodb_io_capacity_max         = {ideal['innodb_io_capacity_max']}
+innodb_read_io_threads         = {ideal['innodb_read_io_threads']}
+innodb_write_io_threads        = {ideal['innodb_write_io_threads']}
+innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
+"""
+    try:
+        with open(conf_path, "w", encoding="utf-8") as f:
+            f.write(cnf_content)
+        print(f"{Colors.GREEN}✔ Successfully applied auto-tuned database configuration to {conf_path}{Colors.RESET}")
+        
+        # Safely reload / restart MariaDB if running as root
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl"):
+            for svc in ["mariadb", "mysql"]:
+                if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:
+                    subprocess.run(["systemctl", "--no-ask-password", "restart", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                    print(f"{Colors.GREEN}✔ MariaDB service ({svc}) restarted with auto-tuned profile.{Colors.RESET}")
+                    break
+        return True
+    except Exception as e:
+        print(f"{Colors.RED}❌ Failed to write configuration to {conf_path}: {e}{Colors.RESET}")
+        return False
+
+
+def run_table_optimization(collector: MariaDBLiveCollector, fragmented: List[Dict[str, Any]]):
+    """Runs OPTIMIZE TABLE on fragmented tenant tables."""
+    if not fragmented:
+        print(f"\n{Colors.GREEN}✔ No fragmented tables requiring optimization.{Colors.RESET}")
+        return
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}>>> Running OPTIMIZE TABLE on {len(fragmented)} fragmented table(s)...{Colors.RESET}")
+    for t in fragmented:
+        tbl_name = f"`{t['schema']}`.`{t['table']}`"
+        print(f"  • Optimizing {tbl_name} (Reclaiming ~{format_bytes(t['data_free'])})...", end=" ", flush=True)
+        res = collector.query(f"OPTIMIZE TABLE {tbl_name};")
+        if res:
+            print(f"{Colors.GREEN}[DONE]{Colors.RESET}")
+        else:
+            print(f"{Colors.YELLOW}[SKIPPED / PERMISSION]{Colors.RESET}")
+    print(f"{Colors.GREEN}✔ Table defragmentation complete.{Colors.RESET}")
+
+
+def run_external_mysqltuner():
+    """Executes external mysqltuner perl utility if present, or provides instructions to install."""
+    mt_bin = shutil.which("mysqltuner")
+    if not mt_bin:
+        # If running as root, attempt auto-install via apt
+        if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
+            print(f"{Colors.CYAN}Installing missing mysqltuner package via apt...{Colors.RESET}")
+            env = os.environ.copy()
+            env["DEBIAN_FRONTEND"] = "noninteractive"
+            subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+            subprocess.run(["apt-get", "install", "-y", "-qq", "mysqltuner"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+            mt_bin = shutil.which("mysqltuner")
+
+    if not mt_bin:
+        print(f"\n{Colors.YELLOW}⚠️ Package 'mysqltuner' is not currently installed.{Colors.RESET}")
+        print("To install the classic Perl MySQLTuner utility on Ubuntu, run:")
+        print(f"  {Colors.BOLD}sudo apt-get install -y mysqltuner{Colors.RESET}\n")
+        return False
+
+    print(f"\n{Colors.CYAN}{Colors.BOLD}>>> Executing external mysqltuner utility ({mt_bin})...{Colors.RESET}\n")
+    try:
+        subprocess.run([mt_bin], check=False)
+        return True
+    except Exception as e:
+        print(f"{Colors.RED}Error launching mysqltuner: {e}{Colors.RESET}")
+        return False
+
+
+def main():
+    parser = argparse.ArgumentParser(description="LeanStack Autonomous MariaDB & MySQL Performance Tuner")
+    parser.add_argument("--apply", "--auto-tune", action="store_true", dest="apply", help="Automatically write and apply optimal tuning parameters to MariaDB config")
+    parser.add_argument("--json", action="store_true", help="Output analysis in machine-readable JSON format")
+    parser.add_argument("--mysqltuner", action="store_true", help="Execute external mysqltuner utility")
+    parser.add_argument("--optimize", "--optimize-tables", action="store_true", dest="optimize", help="Run OPTIMIZE TABLE on fragmented tenant tables")
+    parser.add_argument("--simulate-ram", type=int, default=None, help="Simulate host RAM in MB")
+    parser.add_argument("--simulate-cores", type=int, default=None, help="Simulate CPU cores")
+    args = parser.parse_args()
+
+    if args.mysqltuner:
+        run_external_mysqltuner()
+        sys.exit(0)
+
+    if (args.apply or args.optimize) and hasattr(os, "geteuid") and os.geteuid() != 0:
+        print(f"{Colors.RED}❌ Error: Applying tuning profiles or optimizing tables requires root privileges.{Colors.RESET}", file=sys.stderr)
+        print(f"Please re-run with: {Colors.BOLD}sudo lsctl db:tune --apply{Colors.RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    hw = HostProbe.get_hardware()
+    if args.simulate_ram:
+        hw["ram_mb"] = args.simulate_ram
+    if args.simulate_cores:
+        hw["cores"] = args.simulate_cores
+
+    collector = MariaDBLiveCollector()
+    is_live, status, variables, frag_tables = collector.collect()
+
+    analyzer = DatabaseTuningAnalyzer(
+        hardware=hw,
+        is_live=is_live,
+        status=status,
+        variables=variables,
+        fragmented_tables=frag_tables
+    )
+    analysis = analyzer.analyze()
+
+    if args.apply:
+        apply_tuning_profile(analysis["ideal_tuning"], collector=collector)
+
+    if args.optimize and is_live:
+        run_table_optimization(collector, frag_tables)
+
+    if args.json:
+        print(json.dumps(analysis, indent=2))
+    else:
+        print(analyzer.render_report(analysis))
+
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()

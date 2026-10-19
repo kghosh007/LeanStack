@@ -1227,6 +1227,22 @@ exit 0
         self.assertIn("RAM:</span> <?php echo esc_html( $analytics['system']['memory_usage_pct'] ); ?>%", content)
         self.assertIn("Workers: <strong>%d / %d</strong>", content)
 
+    def test_lsctl_db_tune_and_sys_tune_execution(self):
+        """Verify lsctl db:tune executes cleanly with --json and help displays tuning commands."""
+        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        res_help = subprocess.run([lsctl_bin, "help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(res_help.returncode, 0)
+        self.assertIn("db:tune", res_help.stdout)
+        self.assertIn("sys:tune", res_help.stdout)
+
+        # Test db:tune --json execution
+        res_tune = subprocess.run([lsctl_bin, "db:tune", "--json", "--simulate-ram=4096", "--simulate-cores=4"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(res_tune.returncode, 0, f"db:tune failed: {res_tune.stderr}")
+        data = json.loads(res_tune.stdout)
+        self.assertIn("score", data)
+        self.assertIn("ideal_tuning", data)
+        self.assertEqual(data["ideal_tuning"]["innodb_io_capacity"], 8000)
+
 if __name__ == "__main__":
     unittest.main()
 

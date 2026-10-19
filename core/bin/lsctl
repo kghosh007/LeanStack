@@ -190,7 +190,9 @@ Commands:
   profile:show    Display full details of a profile (--json supported)
   profile:create  Create or scaffold a custom profile
   profile:delete  Remove a custom profile
-  sys:tune        Re-probe hardware and apply dynamic tuning profiles
+  sys:tune        Re-probe hardware and apply dynamic tuning profiles across all layers
+  db:tune         Autonomous MariaDB/MySQL performance tuner & optimizer (--apply, --json)
+  db:optimize     Optimize & defragment tenant database tables (or alias for db:tune)
   cf:sync         Synchronize Cloudflare IP ranges into Angie
   cron:run        Execute anti-thundering background cron queue
   cron:status     Display background cron timer & execution status (--json supported)
@@ -232,6 +234,44 @@ require_root() {
 }
 
 case "$COMMAND" in
+    sys:tune|sys-tune|tune)
+        require_root
+        shift
+        UPGRADE_BIN="${SCRIPT_DIR}/ls-upgrade"
+        [ ! -f "$UPGRADE_BIN" ] && UPGRADE_BIN="/usr/local/bin/ls-upgrade"
+        if [ -f "$UPGRADE_BIN" ]; then
+            exec python3 "$UPGRADE_BIN" --reconcile-tuning "$@"
+        else
+            echo "ERROR: Upgrade engine (${UPGRADE_BIN}) not found." >&2
+            exit 1
+        fi
+        ;;
+
+    db:tune|db:optimize|db-tune|db:tuner|mysqltuner)
+        CURRENT_CMD="$COMMAND"
+        shift
+        DB_TUNE_BIN="${SCRIPT_DIR}/ls-db-tune"
+        [ ! -f "$DB_TUNE_BIN" ] && DB_TUNE_BIN="/usr/local/bin/ls-db-tune"
+        if [ "$CURRENT_CMD" == "mysqltuner" ] || [ "$CURRENT_CMD" == "db:tuner" ]; then
+            if [ $# -eq 0 ]; then
+                set -- "--mysqltuner"
+            fi
+        fi
+        if [ "$CURRENT_CMD" == "db:optimize" ]; then
+            if [ $# -eq 0 ]; then
+                set -- "--optimize"
+            fi
+        fi
+        if [ -f "$DB_TUNE_BIN" ]; then
+            exec python3 "$DB_TUNE_BIN" "$@"
+        elif command -v mysqltuner &>/dev/null; then
+            exec mysqltuner "$@"
+        else
+            echo "ERROR: Database tuner tool (${DB_TUNE_BIN}) not found." >&2
+            exit 1
+        fi
+        ;;
+
     watcher:status)
         JSON_OUT=0
         for arg in "$@"; do
@@ -989,16 +1029,30 @@ else:
         OLD_POOL="/etc/php/${OLD_PHP}/fpm/pool.d/${USER_NAME}.conf"
         NEW_SOCKET="/run/php/php${NEW_PHP}-${USER_NAME}.sock"
 
+        # Hardware-aware PHP-FPM worker bounds calculation
+        CALC_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+        if [ "$CALC_RAM_MB" -le 1024 ]; then
+            SITE_MAX_CHILDREN=8; SITE_START=2; SITE_MIN_SPARE=1; SITE_MAX_SPARE=4
+        elif [ "$CALC_RAM_MB" -le 2048 ]; then
+            SITE_MAX_CHILDREN=15; SITE_START=3; SITE_MIN_SPARE=2; SITE_MAX_SPARE=6
+        elif [ "$CALC_RAM_MB" -le 4096 ]; then
+            SITE_MAX_CHILDREN=25; SITE_START=5; SITE_MIN_SPARE=3; SITE_MAX_SPARE=10
+        elif [ "$CALC_RAM_MB" -le 8192 ]; then
+            SITE_MAX_CHILDREN=40; SITE_START=8; SITE_MIN_SPARE=4; SITE_MAX_SPARE=16
+        else
+            SITE_MAX_CHILDREN=60; SITE_START=12; SITE_MIN_SPARE=6; SITE_MAX_SPARE=24
+        fi
+
         cp "${TEMPLATE_DIR}/pool.conf.tpl" "$NEW_STAGED"
         sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$NEW_STAGED"
         sed -i "s|{{SOCKET_PATH}}|${NEW_SOCKET}|g" "$NEW_STAGED"
         sed -i "s|{{POOL_MODE}}|${POOL_MODE}|g" "$NEW_STAGED"
-        sed -i "s|{{MAX_CHILDREN}}|30|g" "$NEW_STAGED"
+        sed -i "s|{{MAX_CHILDREN}}|${SITE_MAX_CHILDREN}|g" "$NEW_STAGED"
         sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|g" "$NEW_STAGED"
         sed -i "s|{{MEMORY_LIMIT}}|${MEMORY_LIMIT}|g" "$NEW_STAGED"
 
         if [ "$POOL_MODE" == "dynamic" ]; then
-            DYNAMIC_SETTINGS="pm.start_servers = 6\npm.min_spare_servers = 4\npm.max_spare_servers = 12"
+            DYNAMIC_SETTINGS="pm.start_servers = ${SITE_START}\npm.min_spare_servers = ${SITE_MIN_SPARE}\npm.max_spare_servers = ${SITE_MAX_SPARE}"
             sed -i "s|{{PM_DYNAMIC_SETTINGS}}|${DYNAMIC_SETTINGS}|g" "$NEW_STAGED"
         else
             sed -i "s|{{PM_DYNAMIC_SETTINGS}}||g" "$NEW_STAGED"
@@ -1336,18 +1390,31 @@ PY
         mariadb -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
         mariadb -e "FLUSH PRIVILEGES;"
 
-        # PHP-FPM Pool Generation
+        # PHP-FPM Pool Generation (Hardware-Aware Dynamic Sizing)
+        CALC_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+        if [ "$CALC_RAM_MB" -le 1024 ]; then
+            SITE_MAX_CHILDREN=8; SITE_START=2; SITE_MIN_SPARE=1; SITE_MAX_SPARE=4
+        elif [ "$CALC_RAM_MB" -le 2048 ]; then
+            SITE_MAX_CHILDREN=15; SITE_START=3; SITE_MIN_SPARE=2; SITE_MAX_SPARE=6
+        elif [ "$CALC_RAM_MB" -le 4096 ]; then
+            SITE_MAX_CHILDREN=25; SITE_START=5; SITE_MIN_SPARE=3; SITE_MAX_SPARE=10
+        elif [ "$CALC_RAM_MB" -le 8192 ]; then
+            SITE_MAX_CHILDREN=40; SITE_START=8; SITE_MIN_SPARE=4; SITE_MAX_SPARE=16
+        else
+            SITE_MAX_CHILDREN=60; SITE_START=12; SITE_MIN_SPARE=6; SITE_MAX_SPARE=24
+        fi
+
         POOL_FILE="/etc/php/${PHP_VER}/fpm/pool.d/${USER_NAME}.conf"
         cp "${TEMPLATE_DIR}/pool.conf.tpl" "$POOL_FILE"
         sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$POOL_FILE"
         sed -i "s|{{SOCKET_PATH}}|${SOCKET_PATH}|g" "$POOL_FILE"
         sed -i "s|{{POOL_MODE}}|${POOL_MODE}|g" "$POOL_FILE"
-        sed -i "s|{{MAX_CHILDREN}}|30|g" "$POOL_FILE"
+        sed -i "s|{{MAX_CHILDREN}}|${SITE_MAX_CHILDREN}|g" "$POOL_FILE"
         sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|g" "$POOL_FILE"
         sed -i "s|{{MEMORY_LIMIT}}|${MEMORY_LIMIT}|g" "$POOL_FILE"
 
         if [ "$POOL_MODE" == "dynamic" ]; then
-            DYNAMIC_SETTINGS="pm.start_servers = 6\npm.min_spare_servers = 4\npm.max_spare_servers = 12"
+            DYNAMIC_SETTINGS="pm.start_servers = ${SITE_START}\npm.min_spare_servers = ${SITE_MIN_SPARE}\npm.max_spare_servers = ${SITE_MAX_SPARE}"
             sed -i "s|{{PM_DYNAMIC_SETTINGS}}|${DYNAMIC_SETTINGS}|g" "$POOL_FILE"
         else
             sed -i "s|{{PM_DYNAMIC_SETTINGS}}||g" "$POOL_FILE"

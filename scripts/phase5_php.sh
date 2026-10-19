@@ -60,9 +60,13 @@ fi
 
 echo ">>> [Phase 5] Provisioning PHP versions: ${AVAILABLE_VERSIONS[*]}..."
 
-# Hardware Probing for JIT
+# Hardware Probing for JIT and Memory Sizing
 HAS_AVX2=$(grep -q "avx2" /proc/cpuinfo 2>/dev/null && echo 1 || echo 0)
 HAS_SSE4=$(grep -q "sse4_2" /proc/cpuinfo 2>/dev/null && echo 1 || echo 0)
+RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
+OPCACHE_MEM=$(( RAM_TOTAL_MB * 5 / 100 ))
+[ "$OPCACHE_MEM" -lt 128 ] && OPCACHE_MEM=128
+[ "$OPCACHE_MEM" -gt 512 ] && OPCACHE_MEM=512
 
 for VER in "${AVAILABLE_VERSIONS[@]}"; do
     echo ">>> [Phase 5] Installing PHP ${VER} and extensions..."
@@ -112,7 +116,7 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
 ; --- LeanStack High-Performance OPcache & JIT Profile ---
 opcache.enable = 1
 opcache.enable_cli = 0
-opcache.memory_consumption = 256
+opcache.memory_consumption = ${OPCACHE_MEM}
 opcache.interned_strings_buffer = 32
 opcache.max_accelerated_files = 30000
 opcache.revalidate_freq = 60

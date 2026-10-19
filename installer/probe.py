@@ -127,7 +127,47 @@ class HardwareProbe:
         except Exception:
             pass
 
-        # Check rotational property for block devices
+        # Prioritize root mount device if inspectable via /proc/mounts
+        root_dev = ""
+        try:
+            if os.path.exists("/proc/mounts"):
+                with open("/proc/mounts", "r") as f_m:
+                    for line in f_m:
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[1] == "/":
+                            root_dev = os.path.basename(parts[0])
+                            break
+        except Exception:
+            pass
+
+        if "nvme" in root_dev or glob.glob("/dev/nvme*"):
+            info["is_nvme"] = True
+            info["disk_type"] = "NVMe SSD"
+            info["root_disk"] = root_dev or "nvme"
+            return info
+
+        base_root_dev = re.sub(r'p?\d+$', '', root_dev) if root_dev else ""
+        if base_root_dev and os.path.exists(f"/sys/block/{base_root_dev}/queue/rotational"):
+            try:
+                with open(f"/sys/block/{base_root_dev}/queue/rotational", "r") as f:
+                    rot = f.read().strip()
+                if "nvme" in base_root_dev:
+                    info["is_nvme"] = True
+                    info["disk_type"] = "NVMe SSD"
+                elif rot == "0":
+                    info["is_nvme"] = False
+                    info["is_rotational"] = False
+                    info["disk_type"] = "SATA SSD"
+                elif rot == "1":
+                    info["is_rotational"] = True
+                    info["is_nvme"] = False
+                    info["disk_type"] = "HDD (Rotational)"
+                info["root_disk"] = base_root_dev
+                return info
+            except Exception:
+                pass
+
+        # Fallback: scan rotational property for block devices
         for block_path in glob.glob("/sys/block/*/queue/rotational"):
             try:
                 dev = block_path.split("/")[3]
@@ -314,6 +354,24 @@ class TuningCalculator:
         # Max connections based on RAM
         max_conn = 150 if self.ram_mb <= 2048 else (300 if self.ram_mb <= 8192 else 500)
 
+        # Storage-aware I/O capacity and thread scaling
+        is_rotational = self.hw.get("storage", {}).get("is_rotational", False)
+        if self.is_nvme:
+            io_capacity = 4000 if self.cores <= 2 else (8000 if self.cores <= 8 else 15000)
+            io_capacity_max = io_capacity * 2
+            io_threads = min(8, max(4, self.cores))
+            flush_neighbors = 0
+        elif not is_rotational:
+            io_capacity = 1000 if self.cores <= 2 else 2000
+            io_capacity_max = io_capacity * 2
+            io_threads = min(4, max(2, self.cores))
+            flush_neighbors = 0
+        else:
+            io_capacity = 200
+            io_capacity_max = 400
+            io_threads = 2
+            flush_neighbors = 1
+
         return {
             "innodb_buffer_pool_size": f"{bp_mb}M",
             "innodb_buffer_pool_size_mb": bp_mb,
@@ -343,7 +401,12 @@ class TuningCalculator:
             "thread_cache_size": 128,
             "back_log": 512,
             "skip_name_resolve": 1,
-            "performance_schema": "OFF"
+            "performance_schema": "OFF",
+            "innodb_io_capacity": io_capacity,
+            "innodb_io_capacity_max": io_capacity_max,
+            "innodb_read_io_threads": io_threads,
+            "innodb_write_io_threads": io_threads,
+            "innodb_flush_neighbors": flush_neighbors
         }
 
     def calculate_valkey(self) -> Dict[str, Any]:
@@ -396,11 +459,13 @@ class TuningCalculator:
     def calculate_angie(self) -> Dict[str, Any]:
         """Angie web server worker processes, connections, Brotli level, and TLS parameters."""
         worker_conn = 4096 if self.cores <= 2 else (8192 if self.cores <= 4 else 16384)
+        cache_max = "256m" if self.ram_mb <= 4096 else ("512m" if self.ram_mb <= 8192 else "1024m")
         return {
             "worker_processes": "auto",
             "worker_cpu_affinity": "auto",
             "worker_rlimit_nofile": 65535,
             "worker_connections": worker_conn,
+            "fastcgi_cache_max_size": cache_max,
             "brotli_comp_level": 4,  # Dynamic PHP responses (balance CPU vs ratio)
             "brotli_static_comp_level": 6,
             "pqc_curve": "X25519MLKEM768:x25519:prime256v1:secp384r1",
@@ -455,25 +520,29 @@ def format_summary_card(profile: Dict[str, Any]) -> str:
     a = profile["angie"]
     k = profile["kernel"]
 
+    def row(label: str, val: str) -> str:
+        line = f" {label:<19} {val}"
+        return f"│{line:<72}│"
+
     lines = [
         "┌────────────────────────────────────────────────────────────────────────┐",
         "│              LEANSTACK HARDWARE TELEMETRY & AUTO-TUNING                │",
         "├────────────────────────────────────────────────────────────────────────┤",
-        f"│ CPU Model:         {hw['cpu']['model'][:50]:<50} │",
-        f"│ Cores / Threads:   {hw['cpu']['cores']} vCPUs (Arch: {hw['cpu']['arch']}){'':<32} │",
-        f"│ Microarch Flags:   AES-NI: {str(hw['cpu']['features']['aes']):<5} AVX2: {str(hw['cpu']['features']['avx2']):<5} AVX512: {str(hw['cpu']['features']['avx512']):<5}{'':<14} │",
-        f"│ System RAM:        {hw['ram']['total_mb']} MB (~{round(hw['ram']['total_mb']/1024, 1)} GB){'':<43} │",
-        f"│ Storage Class:     {hw['storage']['disk_type']} ({hw['storage']['total_gb']} GB total, {hw['storage']['free_gb']} GB free){'':<20} │",
+        row("CPU Model:", f"{hw['cpu']['model'][:48]}"),
+        row("Cores / Threads:", f"{hw['cpu']['cores']} vCPUs (Arch: {hw['cpu']['arch']})"),
+        row("Microarch Flags:", f"AES-NI: {str(hw['cpu']['features']['aes'])} | AVX2: {str(hw['cpu']['features']['avx2'])} | AVX512: {str(hw['cpu']['features']['avx512'])}"),
+        row("System RAM:", f"{hw['ram']['total_mb']} MB (~{round(hw['ram']['total_mb']/1024, 1)} GB)"),
+        row("Storage Class:", f"{hw['storage']['disk_type']} ({hw['storage']['total_gb']} GB total, {hw['storage']['free_gb']} GB free)"),
         "├────────────────────────────────────────────────────────────────────────┤",
         "│                      CALCULATED TUNING PROFILES                        │",
         "├────────────────────────────────────────────────────────────────────────┤",
-        f"│ MariaDB Engine:    Buffer Pool: {c['innodb_buffer_pool_size']} ({c['innodb_buffer_pool_instances']} inst) | Log: {c['innodb_log_file_size']}{'':<16} │",
-        f"│                    Buffers: sort={c['sort_buffer_size']}, join={c['join_buffer_size']} (L2 cache fitted){'':<9} │",
-        f"│                    Isolation: {c['transaction_isolation']} | Table Cache: {c['table_open_cache_instances']} inst{'':<13} │",
-        f"│ In-Memory Cache:   Valkey {v['maxmemory']} ({v['maxmemory_policy']}) via Unix Socket{'':<13} │",
-        f"│ PHP Application:   {p['pm_max_children']} max workers | OPcache: {p['opcache_memory_consumption']}M | JIT: {p['opcache_jit']} ({p['opcache_jit_buffer_size']}){'':<7} │",
-        f"│ Angie Web Server:  Workers: {a['worker_processes']} ({a['worker_connections']} conn) | HTTP/3 QUIC | PQC ML-KEM{'':<9} │",
-        f"│ Linux Kernel:      BBR + FQ | TCP Fast Open: {k['tcp_fastopen']} | ZRAM: {k['zram_size_mb']}M ({k['zram_comp_algo']}){'':<12} │",
+        row("MariaDB Engine:", f"Buffer Pool: {c['innodb_buffer_pool_size']} ({c['innodb_buffer_pool_instances']} inst) | Log: {c['innodb_log_file_size']}"),
+        row("", f"Buffers: sort={c['sort_buffer_size']}, join={c['join_buffer_size']} | IO: {c['innodb_io_capacity']}/{c['innodb_io_capacity_max']}"),
+        row("", f"Isolation: {c['transaction_isolation']} | Table Cache: {c['table_open_cache_instances']} inst"),
+        row("In-Memory Cache:", f"Valkey {v['maxmemory']} ({v['maxmemory_policy']}) via Unix Socket"),
+        row("PHP Application:", f"{p['pm_max_children']} max workers | OPcache: {p['opcache_memory_consumption']}M | JIT: {p['opcache_jit']}"),
+        row("Angie Web Server:", f"Workers: {a['worker_processes']} ({a['worker_connections']} conn, cache: {a.get('fastcgi_cache_max_size', '256m')}) | HTTP/3"),
+        row("Linux Kernel:", f"BBR + FQ | TCP Fast Open: {k['tcp_fastopen']} | ZRAM: {k['zram_size_mb']}M ({k['zram_comp_algo']})"),
         "└────────────────────────────────────────────────────────────────────────┘"
     ]
     return "\n".join(lines)

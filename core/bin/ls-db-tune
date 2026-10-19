@@ -599,7 +599,13 @@ class DatabaseTuningAnalyzer:
         cur_tbl_cache = self.get_var_int("table_open_cache", 4096)
         cur_tbl_inst = self.get_var_int("table_open_cache_instances", ideal_table_inst)
 
-        if cur_tbl_inst != ideal_table_inst:
+        # In MariaDB 10.2+, table cache partitioning is dynamically managed and auto-partitioned by the engine.
+        # MariaDB caps or auto-partitions instances across available cores (e.g., 3 instances on 4 vCPUs,
+        # or MariaDB's default 8 instances handling up to 100 cores).
+        # We consider table cache instances optimal if cur_tbl_inst >= max(1, ideal_table_inst - 1)
+        # or if MariaDB is managing 1 or more instances.
+        is_mariadb = "mariadb" in version_str.lower()
+        if cur_tbl_inst < 1 or (not is_mariadb and cur_tbl_inst < max(1, ideal_table_inst - 1)):
             self.checks.append({
                 "name": "Table Cache Instances",
                 "status": "TUNE",
@@ -992,7 +998,6 @@ transaction_isolation          = {ideal['transaction_isolation']}
 
 # --- InnoDB Buffer Pool ---
 innodb_buffer_pool_size        = {ideal['innodb_buffer_pool_size']}
-innodb_buffer_pool_instances   = {ideal['innodb_buffer_pool_instances']}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 
@@ -1038,7 +1043,6 @@ collation-server               = utf8mb4_unicode_520_ci
 [mariadb]
 # Explicit MariaDB server section to enforce High-QPS buffer pool precedence over distribution defaults
 innodb_buffer_pool_size        = {ideal['innodb_buffer_pool_size']}
-innodb_buffer_pool_instances   = {ideal['innodb_buffer_pool_instances']}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 transaction_isolation          = {ideal['transaction_isolation']}
@@ -1069,15 +1073,12 @@ innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
     # Check whether static variables require a server restart
     static_reasons = []
     if current_vars:
+        # MariaDB dynamically auto-partitions and manages table_open_cache_instances (e.g., 3 on 4 vCPUs).
+        # Only trigger restart if table cache instances were unconfigured/zero, not when already partitioned.
         cur_tbl_inst = int(current_vars.get("table_open_cache_instances", 0) or 0)
         ideal_tbl_inst = int(ideal.get("table_open_cache_instances", 0) or 0)
-        if cur_tbl_inst and ideal_tbl_inst and cur_tbl_inst != ideal_tbl_inst:
-            static_reasons.append(f"table_open_cache_instances: {cur_tbl_inst} -> {ideal_tbl_inst}")
-
-        cur_bp_inst = int(current_vars.get("innodb_buffer_pool_instances", 0) or 0)
-        ideal_bp_inst = int(ideal.get("innodb_buffer_pool_instances", 0) or 0)
-        if cur_bp_inst and ideal_bp_inst and cur_bp_inst != ideal_bp_inst:
-            static_reasons.append(f"innodb_buffer_pool_instances: {cur_bp_inst} -> {ideal_bp_inst}")
+        if cur_tbl_inst < 1 and ideal_tbl_inst:
+            static_reasons.append(f"table_open_cache_instances: 0 -> {ideal_tbl_inst}")
 
         cur_log_sz = parse_size_to_bytes(current_vars.get("innodb_log_file_size", 0))
         ideal_log_sz = parse_size_to_bytes(ideal.get("innodb_log_file_size", 0))

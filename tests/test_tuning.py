@@ -306,8 +306,8 @@ class TestHardwareTuning(unittest.TestCase):
             with open(cnf_path, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            # Verify innodb_buffer_pool_instances is written to [mysqld] and [mariadb]
-            self.assertIn("innodb_buffer_pool_instances   = 2", content)
+            # Verify innodb_buffer_pool_instances is purged to prevent MariaDB 12 deprecation warnings
+            self.assertNotIn("innodb_buffer_pool_instances", content)
             self.assertIn("innodb_io_capacity             = 8000", content)
             self.assertIn("table_open_cache_instances     = 4", content)
 
@@ -391,9 +391,13 @@ class TestHardwareTuning(unittest.TestCase):
             self.assertNotIn("from 8792M to 8792M", rec)
             self.assertNotIn("Increase innodb_buffer_pool_size from 8792M", rec)
 
-        # Only recommendation should be table_open_cache_instances = 4
-        self.assertEqual(len(report["recommendations"]), 1)
-        self.assertIn("table_open_cache_instances = 4", report["recommendations"][0])
+        # Zero recommendations when optimal parameters and MariaDB table cache instances are active
+        self.assertEqual(len(report["recommendations"]), 0)
+        self.assertEqual(report["score"], 100)
+        table_inst_check = next((c for c in report["checks"] if c["name"] == "Table Cache Instances"), None)
+        self.assertIsNotNone(table_inst_check)
+        self.assertEqual(table_inst_check["status"], "PASS")
+        self.assertIn("3 instances", table_inst_check["value"])
 
     def test_apply_optimizations_alias_and_innodb_buffer_pool_size_set_global(self):
         """Verify apply_optimizations alias works and executes SET GLOBAL for innodb_buffer_pool_size."""
@@ -564,6 +568,110 @@ class TestHardwareTuning(unittest.TestCase):
         report = analyzer.analyze()
         bp_recs = [r for r in report["recommendations"] if "innodb_buffer_pool_size" in r]
         self.assertEqual(len(bp_recs), 1, f"Expected exactly 1 buffer pool recommendation, found: {bp_recs}")
+
+    def test_table_open_cache_instances_zero_triggers_tune(self):
+        """Verify that 0 or disabled table_open_cache_instances flags as TUNE and recommends setting it."""
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        hw = {"ram_mb": 8192, "cores": 4, "is_nvme": False, "is_rotational": False, "disk_type": "SATA SSD"}
+        mock_status = {"Uptime": "100000", "Open_tables": "50", "Opened_tables": "60"}
+        mock_vars = {
+            "version": "12.3.3-MariaDB",
+            "table_open_cache": "4096",
+            "table_open_cache_instances": "0",
+            "innodb_buffer_pool_size": "2800M",
+            "transaction_isolation": "READ-COMMITTED",
+            "sort_buffer_size": "2M",
+            "innodb_io_capacity": "2000"
+        }
+        analyzer = ls_db_tune.DatabaseTuningAnalyzer(
+            hardware=hw,
+            is_live=True,
+            status=mock_status,
+            variables=mock_vars,
+            fragmented_tables=[]
+        )
+        report = analyzer.analyze()
+        check = next((c for c in report["checks"] if c["name"] == "Table Cache Instances"), None)
+        self.assertIsNotNone(check)
+        self.assertEqual(check["status"], "TUNE")
+        self.assertTrue(any("table_open_cache_instances" in r for r in report["recommendations"]))
+
+    def test_apply_optimizations_no_static_restart_for_mariadb_managed_instances(self):
+        """Verify apply_optimizations does not add restart reasons when table_open_cache_instances is already active (e.g. 3 on 4 vCPUs)."""
+        import tempfile
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        ideal = {
+            "innodb_buffer_pool_size": "8792M",
+            "innodb_buffer_pool_instances": 4,
+            "innodb_log_file_size": "1024M",
+            "innodb_io_capacity": 2000,
+            "innodb_io_capacity_max": 4000,
+            "innodb_read_io_threads": 4,
+            "innodb_write_io_threads": 4,
+            "innodb_flush_neighbors": 0,
+            "sort_buffer_size": "4M",
+            "join_buffer_size": "4M",
+            "read_rnd_buffer_size": "2M",
+            "aria_pagecache_buffer_size": "256M",
+            "aria_sort_buffer_size": "32M",
+            "table_open_cache": 4096,
+            "table_open_cache_instances": 4,
+            "max_connections": 500,
+            "transaction_isolation": "READ-COMMITTED"
+        }
+
+        current = {
+            "table_open_cache_instances": "3",
+            "innodb_log_file_size": "1073741824",
+            "innodb_read_io_threads": "4",
+            "innodb_write_io_threads": "4",
+            "aria_pagecache_buffer_size": "268435456",
+            "performance_schema": "OFF",
+            "query_cache_type": "0"
+        }
+
+        class MockCollector:
+            cli_cmd = "/usr/bin/mariadb"
+            def query(self, sql: str):
+                return [["1"]]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            calls = []
+            orig_run = ls_db_tune.subprocess.run
+            def fake_run(cmd, *a, **kw):
+                calls.append(cmd)
+                class Ret:
+                    returncode = 0
+                return Ret()
+
+            ls_db_tune.subprocess.run = fake_run
+            try:
+                res = ls_db_tune.apply_optimizations(
+                    ideal=ideal,
+                    conf_dir=tmp_dir,
+                    collector=MockCollector(),
+                    current_vars=current,
+                    show_log=False
+                )
+                self.assertTrue(res)
+                restart_cmds = [c for c in calls if "restart" in c]
+                self.assertEqual(len(restart_cmds), 0, f"Expected zero restarts, got: {restart_cmds}")
+            finally:
+                ls_db_tune.subprocess.run = orig_run
 
 
 if __name__ == "__main__":

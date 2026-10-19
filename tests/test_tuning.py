@@ -7,6 +7,7 @@ Verifies deterministic mathematical scaling across various VPS hardware tiers.
 import unittest
 import os
 import sys
+import json
 
 # Add installer directory to module path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "installer")))
@@ -315,6 +316,156 @@ class TestHardwareTuning(unittest.TestCase):
             self.assertTrue(len(set_globals) >= 5)
             self.assertTrue(any("max_connections" in q for q in set_globals))
             self.assertTrue(any("innodb_io_capacity" in q for q in set_globals))
+            self.assertTrue(any("innodb_buffer_pool_size" in q for q in set_globals))
+
+    def test_cold_cache_warmup_no_bogus_buffer_pool_recommendation(self):
+        """Verify low uptime (<2h) recognizes cold cache warmup and never recommends increasing buffer pool when current >= optimal."""
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        hw = {
+            "ram_mb": 15986,
+            "cores": 4,
+            "is_nvme": False,
+            "is_rotational": False,
+            "disk_type": "SATA SSD"
+        }
+        # Simulate exact scenario reported by user: uptime 56s, hit rate 43.86%, current pool 8792M
+        mock_status = {
+            "Uptime": "56",
+            "Innodb_buffer_pool_read_requests": "4100",
+            "Innodb_buffer_pool_reads": "2301",  # 43.86% hit rate
+            "Sort_merge_passes": "0",
+            "Created_tmp_disk_tables": "2",
+            "Created_tmp_tables": "60",
+            "Open_tables": "100",
+            "Opened_tables": "110",
+            "Threads_created": "5",
+            "Connections": "150",
+            "Innodb_row_lock_waits": "0",
+            "Innodb_buffer_pool_pages_dirty": "0",
+            "Innodb_buffer_pool_pages_total": "1000"
+        }
+        mock_vars = {
+            "version": "12.3.3-MariaDB-ubu2604",
+            "innodb_buffer_pool_size": "8792M",
+            "transaction_isolation": "READ-COMMITTED",
+            "sort_buffer_size": "4194304",
+            "table_open_cache": "4096",
+            "table_open_cache_instances": "3",  # Needs tune to 4
+            "innodb_io_capacity": "2000",
+            "query_cache_type": "0",
+            "query_cache_size": "0",
+            "performance_schema": "OFF",
+            "thread_cache_size": "128"
+        }
+
+        analyzer = ls_db_tune.DatabaseTuningAnalyzer(
+            hardware=hw,
+            is_live=True,
+            status=mock_status,
+            variables=mock_vars,
+            fragmented_tables=[]
+        )
+        report = analyzer.analyze()
+
+        # Check that hit rate is marked INFO / Warming up rather than WARN
+        hit_rate_check = next((c for c in report["checks"] if c["name"] == "InnoDB Buffer Pool Hit Rate"), None)
+        self.assertIsNotNone(hit_rate_check)
+        self.assertEqual(hit_rate_check["status"], "INFO")
+        self.assertIn("Warming", hit_rate_check["value"])
+        self.assertIn("warming up", hit_rate_check["desc"])
+
+        # Sizing check should be PASS because 8792MB is optimal for ~16GB RAM
+        sizing_check = next((c for c in report["checks"] if c["name"] == "InnoDB Buffer Pool Sizing"), None)
+        self.assertIsNotNone(sizing_check)
+        self.assertEqual(sizing_check["status"], "PASS")
+
+        # Must NOT recommend increasing buffer pool from 8792M to 8792M
+        for rec in report["recommendations"]:
+            self.assertNotIn("from 8792M to 8792M", rec)
+            self.assertNotIn("Increase innodb_buffer_pool_size from 8792M", rec)
+
+        # Only recommendation should be table_open_cache_instances = 4
+        self.assertEqual(len(report["recommendations"]), 1)
+        self.assertIn("table_open_cache_instances = 4", report["recommendations"][0])
+
+    def test_apply_optimizations_alias_and_innodb_buffer_pool_size_set_global(self):
+        """Verify apply_optimizations alias works and executes SET GLOBAL for innodb_buffer_pool_size."""
+        import tempfile
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        self.assertTrue(hasattr(ls_db_tune, "apply_optimizations"))
+        self.assertEqual(ls_db_tune.apply_optimizations, ls_db_tune.apply_tuning_profile)
+
+        ideal = {
+            "innodb_buffer_pool_size": "8792M",
+            "innodb_buffer_pool_instances": 4,
+            "innodb_log_file_size": "1024M",
+            "innodb_io_capacity": 2000,
+            "innodb_io_capacity_max": 4000,
+            "innodb_read_io_threads": 4,
+            "innodb_write_io_threads": 4,
+            "innodb_flush_neighbors": 0,
+            "sort_buffer_size": "4M",
+            "join_buffer_size": "4M",
+            "read_rnd_buffer_size": "2M",
+            "aria_pagecache_buffer_size": "256M",
+            "aria_sort_buffer_size": "32M",
+            "table_open_cache": 4096,
+            "table_open_cache_instances": 4,
+            "max_connections": 500,
+            "transaction_isolation": "READ-COMMITTED"
+        }
+
+        class MockCollector:
+            cli_cmd = "/usr/bin/mariadb"
+            executed = []
+            def query(self, sql: str):
+                self.executed.append(sql)
+                return [["1"]]
+
+        collector = MockCollector()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            res = ls_db_tune.apply_optimizations(
+                ideal,
+                conf_dir=tmp_dir,
+                collector=collector,
+                current_vars={"table_open_cache_instances": "3"},
+                show_log=False
+            )
+            self.assertTrue(res)
+
+            set_globals = [q for q in collector.executed if q.startswith("SET GLOBAL")]
+            self.assertTrue(any("innodb_buffer_pool_size" in q for q in set_globals))
+            self.assertTrue(any("table_open_cache" in q for q in set_globals))
+            self.assertTrue(any("max_connections" in q for q in set_globals))
+
+    def test_lsctl_db_optimize_passes_apply_and_optimize(self):
+        """Verify lsctl db:optimize passes both --apply and --optimize to database tuner."""
+        import subprocess
+        lsctl_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "lsctl"))
+        res = subprocess.run(
+            [lsctl_path, "db:optimize", "--dry-run", "--json", "--simulate-ram=4096", "--simulate-cores=4"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        self.assertEqual(res.returncode, 0, f"lsctl db:optimize failed: {res.stderr}")
+        data = json.loads(res.stdout)
+        self.assertIn("score", data)
+        self.assertIn("ideal_tuning", data)
 
 
 if __name__ == "__main__":

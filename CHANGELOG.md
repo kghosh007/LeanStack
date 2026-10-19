@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-10-20 - *Codename: Hyperion-SR1*
+
+### Fixed
+- **Autonomous Database Optimizer & Tuner (`lsctl db:optimize` & `ls-db-tune`)**:
+  - Fixed `lsctl db:optimize` CLI command routing in `core/bin/lsctl` to forward both `--optimize` and `--apply`, ensuring that running `sudo lsctl db:optimize` actually applies live MariaDB tuning recommendations, updates `/etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf`, and defragments tenant tables rather than only printing recommendations.
+  - Resolved erroneous buffer pool recommendation bug where `ls-db-tune` recommended increasing `innodb_buffer_pool_size` when current sizing was already optimal (`current >= optimal`, e.g. "Increase from 8792M to 8792M").
+  - Added cold cache warmup detection: when server uptime is low (<2 hours), `ls-db-tune` reports low buffer pool hit rates as informational warmup progress following service restart rather than buffer starvation, avoiding false-positive warnings and invalid recommendations.
+  - Enhanced `apply_tuning_profile` (and `apply_optimizations` alias) to execute dynamic SQL `SET GLOBAL` for `innodb_buffer_pool_size`, `table_open_cache`, `max_connections`, `innodb_io_capacity`, etc.
+  - Implemented automatic static variable change detection (e.g., `table_open_cache_instances: 3 -> 4`) to restart or reload the MariaDB service so static parameters take effect immediately.
+  - Added clear, dedicated ANSI execution report when `--apply` is invoked, logging dynamic variables set via SQL `SET GLOBAL`, persistent configuration files written, and service lifecycle actions.
+  - Prevented redundant thread cache sizing recommendations when `thread_cache_size` is already configured to optimal capacity (>= 128).
+
 ## [1.3.0] - 2026-10-19 - *Codename: Hyperion*
 
 ### Added

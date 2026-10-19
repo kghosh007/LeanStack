@@ -192,7 +192,7 @@ Commands:
   profile:delete  Remove a custom profile
   sys:tune        Re-probe hardware and apply dynamic tuning profiles across all layers
   db:tune         Autonomous MariaDB/MySQL performance tuner & optimizer (--apply, --json)
-  db:optimize     Optimize & defragment tenant database tables (or alias for db:tune)
+  db:optimize     Optimize tenant tables & autonomously apply optimal MariaDB tuning (--apply)
   cf:sync         Synchronize Cloudflare IP ranges into Angie
   cron:run        Execute anti-thundering background cron queue
   cron:status     Display background cron timer & execution status (--json supported)
@@ -258,9 +258,20 @@ case "$COMMAND" in
             fi
         fi
         if [ "$CURRENT_CMD" == "db:optimize" ]; then
-            if [ $# -eq 0 ]; then
-                set -- "--optimize"
-            fi
+            HAS_APPLY=0
+            HAS_OPTIMIZE=0
+            for arg in "$@"; do
+                if [ "$arg" == "--apply" ] || [ "$arg" == "--auto-tune" ]; then
+                    HAS_APPLY=1
+                fi
+                if [ "$arg" == "--optimize" ] || [ "$arg" == "--optimize-tables" ]; then
+                    HAS_OPTIMIZE=1
+                fi
+            done
+            EXTRA_ARGS=()
+            [ $HAS_OPTIMIZE -eq 0 ] && EXTRA_ARGS+=("--optimize")
+            [ $HAS_APPLY -eq 0 ] && EXTRA_ARGS+=("--apply")
+            set -- "${EXTRA_ARGS[@]}" "$@"
         fi
         if [ -f "$DB_TUNE_BIN" ]; then
             exec python3 "$DB_TUNE_BIN" "$@"

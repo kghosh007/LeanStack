@@ -8,7 +8,7 @@
 # ==============================================================================
 set -euo pipefail
 
-LEANSTACK_VERSION="1.3.0"
+LEANSTACK_VERSION="1.3.1"
 DEFAULT_REPO_URL="${LEANSTACK_REPO_URL:-https://github.com/kghosh007/LeanStack.git}"
 
 # Auto-detect local development clone vs default production target (pipe-safe)

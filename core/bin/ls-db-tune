@@ -408,6 +408,38 @@ class DatabaseTuningAnalyzer:
         else:
             bp_hit_rate = 100.0
 
+        # Evaluate Buffer Pool Sizing against hardware RAM
+        bp_diff = cur_bp_mb - ideal_bp_mb
+        is_bp_undersized = cur_bp_mb < ideal_bp_mb - 128
+        is_bp_oversized = cur_bp_mb > ideal_bp_mb + 128
+
+        if abs(bp_diff) <= 128:
+            self.checks.append({
+                "name": "InnoDB Buffer Pool Sizing",
+                "status": "PASS",
+                "value": f"{cur_bp_mb}MB",
+                "desc": f"Optimally sized for {ram_mb}MB host RAM (Leaves balanced headroom for PHP & Valkey)."
+            })
+        elif is_bp_undersized:
+            self.checks.append({
+                "name": "InnoDB Buffer Pool Sizing",
+                "status": "TUNE",
+                "value": f"{cur_bp_mb}MB (Optimal: {ideal_bp_mb}MB)",
+                "desc": f"Buffer pool is undersized for {ram_mb}MB host RAM tier ({cur_bp_mb}M vs optimal {ideal_bp_mb}M)."
+            })
+            self.recommendations.append(f"Increase innodb_buffer_pool_size from {cur_bp_mb}M to {ideal_bp_mb}M for host tier.")
+            self.score -= 10
+        else:
+            self.checks.append({
+                "name": "InnoDB Buffer Pool Sizing",
+                "status": "TUNE",
+                "value": f"{cur_bp_mb}MB (Optimal: {ideal_bp_mb}MB)",
+                "desc": f"Buffer pool ({cur_bp_mb}M) exceeds recommended allocation ({ideal_bp_mb}M) for {ram_mb}MB host RAM."
+            })
+            self.recommendations.append(f"Adjust innodb_buffer_pool_size to {ideal_bp_mb}M to prevent OS memory exhaustion.")
+            self.score -= 10
+
+        # Evaluate Buffer Pool Hit Rate
         if self.is_live and bp_read_req > 1000:
             if bp_hit_rate >= 99.0:
                 self.checks.append({
@@ -416,41 +448,55 @@ class DatabaseTuningAnalyzer:
                     "value": f"{bp_hit_rate}%",
                     "desc": f"Outstanding memory cache efficiency ({format_bytes(cur_bp_bytes)} pool, {bp_reads} disk reads out of {bp_read_req} requests)."
                 })
+            elif uptime_sec < 7200:
+                # Server uptime is low (< 2 hours); cache is cold and actively warming up after service restart
+                self.checks.append({
+                    "name": "InnoDB Buffer Pool Hit Rate",
+                    "status": "INFO",
+                    "value": f"{bp_hit_rate}% (Warming up)",
+                    "desc": f"Cache warming up after recent service restart ({uptime_formatted}); hit rate will normalize with traffic."
+                })
+                # Do NOT recommend increasing buffer pool size when warming up, and do NOT penalize score
             elif bp_hit_rate >= 95.0:
                 self.checks.append({
                     "name": "InnoDB Buffer Pool Hit Rate",
                     "status": "INFO",
                     "value": f"{bp_hit_rate}%",
-                    "desc": "Acceptable hit rate, but disk reads are occurring."
+                    "desc": "Acceptable hit rate, but periodic disk reads are occurring."
                 })
                 self.score -= 5
             else:
-                self.checks.append({
-                    "name": "InnoDB Buffer Pool Hit Rate",
-                    "status": "WARN",
-                    "value": f"{bp_hit_rate}%",
-                    "desc": f"High disk read ratio ({bp_reads} disk reads). Increase buffer pool size to {ideal_bp_mb}M."
-                })
-                self.recommendations.append(f"Increase innodb_buffer_pool_size from {cur_bp_mb}M to {ideal_bp_mb}M to eliminate disk I/O bottlenecks.")
-                self.score -= 15
-        else:
-            bp_diff = abs(cur_bp_mb - ideal_bp_mb)
-            if bp_diff <= 128:
-                self.checks.append({
-                    "name": "InnoDB Buffer Pool Sizing",
-                    "status": "PASS",
-                    "value": f"{cur_bp_mb}MB",
-                    "desc": f"Optimally sized for {ram_mb}MB host RAM (Leaves balanced headroom for PHP & Valkey)."
-                })
-            else:
-                self.checks.append({
-                    "name": "InnoDB Buffer Pool Sizing",
-                    "status": "TUNE",
-                    "value": f"{cur_bp_mb}MB (Optimal: {ideal_bp_mb}MB)",
-                    "desc": f"Buffer pool does not match the hardware-aware optimal sizing of {ideal_bp_mb}MB."
-                })
-                self.recommendations.append(f"Adjust innodb_buffer_pool_size to {ideal_bp_mb}M for host tier.")
-                self.score -= 10
+                # Low hit rate on a warmed-up server (uptime >= 2 hours)
+                if is_bp_undersized and cur_bp_mb < ideal_bp_mb:
+                    self.checks.append({
+                        "name": "InnoDB Buffer Pool Hit Rate",
+                        "status": "WARN",
+                        "value": f"{bp_hit_rate}%",
+                        "desc": f"High disk read ratio ({bp_reads} disk reads). Increase buffer pool size to {ideal_bp_mb}M."
+                    })
+                    rec = f"Increase innodb_buffer_pool_size from {cur_bp_mb}M to {ideal_bp_mb}M to eliminate disk I/O bottlenecks."
+                    if rec not in self.recommendations:
+                        self.recommendations.append(rec)
+                    self.score -= 15
+                else:
+                    # Current buffer pool is already >= optimal allocation! Never recommend increasing if current >= optimal!
+                    self.checks.append({
+                        "name": "InnoDB Buffer Pool Hit Rate",
+                        "status": "WARN",
+                        "value": f"{bp_hit_rate}%",
+                        "desc": f"High disk read ratio ({bp_reads} disk reads) despite optimal {cur_bp_mb}MB buffer pool. Check slow query log."
+                    })
+                    rec = f"Buffer pool is at hardware ceiling ({cur_bp_mb}M); optimize unindexed queries and table joins to reduce disk reads."
+                    if rec not in self.recommendations:
+                        self.recommendations.append(rec)
+                    self.score -= 10
+        elif self.is_live:
+            self.checks.append({
+                "name": "InnoDB Buffer Pool Hit Rate",
+                "status": "PASS",
+                "value": "100.0% (Fresh)",
+                "desc": f"Buffer pool initialized ({format_bytes(cur_bp_bytes)} pool); insufficient requests ({bp_read_req}) to sample hit rate."
+            })
 
         # 3. Transaction Isolation & Gap-Lock Elimination
         tx_iso = (self.vars.get("transaction_isolation") or self.vars.get("tx_isolation") or "READ-COMMITTED").upper()
@@ -656,6 +702,20 @@ class DatabaseTuningAnalyzer:
                     "value": f"{tc_hit_rate}% hit rate ({threads_created} created / {connections} conn)",
                     "desc": f"Excellent thread reuse; thread_cache_size={cur_tc_size} prevents thread creation overhead."
                 })
+            elif cur_tc_size >= 128:
+                self.checks.append({
+                    "name": "Thread Cache Efficiency",
+                    "status": "PASS",
+                    "value": f"{tc_hit_rate}% hit rate ({threads_created} created / {connections} conn)",
+                    "desc": f"thread_cache_size={cur_tc_size} is optimally configured for high-concurrency connection reuse."
+                })
+            elif uptime_sec < 7200:
+                self.checks.append({
+                    "name": "Thread Cache Efficiency",
+                    "status": "INFO",
+                    "value": f"{tc_hit_rate}% hit rate (Warming)",
+                    "desc": f"Thread cache warming up with initial connections ({threads_created} threads created)."
+                })
             else:
                 self.checks.append({
                     "name": "Thread Cache Efficiency",
@@ -814,35 +874,72 @@ class DatabaseTuningAnalyzer:
         return "\n".join(lines)
 
 
-def apply_tuning_profile(ideal: Dict[str, Any], conf_dir: str = "/etc/mysql/mariadb.conf.d", collector: Optional[MariaDBLiveCollector] = None) -> bool:
-    """Applies the calculated high-QPS parameters directly to MariaDB configuration and live runtime."""
+def apply_tuning_profile(
+    ideal: Dict[str, Any],
+    conf_dir: str = "/etc/mysql/mariadb.conf.d",
+    collector: Optional[MariaDBLiveCollector] = None,
+    current_vars: Optional[Dict[str, str]] = None,
+    show_log: bool = True
+) -> bool:
+    """
+    Applies the calculated high-QPS parameters directly to MariaDB configuration and live runtime.
+    Executes SET GLOBAL for dynamic variables, writes 99-leanstack-highqps.cnf persistently,
+    and restarts or reloads MariaDB if static variables like table_open_cache_instances require it.
+    Displays a dedicated execution log of all applied actions.
+    """
     os.makedirs(conf_dir, exist_ok=True)
     conf_path = os.path.join(conf_dir, "99-leanstack-highqps.cnf")
 
     # 1. Dynamically apply runtime variables via socket (zero downtime)
-    applied_live = []
-    if collector and collector.cli_cmd:
-        dynamic_vars = [
-            ("max_connections", ideal["max_connections"]),
-            ("table_open_cache", ideal["table_open_cache"]),
-            ("innodb_io_capacity", ideal["innodb_io_capacity"]),
-            ("innodb_io_capacity_max", ideal["innodb_io_capacity_max"]),
-            ("innodb_flush_neighbors", ideal["innodb_flush_neighbors"]),
-            ("sort_buffer_size", parse_size_to_bytes(ideal["sort_buffer_size"])),
-            ("join_buffer_size", parse_size_to_bytes(ideal["join_buffer_size"])),
-            ("read_rnd_buffer_size", parse_size_to_bytes(ideal["read_rnd_buffer_size"])),
-            ("aria_pagecache_buffer_size", parse_size_to_bytes(ideal["aria_pagecache_buffer_size"])),
-            ("aria_sort_buffer_size", parse_size_to_bytes(ideal["aria_sort_buffer_size"]))
+    applied_live: List[Tuple[str, str, str]] = []
+    failed_live: List[Tuple[str, str]] = []
+
+    if collector and getattr(collector, "cli_cmd", None):
+        if current_vars is None:
+            if hasattr(collector, "get_key_value_map"):
+                try:
+                    current_vars = collector.get_key_value_map("SHOW GLOBAL VARIABLES;")
+                except Exception:
+                    current_vars = {}
+            else:
+                current_vars = {}
+
+        dynamic_specs = [
+            ("innodb_buffer_pool_size", parse_size_to_bytes(ideal.get("innodb_buffer_pool_size", "512M")), f"{ideal.get('innodb_buffer_pool_size')} ({parse_size_to_bytes(ideal.get('innodb_buffer_pool_size', '512M'))} bytes)"),
+            ("table_open_cache", ideal.get("table_open_cache", 4096), str(ideal.get("table_open_cache", 4096))),
+            ("max_connections", ideal.get("max_connections", 300), str(ideal.get("max_connections", 300))),
+            ("innodb_io_capacity", ideal.get("innodb_io_capacity", 2000), f"{ideal.get('innodb_io_capacity', 2000)} IOPS"),
+            ("innodb_io_capacity_max", ideal.get("innodb_io_capacity_max", 4000), f"{ideal.get('innodb_io_capacity_max', 4000)} IOPS"),
+            ("innodb_flush_neighbors", ideal.get("innodb_flush_neighbors", 0), str(ideal.get("innodb_flush_neighbors", 0))),
+            ("sort_buffer_size", parse_size_to_bytes(ideal.get("sort_buffer_size", "2M")), f"{ideal.get('sort_buffer_size')} ({parse_size_to_bytes(ideal.get('sort_buffer_size', '2M'))} bytes)"),
+            ("join_buffer_size", parse_size_to_bytes(ideal.get("join_buffer_size", "2M")), f"{ideal.get('join_buffer_size')} ({parse_size_to_bytes(ideal.get('join_buffer_size', '2M'))} bytes)"),
+            ("read_buffer_size", parse_size_to_bytes(ideal.get("read_buffer_size", "512K")), f"{ideal.get('read_buffer_size', '512K')} ({parse_size_to_bytes(ideal.get('read_buffer_size', '512K'))} bytes)"),
+            ("read_rnd_buffer_size", parse_size_to_bytes(ideal.get("read_rnd_buffer_size", "1M")), f"{ideal.get('read_rnd_buffer_size')} ({parse_size_to_bytes(ideal.get('read_rnd_buffer_size', '1M'))} bytes)"),
+            ("aria_pagecache_buffer_size", parse_size_to_bytes(ideal.get("aria_pagecache_buffer_size", "128M")), f"{ideal.get('aria_pagecache_buffer_size', '128M')} ({parse_size_to_bytes(ideal.get('aria_pagecache_buffer_size', '128M'))} bytes)"),
+            ("aria_sort_buffer_size", parse_size_to_bytes(ideal.get("aria_sort_buffer_size", "32M")), f"{ideal.get('aria_sort_buffer_size', '32M')} ({parse_size_to_bytes(ideal.get('aria_sort_buffer_size', '32M'))} bytes)"),
+            ("table_definition_cache", ideal.get("table_definition_cache", 2048), str(ideal.get("table_definition_cache", 2048))),
+            ("thread_cache_size", 128, "128"),
+            ("tmp_table_size", parse_size_to_bytes(ideal.get("tmp_table_size", "64M")), f"64M ({parse_size_to_bytes('64M')} bytes)"),
+            ("max_heap_table_size", parse_size_to_bytes(ideal.get("max_heap_table_size", "64M")), f"64M ({parse_size_to_bytes('64M')} bytes)")
         ]
-        for var_name, var_val in dynamic_vars:
+
+        tx_iso = ideal.get("transaction_isolation", "READ-COMMITTED")
+        for tx_name in ["transaction_isolation", "tx_isolation"]:
+            try:
+                res = collector.query(f"SET GLOBAL {tx_name} = '{tx_iso}';")
+                if res is not None:
+                    applied_live.append((tx_name, f"'{tx_iso}'", tx_iso))
+                    break
+            except Exception:
+                pass
+
+        for var_name, var_val, human_str in dynamic_specs:
             try:
                 res = collector.query(f"SET GLOBAL {var_name} = {var_val};")
                 if res is not None:
-                    applied_live.append(var_name)
-            except Exception:
-                pass
-        if applied_live:
-            print(f"{Colors.GREEN}✔ Dynamically adjusted {len(applied_live)} live MariaDB parameters via socket (zero-downtime): {', '.join(applied_live[:5])}...{Colors.RESET}")
+                    applied_live.append((var_name, str(var_val), human_str))
+            except Exception as e:
+                failed_live.append((var_name, str(e)))
 
     cnf_content = f"""[mysqld]
 # ==============================================================================
@@ -940,19 +1037,134 @@ innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
     try:
         with open(conf_path, "w", encoding="utf-8") as f:
             f.write(cnf_content)
-        print(f"{Colors.GREEN}✔ Successfully applied auto-tuned database configuration to {conf_path}{Colors.RESET}")
-        
-        # Safely reload / restart MariaDB if running as root
-        if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl"):
-            for svc in ["mariadb", "mysql"]:
-                if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:
-                    subprocess.run(["systemctl", "--no-ask-password", "restart", svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                    print(f"{Colors.GREEN}✔ MariaDB service ({svc}) restarted with auto-tuned profile.{Colors.RESET}")
-                    break
-        return True
+        cfg_written = True
     except Exception as e:
         print(f"{Colors.RED}❌ Failed to write configuration to {conf_path}: {e}{Colors.RESET}")
         return False
+
+    # Check whether static variables require a server restart
+    static_reasons = []
+    if current_vars:
+        cur_tbl_inst = int(current_vars.get("table_open_cache_instances", 0) or 0)
+        ideal_tbl_inst = int(ideal.get("table_open_cache_instances", 0) or 0)
+        if cur_tbl_inst and ideal_tbl_inst and cur_tbl_inst != ideal_tbl_inst:
+            static_reasons.append(f"table_open_cache_instances: {cur_tbl_inst} -> {ideal_tbl_inst}")
+
+        cur_bp_inst = int(current_vars.get("innodb_buffer_pool_instances", 0) or 0)
+        ideal_bp_inst = int(ideal.get("innodb_buffer_pool_instances", 0) or 0)
+        if cur_bp_inst and ideal_bp_inst and cur_bp_inst != ideal_bp_inst:
+            static_reasons.append(f"innodb_buffer_pool_instances: {cur_bp_inst} -> {ideal_bp_inst}")
+
+        cur_log_sz = parse_size_to_bytes(current_vars.get("innodb_log_file_size", 0))
+        ideal_log_sz = parse_size_to_bytes(ideal.get("innodb_log_file_size", 0))
+        if cur_log_sz and ideal_log_sz and abs(cur_log_sz - ideal_log_sz) > 64 * 1024 * 1024:
+            static_reasons.append(f"innodb_log_file_size: {format_bytes(cur_log_sz)} -> {format_bytes(ideal_log_sz)}")
+
+        cur_read_io = int(current_vars.get("innodb_read_io_threads", 0) or 0)
+        ideal_read_io = int(ideal.get("innodb_read_io_threads", 0) or 0)
+        if cur_read_io and ideal_read_io and cur_read_io != ideal_read_io:
+            static_reasons.append(f"innodb_read_io_threads: {cur_read_io} -> {ideal_read_io}")
+
+        if current_vars.get("performance_schema", "").upper() == "ON":
+            static_reasons.append("performance_schema: ON -> OFF")
+
+        if str(current_vars.get("query_cache_type", "0")) != "0":
+            static_reasons.append("query_cache_type: !=0 -> 0")
+
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    has_systemctl = bool(shutil.which("systemctl"))
+    active_svc = None
+    if has_systemctl:
+        for svc in ["mariadb", "mysql"]:
+            if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:
+                active_svc = svc
+                break
+
+    service_action_msg = ""
+    service_ok = True
+
+    if is_root and has_systemctl and active_svc:
+        if static_reasons:
+            reasons_summary = ", ".join(static_reasons[:2])
+            if len(static_reasons) > 2:
+                reasons_summary += f" (+{len(static_reasons)-2} more)"
+            res_ctl = subprocess.run(["systemctl", "--no-ask-password", "restart", active_svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if res_ctl.returncode == 0:
+                service_action_msg = f"Restarted {active_svc} to activate static parameters ({reasons_summary})"
+            else:
+                service_ok = False
+                service_action_msg = f"Failed to restart {active_svc} (exit code {res_ctl.returncode})"
+        else:
+            res_ctl = subprocess.run(["systemctl", "--no-ask-password", "restart", active_svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if res_ctl.returncode == 0:
+                service_action_msg = f"Restarted {active_svc} with auto-tuned high-QPS profile"
+            else:
+                service_ok = False
+                service_action_msg = f"Failed to restart {active_svc} (exit code {res_ctl.returncode})"
+    elif not is_root:
+        service_action_msg = "Service reload/restart skipped (requires root privileges)"
+    elif not active_svc:
+        service_action_msg = "Service reload/restart skipped (MariaDB/MySQL is not active)"
+    else:
+        service_action_msg = "Service reload/restart skipped (systemctl not detected)"
+
+    if show_log:
+        box_w = 72
+        hbar = "─" * box_w
+        print(f"\n{Colors.BOLD}{Colors.CYAN}┌{hbar}┐{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.CYAN}│{'AUTONOMOUS DATABASE TUNING EXECUTION REPORT':^{box_w}}│{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}")
+        hdr1 = " 1. DYNAMIC RUNTIME PARAMETERS APPLIED (SQL SET GLOBAL):"
+        print(f"│{Colors.BOLD}{hdr1:<{box_w}}{Colors.RESET}│")
+        if applied_live:
+            for v_name, _, v_human in applied_live:
+                entry = f"   ✔ {v_name:<28} = {v_human}"
+                if len(entry) > box_w - 2:
+                    entry = entry[:box_w - 5] + "..."
+                pad = box_w - len(entry)
+                print(f"│{Colors.GREEN}{entry}{Colors.RESET}{' ' * pad}│")
+        else:
+            msg = "   ℹ Skipped: Database engine offline or running in mock/test mode"
+            pad = box_w - len(msg)
+            print(f"│{Colors.CYAN}{msg}{Colors.RESET}{' ' * pad}│")
+
+        print(f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}")
+        hdr2 = " 2. PERSISTENT CONFIGURATION WRITTEN:"
+        print(f"│{Colors.BOLD}{hdr2:<{box_w}}{Colors.RESET}│")
+        cfg_entry1 = f"   ✔ Target: {conf_path}"
+        if len(cfg_entry1) > box_w - 2:
+            cfg_entry1 = cfg_entry1[:box_w - 5] + "..."
+        pad1 = box_w - len(cfg_entry1)
+        print(f"│{Colors.GREEN}{cfg_entry1}{Colors.RESET}{' ' * pad1}│")
+
+        cfg_entry2 = "   ✔ Profile: High-QPS autonomous hardware-aligned configuration"
+        pad2 = box_w - len(cfg_entry2)
+        print(f"│{Colors.GREEN}{cfg_entry2}{Colors.RESET}{' ' * pad2}│")
+
+        print(f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}")
+        hdr3 = " 3. SERVICE LIFECYCLE ACTION:"
+        print(f"│{Colors.BOLD}{hdr3:<{box_w}}{Colors.RESET}│")
+        if service_ok:
+            is_active_action = "Restarted" in service_action_msg or "Reloaded" in service_action_msg
+            svc_prefix = "   ✔ " if is_active_action else "   ℹ "
+            full_msg = f"{svc_prefix}{service_action_msg}"
+            if len(full_msg) > box_w - 2:
+                full_msg = full_msg[:box_w - 5] + "..."
+            pad = box_w - len(full_msg)
+            col = Colors.GREEN if is_active_action else Colors.CYAN
+            print(f"│{col}{full_msg}{Colors.RESET}{' ' * pad}│")
+        else:
+            full_msg = f"   ❌ {service_action_msg}"
+            pad = box_w - len(full_msg)
+            print(f"│{Colors.RED}{full_msg}{Colors.RESET}{' ' * pad}│")
+
+        print(f"{Colors.BOLD}{Colors.CYAN}└{hbar}┘{Colors.RESET}\n")
+
+    return cfg_written
+
+
+# Alias for compatibility with external references and test suites
+apply_optimizations = apply_tuning_profile
 
 
 def run_table_optimization(collector: MariaDBLiveCollector, fragmented: List[Dict[str, Any]]):
@@ -1004,6 +1216,7 @@ def run_external_mysqltuner():
 def main():
     parser = argparse.ArgumentParser(description="LeanStack Autonomous MariaDB & MySQL Performance Tuner")
     parser.add_argument("--apply", "--auto-tune", action="store_true", dest="apply", help="Automatically write and apply optimal tuning parameters to MariaDB config")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate tuning execution without applying changes")
     parser.add_argument("--json", action="store_true", help="Output analysis in machine-readable JSON format")
     parser.add_argument("--mysqltuner", action="store_true", help="Execute external mysqltuner utility")
     parser.add_argument("--optimize", "--optimize-tables", action="store_true", dest="optimize", help="Run OPTIMIZE TABLE on fragmented tenant tables")
@@ -1015,10 +1228,11 @@ def main():
         run_external_mysqltuner()
         sys.exit(0)
 
-    if (args.apply or args.optimize) and hasattr(os, "geteuid") and os.geteuid() != 0:
-        print(f"{Colors.RED}❌ Error: Applying tuning profiles or optimizing tables requires root privileges.{Colors.RESET}", file=sys.stderr)
-        print(f"Please re-run with: {Colors.BOLD}sudo lsctl db:tune --apply{Colors.RESET}", file=sys.stderr)
-        sys.exit(1)
+    if (args.apply or args.optimize) and hasattr(os, "geteuid") and os.geteuid() != 0 and not args.dry_run:
+        if not (args.simulate_ram or args.simulate_cores):
+            print(f"{Colors.RED}❌ Error: Applying tuning profiles or optimizing tables requires root privileges.{Colors.RESET}", file=sys.stderr)
+            print(f"Please re-run with: {Colors.BOLD}sudo lsctl db:optimize{Colors.RESET} or {Colors.BOLD}sudo lsctl db:tune --apply{Colors.RESET}", file=sys.stderr)
+            sys.exit(1)
 
     hw = HostProbe.get_hardware()
     if args.simulate_ram:
@@ -1029,6 +1243,10 @@ def main():
     collector = MariaDBLiveCollector()
     is_live, status, variables, frag_tables = collector.collect()
 
+    # When --optimize is requested, defragment tenant tables
+    if args.optimize and is_live:
+        run_table_optimization(collector, frag_tables)
+
     analyzer = DatabaseTuningAnalyzer(
         hardware=hw,
         is_live=is_live,
@@ -1038,16 +1256,45 @@ def main():
     )
     analysis = analyzer.analyze()
 
-    if args.apply:
-        apply_tuning_profile(analysis["ideal_tuning"], collector=collector)
+    if args.apply and not args.dry_run:
+        target_conf_dir = "/etc/mysql/mariadb.conf.d"
+        if hasattr(os, "geteuid") and os.geteuid() != 0 and (args.simulate_ram or args.simulate_cores):
+            import tempfile
+            target_conf_dir = os.path.join(tempfile.gettempdir(), "leanstack_mysql_conf_test")
 
-    if args.optimize and is_live:
-        run_table_optimization(collector, frag_tables)
+        apply_tuning_profile(
+            ideal=analysis["ideal_tuning"],
+            conf_dir=target_conf_dir,
+            collector=collector,
+            current_vars=variables,
+            show_log=(not args.json)
+        )
+
+        # If live, allow socket a brief moment to stabilize and re-probe fresh state
+        if is_live:
+            import time
+            time.sleep(0.5)
+            for _ in range(5):
+                is_live2, status2, vars2, frag2 = collector.collect()
+                if is_live2:
+                    analyzer = DatabaseTuningAnalyzer(
+                        hardware=hw,
+                        is_live=is_live2,
+                        status=status2,
+                        variables=vars2,
+                        fragmented_tables=frag2
+                    )
+                    analysis = analyzer.analyze()
+                    break
+                time.sleep(0.5)
 
     if args.json:
         print(json.dumps(analysis, indent=2))
     else:
         print(analyzer.render_report(analysis))
+        if not args.apply:
+            print(f"\n{Colors.CYAN}💡 To automatically apply these recommendations live and persist them to disk, run:{Colors.RESET}")
+            print(f"   {Colors.BOLD}sudo lsctl db:optimize{Colors.RESET}   (or {Colors.BOLD}sudo lsctl db:tune --apply{Colors.RESET})\n")
 
     sys.exit(0)
 

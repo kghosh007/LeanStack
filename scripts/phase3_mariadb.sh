@@ -156,7 +156,7 @@ else
     FLUSH_NEIGHBORS=1
 fi
 
-echo ">>> [Phase 3] MariaDB Buffer Pool: ${BP_MB}M (${BP_INST} inst), Sort: ${SORT_BUF}, IO: ${IO_CAPACITY}/${IO_CAPACITY_MAX} IOPS, Table Cache Inst: ${TABLE_INST}"
+echo ">>> [Phase 3] MariaDB Buffer Pool: ${BP_MB}M, Sort: ${SORT_BUF}, IO: ${IO_CAPACITY}/${IO_CAPACITY_MAX} IOPS, Table Cache Inst: ${TABLE_INST}"
 
 # Deploy the High-QPS Tuning Profile
 mkdir -p /etc/mysql/mariadb.conf.d/
@@ -190,7 +190,6 @@ transaction_isolation          = READ-COMMITTED
 
 # --- InnoDB Buffer Pool ---
 innodb_buffer_pool_size        = ${BP_MB}M
-innodb_buffer_pool_instances   = ${BP_INST}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 
@@ -239,7 +238,6 @@ collation-server               = utf8mb4_unicode_520_ci
 [mariadb]
 # Explicit MariaDB server section to enforce High-QPS buffer pool precedence over distribution defaults
 innodb_buffer_pool_size        = ${BP_MB}M
-innodb_buffer_pool_instances   = ${BP_INST}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 transaction_isolation          = READ-COMMITTED

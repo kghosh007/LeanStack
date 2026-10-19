@@ -394,6 +394,7 @@ class TestHardwareTuning(unittest.TestCase):
         # Zero recommendations when optimal parameters and MariaDB table cache instances are active
         self.assertEqual(len(report["recommendations"]), 0)
         self.assertEqual(report["score"], 100)
+        self.assertEqual(report["ideal_tuning"]["table_open_cache_instances"], 3)
         table_inst_check = next((c for c in report["checks"] if c["name"] == "Table Cache Instances"), None)
         self.assertIsNotNone(table_inst_check)
         self.assertEqual(table_inst_check["status"], "PASS")
@@ -652,6 +653,7 @@ class TestHardwareTuning(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             calls = []
             orig_run = ls_db_tune.subprocess.run
+            orig_geteuid = getattr(ls_db_tune.os, "geteuid", None)
             def fake_run(cmd, *a, **kw):
                 calls.append(cmd)
                 class Ret:
@@ -659,6 +661,7 @@ class TestHardwareTuning(unittest.TestCase):
                 return Ret()
 
             ls_db_tune.subprocess.run = fake_run
+            ls_db_tune.os.geteuid = lambda: 0
             try:
                 res = ls_db_tune.apply_optimizations(
                     ideal=ideal,
@@ -670,8 +673,12 @@ class TestHardwareTuning(unittest.TestCase):
                 self.assertTrue(res)
                 restart_cmds = [c for c in calls if "restart" in c]
                 self.assertEqual(len(restart_cmds), 0, f"Expected zero restarts, got: {restart_cmds}")
+                reload_cmds = [c for c in calls if "reload" in c]
+                self.assertEqual(len(reload_cmds), 1, f"Expected reload command, got: {calls}")
             finally:
                 ls_db_tune.subprocess.run = orig_run
+                if orig_geteuid:
+                    ls_db_tune.os.geteuid = orig_geteuid
 
 
 if __name__ == "__main__":

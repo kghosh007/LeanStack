@@ -736,7 +736,7 @@ server {
         self.assertIn("semijoin=on", cnf_content)
         self.assertIn("index_condition_pushdown=on", cnf_content)
         self.assertIn("innodb_adaptive_hash_index     = 1", cnf_content)
-        self.assertIn("innodb_buffer_pool_instances", cnf_content)
+        self.assertNotIn("innodb_buffer_pool_instances", cnf_content)
         self.assertIn("innodb_io_capacity", cnf_content)
         self.assertIn("table_open_cache_instances", cnf_content)
 
@@ -745,6 +745,19 @@ server {
         self.assertTrue(res_second)
         with open(cnf_path, "r", encoding="utf-8") as f:
             self.assertEqual(f.read(), cnf_content)
+
+        # Verify preservation of MariaDB-managed table_open_cache_instances (e.g. 3)
+        modified_conf = cnf_content.replace(
+            "table_open_cache_instances     = 4",
+            "table_open_cache_instances     = 3"
+        )
+        if "table_open_cache_instances     = 3" in modified_conf:
+            with open(cnf_path, "w", encoding="utf-8") as f:
+                f.write(modified_conf)
+            res_third = self.upgrader.reconcile_mariadb_tuning(conf_dir=temp_mariadb_dir)
+            self.assertTrue(res_third)
+            with open(cnf_path, "r", encoding="utf-8") as f:
+                self.assertIn("table_open_cache_instances     = 3", f.read())
 
     def test_reconcile_pool_content_ensures_msmtp_in_open_basedir(self):
         """Verify reconcile_pool_content always adds /usr/bin/msmtp to open_basedir."""

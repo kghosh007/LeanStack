@@ -615,6 +615,13 @@ class DatabaseTuningAnalyzer:
             self.recommendations.append(f"Set table_open_cache_instances = {ideal_table_inst} to partition table locks across CPU cores.")
             self.score -= 5
         else:
+            if is_mariadb and self.is_live and cur_tbl_inst >= 1:
+                # MariaDB auto-partitions and dynamically manages or caps table cache instances
+                # (e.g. capped to 3 on 4 vCPUs due to open_files_limit/LimitNOFILE constraints).
+                # Align tuning actions with MariaDB's running instance count to avoid forcing an unchangeable value.
+                ideal_table_inst = cur_tbl_inst
+                self.tuning_actions["table_open_cache_instances"] = cur_tbl_inst
+
             self.checks.append({
                 "name": "Table Cache Instances",
                 "status": "PASS",

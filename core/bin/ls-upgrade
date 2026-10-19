@@ -990,6 +990,20 @@ class LeanStackUpgrader:
                 max_conn = 500
 
             table_inst = min(cores, 16)
+            # If MariaDB existing configuration has managed/capped table_open_cache_instances, align to it
+            conf_path = os.path.join(conf_dir, "99-leanstack-highqps.cnf")
+            if os.path.exists(conf_path):
+                try:
+                    with open(conf_path, "r", encoding="utf-8") as f_old:
+                        old_txt = f_old.read()
+                    m_inst = re.search(r'^\s*table_open_cache_instances\s*=\s*(\d+)', old_txt, re.MULTILINE)
+                    if m_inst:
+                        existing_inst = int(m_inst.group(1))
+                        if existing_inst >= 1:
+                            table_inst = existing_inst
+                except Exception:
+                    pass
+
             log_mb = min(bp_mb // 4, 1024)
 
             # Storage-aware I/O capacity and thread scaling
@@ -1072,7 +1086,6 @@ transaction_isolation          = READ-COMMITTED
 
 # --- InnoDB Buffer Pool ---
 innodb_buffer_pool_size        = {bp_mb}M
-innodb_buffer_pool_instances   = {bp_inst}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 
@@ -1118,7 +1131,6 @@ collation-server               = utf8mb4_unicode_520_ci
 [mariadb]
 # Explicit MariaDB server section to enforce High-QPS buffer pool precedence over distribution defaults
 innodb_buffer_pool_size        = {bp_mb}M
-innodb_buffer_pool_instances   = {bp_inst}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 transaction_isolation          = READ-COMMITTED

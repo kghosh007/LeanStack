@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.2] - 2026-10-20 - *Codename: Hyperion-SR2*
 
 ### Fixed
-- **MariaDB Table Cache Instances & Auto-Partitioning (`lsctl db:optimize` & `ls-db-tune`)**:
+- **MariaDB Table Cache Instances & Auto-Partitioning (`lsctl db:optimize`, `ls-db-tune`, `ls-upgrade`, `probe.py`)**:
   - Resolved perpetual service restart and false recommendation loop (`Set table_open_cache_instances = 4`) on MariaDB servers where `table_open_cache_instances` is dynamically managed, auto-partitioned, or capped by MariaDB (e.g., 3 instances on 4 vCPUs or 8 default instances).
   - Updated `DatabaseTuningAnalyzer.analyze()` to recognize MariaDB's internal dynamic partitioning as fully optimal, ensuring a 100/100 health score with zero false warnings and zero recommendations when database parameters are tuned.
-  - Refined static restart detection in `apply_optimizations` to avoid triggering service restarts for `table_open_cache_instances` when instances are already active (`cur_tbl_inst >= 1`).
-  - Purged deprecated `innodb_buffer_pool_instances` from `ls-db-tune` High-QPS configuration templates and static restart detection, eliminating `[Warning] 'innodb-buffer-pool-instances' was deprecated/ignored` warnings in modern MariaDB systemd journal logs.
+  - Aligned ideal tuning and generated configuration with MariaDB's active managed instance count to prevent attempting to force an unchangeable value.
+  - Refined static restart detection in `apply_optimizations` to avoid triggering service restarts for `table_open_cache_instances` when instances are already active (`cur_tbl_inst >= 1`), executing graceful configuration reloads instead.
+  - Purged deprecated `innodb_buffer_pool_instances` across `ls-db-tune`, `ls-upgrade`, and `scripts/phase3_mariadb.sh` configuration templates and static restart detection, eliminating `[Warning] 'innodb-buffer-pool-instances' was deprecated/ignored` warnings in MariaDB 12 systemd journal logs.
+  - Updated `ls-upgrade` and `installer/probe.py` to respect and preserve active MariaDB managed table open cache instances without reverting configs or triggering unnecessary restarts.
 
 ## [1.3.1] - 2026-10-20 - *Codename: Hyperion-SR1*
 

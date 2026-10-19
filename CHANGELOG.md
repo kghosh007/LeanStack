@@ -14,8 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed `lsctl db:optimize` CLI command routing in `core/bin/lsctl` to forward both `--optimize` and `--apply`, ensuring that running `sudo lsctl db:optimize` actually applies live MariaDB tuning recommendations, updates `/etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf`, and defragments tenant tables rather than only printing recommendations.
   - Resolved erroneous buffer pool recommendation bug where `ls-db-tune` recommended increasing `innodb_buffer_pool_size` when current sizing was already optimal (`current >= optimal`, e.g. "Increase from 8792M to 8792M").
   - Added cold cache warmup detection: when server uptime is low (<2 hours), `ls-db-tune` reports low buffer pool hit rates as informational warmup progress following service restart rather than buffer starvation, avoiding false-positive warnings and invalid recommendations.
-  - Enhanced `apply_tuning_profile` (and `apply_optimizations` alias) to execute dynamic SQL `SET GLOBAL` for `innodb_buffer_pool_size`, `table_open_cache`, `max_connections`, `innodb_io_capacity`, etc.
-  - Implemented automatic static variable change detection (e.g., `table_open_cache_instances: 3 -> 4`) to restart or reload the MariaDB service so static parameters take effect immediately.
+  - Enhanced `apply_optimizations` (with `apply_tuning_profile` backward compatibility alias) to execute dynamic SQL `SET GLOBAL` for dynamic variables (`innodb_buffer_pool_size`, `table_open_cache`, `max_connections`, `innodb_io_capacity`, etc.), while eliminating unconditional service restarts when only dynamic variables change.
+  - Implemented comprehensive static parameter change detection (including `table_open_cache_instances`, `aria_pagecache_buffer_size`, `innodb_write_io_threads`, and `innodb_log_file_size`) to selectively trigger MariaDB service restart only when static parameters require it, reloading gracefully otherwise.
+  - Resolved table overhead audit defect where tenant tables defragmented by `--optimize` remained flagged as fragmented in the subsequent audit report.
+  - Added pixel-perfect ANSI-aware visual width calculation (`box_row` / `strip_ansi`) across diagnostic audit logs and execution reports, eliminating jagged borders.
+  - Deduplicated buffer pool size recommendations between memory sizing and hit rate evaluation checks.
   - Added clear, dedicated ANSI execution report when `--apply` is invoked, logging dynamic variables set via SQL `SET GLOBAL`, persistent configuration files written, and service lifecycle actions.
   - Prevented redundant thread cache sizing recommendations when `thread_cache_size` is already configured to optimal capacity (>= 128).
 

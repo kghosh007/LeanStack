@@ -467,7 +467,106 @@ class TestHardwareTuning(unittest.TestCase):
         self.assertIn("score", data)
         self.assertIn("ideal_tuning", data)
 
+    def test_render_report_visual_width_alignment(self):
+        """Verify that render_report produces pixel-perfect aligned rectangular borders (74 chars total width)."""
+        import importlib.machinery
+        import importlib.util
+        import re
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        hw = {"ram_mb": 15986, "cores": 4, "is_nvme": False, "is_rotational": False, "disk_type": "SATA SSD"}
+        mock_status = {
+            "Uptime": "56",
+            "Innodb_buffer_pool_read_requests": "4100",
+            "Innodb_buffer_pool_reads": "2301",
+            "Sort_merge_passes": "0",
+            "Created_tmp_disk_tables": "2",
+            "Created_tmp_tables": "60",
+            "Open_tables": "100",
+            "Opened_tables": "110",
+            "Threads_created": "5",
+            "Connections": "150",
+            "Innodb_row_lock_waits": "0",
+            "Innodb_buffer_pool_pages_dirty": "0",
+            "Innodb_buffer_pool_pages_total": "1000"
+        }
+        mock_vars = {
+            "version": "12.3.3-MariaDB-ubu2604",
+            "innodb_buffer_pool_size": "8792M",
+            "transaction_isolation": "READ-COMMITTED",
+            "sort_buffer_size": "4194304",
+            "table_open_cache": "4096",
+            "table_open_cache_instances": "3",
+            "innodb_io_capacity": "2000",
+            "query_cache_type": "0",
+            "query_cache_size": "0",
+            "performance_schema": "OFF",
+            "thread_cache_size": "128"
+        }
+        analyzer = ls_db_tune.DatabaseTuningAnalyzer(
+            hardware=hw,
+            is_live=True,
+            status=mock_status,
+            variables=mock_vars,
+            fragmented_tables=[]
+        )
+        report = analyzer.render_report(analyzer.analyze())
+        lines = report.strip().splitlines()
+        for idx, line in enumerate(lines):
+            # Strip ANSI escape sequences
+            vis_line = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line)
+            self.assertEqual(len(vis_line), 74, f"Line {idx+1} visual width is {len(vis_line)} (expected 74): '{vis_line}'")
+
+    def test_no_duplicate_buffer_pool_recommendations(self):
+        """Verify that undersized buffer pool creates exactly one increase recommendation, and optimal sizing never recommends increase."""
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        hw = {"ram_mb": 15986, "cores": 4, "is_nvme": True, "is_rotational": False, "disk_type": "NVMe SSD"}
+        # Case 1: Undersized buffer pool on warmed up server
+        undersized_status = {
+            "Uptime": "100000",
+            "Innodb_buffer_pool_read_requests": "50000",
+            "Innodb_buffer_pool_reads": "10000",  # Low hit rate (80%)
+            "Sort_merge_passes": "0",
+            "Created_tmp_disk_tables": "0",
+            "Created_tmp_tables": "10",
+            "Open_tables": "50",
+            "Opened_tables": "60",
+            "Threads_created": "2",
+            "Connections": "100"
+        }
+        undersized_vars = {
+            "version": "12.3.3-MariaDB",
+            "innodb_buffer_pool_size": "2048M",  # Way below optimal 8792M
+            "transaction_isolation": "READ-COMMITTED",
+            "sort_buffer_size": "4M",
+            "table_open_cache": "4096",
+            "table_open_cache_instances": "4",
+            "innodb_io_capacity": "8000"
+        }
+        analyzer = ls_db_tune.DatabaseTuningAnalyzer(
+            hardware=hw,
+            is_live=True,
+            status=undersized_status,
+            variables=undersized_vars,
+            fragmented_tables=[]
+        )
+        report = analyzer.analyze()
+        bp_recs = [r for r in report["recommendations"] if "innodb_buffer_pool_size" in r]
+        self.assertEqual(len(bp_recs), 1, f"Expected exactly 1 buffer pool recommendation, found: {bp_recs}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

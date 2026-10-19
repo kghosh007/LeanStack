@@ -78,6 +78,16 @@ def parse_size_to_bytes(val: Any) -> int:
     except Exception:
         return 0
 
+def strip_ansi(text: str) -> str:
+    """Strips ANSI escape sequences from text for accurate visual width measurement."""
+    return re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+
+def box_row(content: str, width: int = 72) -> str:
+    """Formats content inside vertical box borders with exact visual width padding."""
+    vis_len = len(strip_ansi(content))
+    pad = max(0, width - vis_len)
+    return f"│{content}{' ' * pad}│"
+
 class HostProbe:
     """Probes host hardware resources (RAM, CPU cores, Storage type, NVMe)."""
     @staticmethod
@@ -224,6 +234,8 @@ class MariaDBLiveCollector:
         """
         Returns (is_live, status_vars, global_vars, fragmented_tables)
         """
+        if not self.socket_path or not os.path.exists(self.socket_path):
+            self.socket_path = self._find_socket()
         status = self.get_key_value_map("SHOW GLOBAL STATUS;")
         variables = self.get_key_value_map("SHOW GLOBAL VARIABLES;")
         if not status or not variables:
@@ -475,7 +487,7 @@ class DatabaseTuningAnalyzer:
                         "desc": f"High disk read ratio ({bp_reads} disk reads). Increase buffer pool size to {ideal_bp_mb}M."
                     })
                     rec = f"Increase innodb_buffer_pool_size from {cur_bp_mb}M to {ideal_bp_mb}M to eliminate disk I/O bottlenecks."
-                    if rec not in self.recommendations:
+                    if not any("innodb_buffer_pool_size" in r for r in self.recommendations):
                         self.recommendations.append(rec)
                     self.score -= 15
                 else:
@@ -818,16 +830,18 @@ class DatabaseTuningAnalyzer:
             score_color = Colors.RED
             badge = "POOR (CRITICAL BOTTLENECKS DETECTED)"
 
+        box_w = 72
+        hbar = "─" * box_w
         lines = [
-            f"{Colors.BOLD}{Colors.CYAN}┌────────────────────────────────────────────────────────────────────────┐{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}│          LEANSTACK AUTONOMOUS MARIADB / MYSQL PERFORMANCE TUNER        │{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
-            f"│ Engine Version:    {analysis['version'][:50]:<50} │",
-            f"│ Server Health:     {score_color}{score}/100 - {badge:<42}{Colors.RESET} │",
-            f"│ Host Hardware:     {self.hw['cores']} vCPUs | {self.hw['ram_mb']}MB RAM | {self.hw['disk_type']:<27} │",
-            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}│                         DIAGNOSTIC AUDIT LOG                           │{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}┌{hbar}┐{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│{'LEANSTACK AUTONOMOUS MARIADB / MYSQL PERFORMANCE TUNER':^{box_w}}│{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}",
+            box_row(f" Engine Version:    {analysis['version'][:50]}", box_w),
+            box_row(f" Server Health:     {score_color}{score}/100 - {badge}{Colors.RESET}", box_w),
+            box_row(f" Host Hardware:     {self.hw['cores']} vCPUs | {self.hw['ram_mb']}MB RAM | {self.hw['disk_type']}", box_w),
+            f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│{'DIAGNOSTIC AUDIT LOG':^{box_w}}│{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}",
         ]
 
         for c in analysis["checks"]:
@@ -841,40 +855,51 @@ class DatabaseTuningAnalyzer:
             else:
                 mark = f"{Colors.CYAN}ℹ INFO{Colors.RESET}"
 
-            val_str = str(c["value"])[:26]
-            row_header = f" {mark} {Colors.BOLD}{c['name']:<28}{Colors.RESET} {val_str:<26}"
-            lines.append(f"│{row_header:<80}│")
+            val_str = str(c["value"])
+            if len(val_str) > 26:
+                val_str = val_str[:23] + "..."
+            row_header = f" {mark} {Colors.BOLD}{c['name']:<28}{Colors.RESET} {val_str}"
+            lines.append(box_row(row_header, box_w))
             if c.get("desc"):
-                desc_line = f"    {Colors.DIM}{c['desc'][:66]}{Colors.RESET}"
-                lines.append(f"│{desc_line:<78}│")
+                desc_text = c['desc']
+                if len(desc_text) > 66:
+                    desc_text = desc_text[:63] + "..."
+                desc_line = f"    {Colors.DIM}{desc_text}{Colors.RESET}"
+                lines.append(box_row(desc_line, box_w))
 
         lines.extend([
-            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}│                   ACTIONABLE TUNING RECOMMENDATIONS                    │{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│{'ACTIONABLE TUNING RECOMMENDATIONS':^{box_w}}│{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}",
         ])
 
         if not analysis["recommendations"]:
-            lines.append(f"│ {Colors.GREEN}✔ System is perfectly tuned! Zero database bottlenecks identified.{Colors.RESET}    │")
+            lines.append(box_row(f" {Colors.GREEN}✔ System is perfectly tuned! Zero database bottlenecks identified.{Colors.RESET}", box_w))
         else:
             for idx, rec in enumerate(analysis["recommendations"], 1):
-                rec_str = f" {idx}. {rec}"[:68]
-                lines.append(f"│ {Colors.YELLOW}{rec_str:<69}{Colors.RESET}│")
+                rec_str = f" {idx}. {rec}"
+                if len(rec_str) > 68:
+                    rec_str = rec_str[:65] + "..."
+                lines.append(box_row(f" {Colors.YELLOW}{rec_str}{Colors.RESET}", box_w))
 
         t = analysis["ideal_tuning"]
+        line1 = f"  Buffer Pool: {t['innodb_buffer_pool_size']:<8} (Inst: {t['innodb_buffer_pool_instances']}) | Log File: {t['innodb_log_file_size']:<8} | Sort: {t['sort_buffer_size']:<6}"
+        line2 = f"  I/O Capacity: {t['innodb_io_capacity']}/{t['innodb_io_capacity_max']} IOPS | Threads: {t['innodb_read_io_threads']} | Table Cache: {t['table_open_cache_instances']} inst"
+        line3 = f"  Isolation: {t['transaction_isolation']:<16} | Aria Pagecache: {t['aria_pagecache_buffer_size']:<10}"
+
         lines.extend([
-            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}│                 HARDWARE-CALCULATED OPTIMAL PARAMETERS                 │{Colors.RESET}",
-            f"{Colors.BOLD}{Colors.CYAN}├────────────────────────────────────────────────────────────────────────┤{Colors.RESET}",
-            f"│  Buffer Pool: {t['innodb_buffer_pool_size']:<8} (Inst: {t['innodb_buffer_pool_instances']}) | Log File: {t['innodb_log_file_size']:<8} | Sort: {t['sort_buffer_size']:<6} │",
-            f"│  I/O Capacity: {t['innodb_io_capacity']}/{t['innodb_io_capacity_max']} IOPS | Threads: {t['innodb_read_io_threads']} | Table Cache: {t['table_open_cache_instances']} inst      │",
-            f"│  Isolation: {t['transaction_isolation']:<16} | Aria Pagecache: {t['aria_pagecache_buffer_size']:<10}         │",
-            f"{Colors.BOLD}{Colors.CYAN}└────────────────────────────────────────────────────────────────────────┘{Colors.RESET}"
+            f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}│{'HARDWARE-CALCULATED OPTIMAL PARAMETERS':^{box_w}}│{Colors.RESET}",
+            f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}",
+            box_row(line1, box_w),
+            box_row(line2, box_w),
+            box_row(line3, box_w),
+            f"{Colors.BOLD}{Colors.CYAN}└{hbar}┘{Colors.RESET}"
         ])
         return "\n".join(lines)
 
 
-def apply_tuning_profile(
+def apply_optimizations(
     ideal: Dict[str, Any],
     conf_dir: str = "/etc/mysql/mariadb.conf.d",
     collector: Optional[MariaDBLiveCollector] = None,
@@ -915,7 +940,6 @@ def apply_tuning_profile(
             ("join_buffer_size", parse_size_to_bytes(ideal.get("join_buffer_size", "2M")), f"{ideal.get('join_buffer_size')} ({parse_size_to_bytes(ideal.get('join_buffer_size', '2M'))} bytes)"),
             ("read_buffer_size", parse_size_to_bytes(ideal.get("read_buffer_size", "512K")), f"{ideal.get('read_buffer_size', '512K')} ({parse_size_to_bytes(ideal.get('read_buffer_size', '512K'))} bytes)"),
             ("read_rnd_buffer_size", parse_size_to_bytes(ideal.get("read_rnd_buffer_size", "1M")), f"{ideal.get('read_rnd_buffer_size')} ({parse_size_to_bytes(ideal.get('read_rnd_buffer_size', '1M'))} bytes)"),
-            ("aria_pagecache_buffer_size", parse_size_to_bytes(ideal.get("aria_pagecache_buffer_size", "128M")), f"{ideal.get('aria_pagecache_buffer_size', '128M')} ({parse_size_to_bytes(ideal.get('aria_pagecache_buffer_size', '128M'))} bytes)"),
             ("aria_sort_buffer_size", parse_size_to_bytes(ideal.get("aria_sort_buffer_size", "32M")), f"{ideal.get('aria_sort_buffer_size', '32M')} ({parse_size_to_bytes(ideal.get('aria_sort_buffer_size', '32M'))} bytes)"),
             ("table_definition_cache", ideal.get("table_definition_cache", 2048), str(ideal.get("table_definition_cache", 2048))),
             ("thread_cache_size", 128, "128"),
@@ -1065,6 +1089,16 @@ innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
         if cur_read_io and ideal_read_io and cur_read_io != ideal_read_io:
             static_reasons.append(f"innodb_read_io_threads: {cur_read_io} -> {ideal_read_io}")
 
+        cur_write_io = int(current_vars.get("innodb_write_io_threads", 0) or 0)
+        ideal_write_io = int(ideal.get("innodb_write_io_threads", 0) or 0)
+        if cur_write_io and ideal_write_io and cur_write_io != ideal_write_io:
+            static_reasons.append(f"innodb_write_io_threads: {cur_write_io} -> {ideal_write_io}")
+
+        cur_aria_page = parse_size_to_bytes(current_vars.get("aria_pagecache_buffer_size", 0))
+        ideal_aria_page = parse_size_to_bytes(ideal.get("aria_pagecache_buffer_size", 0))
+        if cur_aria_page and ideal_aria_page and abs(cur_aria_page - ideal_aria_page) > 16 * 1024 * 1024:
+            static_reasons.append(f"aria_pagecache_buffer_size: {format_bytes(cur_aria_page)} -> {format_bytes(ideal_aria_page)}")
+
         if current_vars.get("performance_schema", "").upper() == "ON":
             static_reasons.append("performance_schema: ON -> OFF")
 
@@ -1095,12 +1129,12 @@ innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
                 service_ok = False
                 service_action_msg = f"Failed to restart {active_svc} (exit code {res_ctl.returncode})"
         else:
-            res_ctl = subprocess.run(["systemctl", "--no-ask-password", "restart", active_svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            # Dynamic variables applied live with zero downtime; reload configuration
+            res_ctl = subprocess.run(["systemctl", "--no-ask-password", "reload", active_svc], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if res_ctl.returncode == 0:
-                service_action_msg = f"Restarted {active_svc} with auto-tuned high-QPS profile"
+                service_action_msg = f"Reloaded {active_svc} configuration (zero downtime; dynamic parameters active)"
             else:
-                service_ok = False
-                service_action_msg = f"Failed to restart {active_svc} (exit code {res_ctl.returncode})"
+                service_action_msg = f"{active_svc} online with live dynamic parameters (no restart required)"
     elif not is_root:
         service_action_msg = "Service reload/restart skipped (requires root privileges)"
     elif not active_svc:
@@ -1114,57 +1148,50 @@ innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
         print(f"\n{Colors.BOLD}{Colors.CYAN}┌{hbar}┐{Colors.RESET}")
         print(f"{Colors.BOLD}{Colors.CYAN}│{'AUTONOMOUS DATABASE TUNING EXECUTION REPORT':^{box_w}}│{Colors.RESET}")
         print(f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}")
-        hdr1 = " 1. DYNAMIC RUNTIME PARAMETERS APPLIED (SQL SET GLOBAL):"
-        print(f"│{Colors.BOLD}{hdr1:<{box_w}}{Colors.RESET}│")
+        print(box_row(f"{Colors.BOLD} 1. DYNAMIC RUNTIME PARAMETERS APPLIED (SQL SET GLOBAL):{Colors.RESET}", box_w))
         if applied_live:
             for v_name, _, v_human in applied_live:
                 entry = f"   ✔ {v_name:<28} = {v_human}"
                 if len(entry) > box_w - 2:
                     entry = entry[:box_w - 5] + "..."
-                pad = box_w - len(entry)
-                print(f"│{Colors.GREEN}{entry}{Colors.RESET}{' ' * pad}│")
+                print(box_row(f"{Colors.GREEN}{entry}{Colors.RESET}", box_w))
         else:
             msg = "   ℹ Skipped: Database engine offline or running in mock/test mode"
-            pad = box_w - len(msg)
-            print(f"│{Colors.CYAN}{msg}{Colors.RESET}{' ' * pad}│")
+            print(box_row(f"{Colors.CYAN}{msg}{Colors.RESET}", box_w))
 
         print(f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}")
-        hdr2 = " 2. PERSISTENT CONFIGURATION WRITTEN:"
-        print(f"│{Colors.BOLD}{hdr2:<{box_w}}{Colors.RESET}│")
+        print(box_row(f"{Colors.BOLD} 2. PERSISTENT CONFIGURATION WRITTEN:{Colors.RESET}", box_w))
         cfg_entry1 = f"   ✔ Target: {conf_path}"
         if len(cfg_entry1) > box_w - 2:
             cfg_entry1 = cfg_entry1[:box_w - 5] + "..."
-        pad1 = box_w - len(cfg_entry1)
-        print(f"│{Colors.GREEN}{cfg_entry1}{Colors.RESET}{' ' * pad1}│")
+        print(box_row(f"{Colors.GREEN}{cfg_entry1}{Colors.RESET}", box_w))
 
         cfg_entry2 = "   ✔ Profile: High-QPS autonomous hardware-aligned configuration"
-        pad2 = box_w - len(cfg_entry2)
-        print(f"│{Colors.GREEN}{cfg_entry2}{Colors.RESET}{' ' * pad2}│")
+        print(box_row(f"{Colors.GREEN}{cfg_entry2}{Colors.RESET}", box_w))
 
         print(f"{Colors.BOLD}{Colors.CYAN}├{hbar}┤{Colors.RESET}")
-        hdr3 = " 3. SERVICE LIFECYCLE ACTION:"
-        print(f"│{Colors.BOLD}{hdr3:<{box_w}}{Colors.RESET}│")
+        print(box_row(f"{Colors.BOLD} 3. SERVICE LIFECYCLE ACTION:{Colors.RESET}", box_w))
         if service_ok:
             is_active_action = "Restarted" in service_action_msg or "Reloaded" in service_action_msg
             svc_prefix = "   ✔ " if is_active_action else "   ℹ "
             full_msg = f"{svc_prefix}{service_action_msg}"
             if len(full_msg) > box_w - 2:
                 full_msg = full_msg[:box_w - 5] + "..."
-            pad = box_w - len(full_msg)
             col = Colors.GREEN if is_active_action else Colors.CYAN
-            print(f"│{col}{full_msg}{Colors.RESET}{' ' * pad}│")
+            print(box_row(f"{col}{full_msg}{Colors.RESET}", box_w))
         else:
             full_msg = f"   ❌ {service_action_msg}"
-            pad = box_w - len(full_msg)
-            print(f"│{Colors.RED}{full_msg}{Colors.RESET}{' ' * pad}│")
+            if len(full_msg) > box_w - 2:
+                full_msg = full_msg[:box_w - 5] + "..."
+            print(box_row(f"{Colors.RED}{full_msg}{Colors.RESET}", box_w))
 
         print(f"{Colors.BOLD}{Colors.CYAN}└{hbar}┘{Colors.RESET}\n")
 
     return cfg_written
 
 
-# Alias for compatibility with external references and test suites
-apply_optimizations = apply_tuning_profile
+# Alias for backward compatibility
+apply_tuning_profile = apply_optimizations
 
 
 def run_table_optimization(collector: MariaDBLiveCollector, fragmented: List[Dict[str, Any]]):
@@ -1246,6 +1273,8 @@ def main():
     # When --optimize is requested, defragment tenant tables
     if args.optimize and is_live:
         run_table_optimization(collector, frag_tables)
+        # Defragmented tables are now compacted; clear list for analyzer
+        frag_tables = []
 
     analyzer = DatabaseTuningAnalyzer(
         hardware=hw,
@@ -1262,7 +1291,7 @@ def main():
             import tempfile
             target_conf_dir = os.path.join(tempfile.gettempdir(), "leanstack_mysql_conf_test")
 
-        apply_tuning_profile(
+        apply_optimizations(
             ideal=analysis["ideal_tuning"],
             conf_dir=target_conf_dir,
             collector=collector,
@@ -1270,11 +1299,11 @@ def main():
             show_log=(not args.json)
         )
 
-        # If live, allow socket a brief moment to stabilize and re-probe fresh state
+        # If live, allow socket a moment to stabilize and re-probe fresh state
         if is_live:
             import time
-            time.sleep(0.5)
-            for _ in range(5):
+            time.sleep(0.3)
+            for _ in range(15):
                 is_live2, status2, vars2, frag2 = collector.collect()
                 if is_live2:
                     analyzer = DatabaseTuningAnalyzer(

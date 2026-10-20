@@ -19,6 +19,9 @@ if ( ! defined( 'QM_DISABLE' ) ) {
     }
 }
 
+// Runtime Execution & Session Security Controls
+@ini_set( 'session.use_strict_mode', '1' );
+
 // 0. Angie Rewrite & Pretty Permalinks Support (Enables rewrite rule detection for Site Health)
 $GLOBALS['is_nginx'] = true;
 add_filter( 'got_url_rewrite', '__return_true', 999 );

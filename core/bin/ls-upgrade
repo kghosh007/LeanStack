@@ -1557,6 +1557,11 @@ www-data hard nofile 65535
             p_content = p_content.strip() + f'\nphp_admin_value[sendmail_path] = "/usr/bin/msmtp -C /home/{user}/.msmtprc -t -i"\n'
             p_changed = True
 
+        # 6. Session Strict Mode
+        if "session.use_strict_mode" not in p_content:
+            p_content = p_content.strip() + "\nphp_admin_flag[session.use_strict_mode] = on\n"
+            p_changed = True
+
         return p_content, p_changed
 
     def sync_tenants(self) -> int:

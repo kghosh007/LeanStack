@@ -160,6 +160,12 @@ class LeanStackBridge {
         // Default Theme Handlers
         add_action( 'admin_post_leanstack_save_default_theme', array( $this, 'handle_save_default_theme' ) );
 
+        // Database & Autoload Tuner Handlers
+        add_action( 'admin_post_leanstack_toggle_autoload', array( $this, 'handle_toggle_autoload' ) );
+        add_action( 'admin_post_leanstack_delete_option', array( $this, 'handle_delete_option' ) );
+        add_action( 'admin_post_leanstack_optimize_autoload', array( $this, 'handle_optimize_autoload' ) );
+        add_action( 'admin_post_leanstack_clean_orphaned_meta', array( $this, 'handle_clean_orphaned_meta' ) );
+
         // Apply active optimizations
         $this->init_optimizations();
     }
@@ -257,7 +263,16 @@ class LeanStackBridge {
             array( $this, 'render_default_theme_page' )
         );
 
-        // 5. Tools > LeanStack Cache & Performance
+        // 5. Tools > Database & Autoload Tuner
+        add_management_page(
+            __( 'Database & Autoload Tuner', 'leanstack' ),
+            __( 'DB & Autoload Tuner', 'leanstack' ),
+            'manage_options',
+            'leanstack-db-tuner',
+            array( $this, 'render_db_tuner_page' )
+        );
+
+        // 6. Tools > LeanStack Cache & Performance
         add_management_page(
             __( 'LeanStack Cache & Performance', 'leanstack' ),
             __( 'LeanStack Cache', 'leanstack' ),
@@ -4685,6 +4700,317 @@ class LeanStackBridge {
         exit;
     }
 
+
+    // =========================================================================
+    // Tools > Database & Autoload Options Tuner
+    // =========================================================================
+
+    public function render_db_tuner_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+
+        global $wpdb;
+
+        // Autoload metrics
+        $al_row = $wpdb->get_row( "SELECT COUNT(*) as cnt, COALESCE(SUM(LENGTH(option_value)), 0) as total_sz FROM {$wpdb->options} WHERE autoload IN ('yes', 'on', '1')" );
+        $autoload_count = $al_row ? (int) $al_row->cnt : 0;
+        $autoload_bytes = $al_row ? (int) $al_row->total_sz : 0;
+
+        $tot_row = $wpdb->get_row( "SELECT COUNT(*) as cnt, COALESCE(SUM(LENGTH(option_value)), 0) as total_sz FROM {$wpdb->options}" );
+        $total_options_count = $tot_row ? (int) $tot_row->cnt : 0;
+        $total_options_bytes = $tot_row ? (int) $tot_row->total_sz : 0;
+
+        // Health threshold: <800KB optimal, 800-1200KB warning, >1200KB critical
+        $al_kb = $autoload_bytes / 1024.0;
+        if ( $al_kb < 800 ) {
+            $health_state = 'optimal';
+            $health_title = __( 'Optimal Autoload Health (< 800 KB)', 'leanstack' );
+            $health_desc = __( 'Your autoload options memory footprint is excellent. WordPress initializes quickly with minimal memory consumption.', 'leanstack' );
+            $badge_color = '#008a20';
+        } elseif ( $al_kb <= 1200 ) {
+            $health_state = 'warning';
+            $health_title = __( 'Warning: Moderate Autoload Bloat (800 KB – 1200 KB)', 'leanstack' );
+            $health_desc = __( 'Autoload size is elevated. Review the largest options below and toggle off autoload for non-essential plugin data.', 'leanstack' );
+            $badge_color = '#dba617';
+        } else {
+            $health_state = 'critical';
+            $health_title = __( 'Critical: Severe Autoload Bloat (> 1200 KB)', 'leanstack' );
+            $health_desc = __( 'Autoload size exceeds 1.2 MB. This causes severe PHP memory consumption on every web request, high TTFB, and Redis cache pressure.', 'leanstack' );
+            $badge_color = '#d63638';
+        }
+
+        // Fetch top 100 largest options
+        $top_options = $wpdb->get_results( "SELECT option_id, option_name, LENGTH(option_value) as opt_sz, autoload FROM {$wpdb->options} ORDER BY opt_sz DESC LIMIT 100" );
+
+        // Count expired transients
+        $stale_transients = (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE %s AND CAST(option_value AS UNSIGNED) < %d",
+            $wpdb->esc_like( '_transient_timeout_' ) . '%',
+            time()
+        ) );
+
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'Database & Autoload Options Tuner', 'leanstack' ); ?></h1>
+            <p><?php _e( 'Deep-dive MariaDB/MySQL table optimizer and wp_options autoload profiler. Prevents TTFB degradation and unbridled memory consumption.', 'leanstack' ); ?></p>
+
+            <?php if ( isset( $_GET['toggled'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Option autoload state updated successfully.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['deleted'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Option deleted from database.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['transients_purged'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Expired transients purged from wp_options.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['orphaned_cleaned'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Orphaned postmeta, commentmeta, termmeta, and usermeta removed.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['db_optimized'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Database tables defragmented and optimized (OPTIMIZE TABLE completed).', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+
+            <!-- Autoload Health Gauge -->
+            <div style="background: #fff; border: 1px solid #ccd0d4; border-left: 5px solid <?php echo esc_attr( $badge_color ); ?>; padding: 20px; border-radius: 4px; margin-top: 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                    <div>
+                        <h2 style="margin: 0 0 6px 0; color: <?php echo esc_attr( $badge_color ); ?>;">
+                            <span class="dashicons dashicons-chart-pie" style="font-size: 24px; vertical-align: sub;"></span>
+                            <?php echo esc_html( $health_title ); ?>
+                        </h2>
+                        <p style="margin: 0; color: #50575e; max-width: 750px;"><?php echo esc_html( $health_desc ); ?></p>
+                    </div>
+                    <div style="text-align: right;">
+                        <span style="display: inline-block; background: <?php echo esc_attr( $badge_color ); ?>; color: #fff; font-size: 13px; font-weight: bold; padding: 6px 14px; border-radius: 20px; text-transform: uppercase;">
+                            <?php echo esc_html( strtoupper( $health_state ) ); ?>
+                        </span>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; border-top: 1px solid #f0f0f1; padding-top: 15px;">
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 4px;">
+                        <div style="font-size: 12px; color: #646970; font-weight: 600; text-transform: uppercase;"><?php _e( 'Total Autoload Size', 'leanstack' ); ?></div>
+                        <div style="font-size: 22px; font-weight: bold; color: <?php echo esc_attr( $badge_color ); ?>; margin-top: 4px;">
+                            <?php echo esc_html( size_format( $autoload_bytes, 2 ) ); ?>
+                        </div>
+                        <div style="font-size: 11px; color: #8c8f94; margin-top: 2px;">Threshold: &lt;800 KB</div>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 4px;">
+                        <div style="font-size: 12px; color: #646970; font-weight: 600; text-transform: uppercase;"><?php _e( 'Autoloaded Options', 'leanstack' ); ?></div>
+                        <div style="font-size: 22px; font-weight: bold; color: #1d2327; margin-top: 4px;">
+                            <?php echo number_format_i18n( $autoload_count ); ?>
+                        </div>
+                        <div style="font-size: 11px; color: #8c8f94; margin-top: 2px;"><?php printf( __( 'out of %s total options', 'leanstack' ), number_format_i18n( $total_options_count ) ); ?></div>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 4px;">
+                        <div style="font-size: 12px; color: #646970; font-weight: 600; text-transform: uppercase;"><?php _e( 'Total Options Size', 'leanstack' ); ?></div>
+                        <div style="font-size: 22px; font-weight: bold; color: #1d2327; margin-top: 4px;">
+                            <?php echo esc_html( size_format( $total_options_bytes, 2 ) ); ?>
+                        </div>
+                        <div style="font-size: 11px; color: #8c8f94; margin-top: 2px;"><?php _e( 'Entire wp_options table', 'leanstack' ); ?></div>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 4px;">
+                        <div style="font-size: 12px; color: #646970; font-weight: 600; text-transform: uppercase;"><?php _e( 'Expired Transients', 'leanstack' ); ?></div>
+                        <div style="font-size: 22px; font-weight: bold; color: <?php echo $stale_transients > 0 ? '#dba617' : '#008a20'; ?>; margin-top: 4px;">
+                            <?php echo number_format_i18n( $stale_transients ); ?>
+                        </div>
+                        <div style="font-size: 11px; color: #8c8f94; margin-top: 2px;"><?php _e( 'Ready to clean', 'leanstack' ); ?></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Maintenance Actions -->
+            <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; margin-top: 20px;">
+                <h3 style="margin-top: 0;"><span class="dashicons dashicons-admin-tools" style="color: #2271b1;"></span> <?php _e( 'Database Health & Defragmentation Actions', 'leanstack' ); ?></h3>
+                <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 12px;">
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_opt_autoload_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_optimize_autoload">
+                        <button type="submit" class="button button-secondary">
+                            <span class="dashicons dashicons-clock" style="vertical-align: text-bottom;"></span> <?php _e( 'Purge Expired Transients', 'leanstack' ); ?>
+                        </button>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_clean_meta_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_clean_orphaned_meta">
+                        <button type="submit" class="button button-secondary" onclick="return confirm(<?php echo esc_attr( json_encode( __( 'Clean all orphaned postmeta, commentmeta, termmeta, and usermeta?', 'leanstack' ) ) ); ?>);">
+                            <span class="dashicons dashicons-trash" style="vertical-align: text-bottom;"></span> <?php _e( 'Clean Orphaned Metadata', 'leanstack' ); ?>
+                        </button>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_run_db_opt_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_run_db_optimize">
+                        <input type="hidden" name="redirect_to" value="leanstack-db-tuner">
+                        <button type="submit" class="button button-primary">
+                            <span class="dashicons dashicons-database" style="vertical-align: text-bottom;"></span> <?php _e( 'Defragment Tables (OPTIMIZE TABLE)', 'leanstack' ); ?>
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Top Autoload Options Table -->
+            <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; margin-top: 20px;">
+                <h3 style="margin-top: 0;"><span class="dashicons dashicons-list-view" style="color: #2271b1;"></span> <?php _e( 'Top 100 Largest Options', 'leanstack' ); ?></h3>
+                <p class="description"><?php _e( 'Toggle autoload on/off to manage whether an option is preloaded on every request. Options with heavy data (e.g. transients, logs) should never have autoload enabled.', 'leanstack' ); ?></p>
+
+                <table class="wp-list-table widefat fixed striped" style="margin-top: 15px;">
+                    <thead>
+                        <tr>
+                            <th scope="col" style="width: 60px;"><?php _e( 'ID', 'leanstack' ); ?></th>
+                            <th scope="col"><?php _e( 'Option Name', 'leanstack' ); ?></th>
+                            <th scope="col" style="width: 130px;"><?php _e( 'Size', 'leanstack' ); ?></th>
+                            <th scope="col" style="width: 110px;"><?php _e( 'Autoload', 'leanstack' ); ?></th>
+                            <th scope="col" style="width: 220px;"><?php _e( 'Actions', 'leanstack' ); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if ( empty( $top_options ) ) : ?>
+                            <tr><td colspan="5"><?php _e( 'No options found.', 'leanstack' ); ?></td></tr>
+                        <?php else : ?>
+                            <?php foreach ( $top_options as $opt ) : ?>
+                                <?php
+                                $is_al = ( 'yes' === $opt->autoload || 'on' === $opt->autoload || '1' === $opt->autoload );
+                                ?>
+                                <tr>
+                                    <td><?php echo (int) $opt->option_id; ?></td>
+                                    <td>
+                                        <code style="word-break: break-all;"><?php echo esc_html( $opt->option_name ); ?></code>
+                                    </td>
+                                    <td>
+                                        <strong><?php echo esc_html( size_format( (int) $opt->opt_sz, 2 ) ); ?></strong>
+                                    </td>
+                                    <td>
+                                        <?php if ( $is_al ) : ?>
+                                            <span style="background: #d63638; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 3px; font-weight: bold;"><?php _e( 'YES', 'leanstack' ); ?></span>
+                                        <?php else : ?>
+                                            <span style="background: #f0f0f1; color: #50575e; font-size: 11px; padding: 2px 8px; border-radius: 3px;"><?php _e( 'NO', 'leanstack' ); ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td>
+                                        <div style="display: flex; gap: 8px;">
+                                            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display: inline;">
+                                                <?php wp_nonce_field( 'leanstack_toggle_al_action', 'leanstack_nonce' ); ?>
+                                                <input type="hidden" name="action" value="leanstack_toggle_autoload">
+                                                <input type="hidden" name="option_id" value="<?php echo (int) $opt->option_id; ?>">
+                                                <button type="submit" class="button button-small">
+                                                    <?php echo $is_al ? __( 'Disable Autoload', 'leanstack' ) : __( 'Enable Autoload', 'leanstack' ); ?>
+                                                </button>
+                                            </form>
+
+                                            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display: inline;">
+                                                <?php wp_nonce_field( 'leanstack_delete_opt_action', 'leanstack_nonce' ); ?>
+                                                <input type="hidden" name="action" value="leanstack_delete_option">
+                                                <input type="hidden" name="option_id" value="<?php echo (int) $opt->option_id; ?>">
+                                                <button type="submit" class="button button-small button-link-delete" onclick="return confirm(<?php echo esc_attr( json_encode( sprintf( __( 'Permanently delete option %s from wp_options?', 'leanstack' ), $opt->option_name ) ) ); ?>);">
+                                                    <?php _e( 'Delete', 'leanstack' ); ?>
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <?php
+    }
+
+    public function handle_toggle_autoload() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_toggle_al_action', 'leanstack_nonce' );
+
+        global $wpdb;
+        $option_id = isset( $_POST['option_id'] ) ? (int) $_POST['option_id'] : 0;
+        if ( $option_id > 0 ) {
+            $cur = $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_id = %d", $option_id ) );
+            $new = ( 'yes' === $cur || 'on' === $cur || '1' === $cur ) ? 'no' : 'yes';
+            $wpdb->update( $wpdb->options, array( 'autoload' => $new ), array( 'option_id' => $option_id ) );
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-db-tuner', 'toggled' => '1' ), admin_url( 'tools.php' ) ) );
+        exit;
+    }
+
+    public function handle_delete_option() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_delete_opt_action', 'leanstack_nonce' );
+
+        global $wpdb;
+        $option_id = isset( $_POST['option_id'] ) ? (int) $_POST['option_id'] : 0;
+        if ( $option_id > 0 ) {
+            $wpdb->delete( $wpdb->options, array( 'option_id' => $option_id ) );
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-db-tuner', 'deleted' => '1' ), admin_url( 'tools.php' ) ) );
+        exit;
+    }
+
+    public function handle_optimize_autoload() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_opt_autoload_action', 'leanstack_nonce' );
+
+        global $wpdb;
+        $time = time();
+
+        $wpdb->query( $wpdb->prepare(
+            "DELETE a, b FROM {$wpdb->options} a
+             INNER JOIN {$wpdb->options} b ON b.option_name = REPLACE(a.option_name, '_timeout', '')
+             WHERE a.option_name LIKE %s AND CAST(a.option_value AS UNSIGNED) < %d",
+            $wpdb->esc_like( '_transient_timeout_' ) . '%',
+            $time
+        ) );
+        $wpdb->query( $wpdb->prepare(
+            "DELETE a, b FROM {$wpdb->options} a
+             INNER JOIN {$wpdb->options} b ON b.option_name = REPLACE(a.option_name, '_timeout', '')
+             WHERE a.option_name LIKE %s AND CAST(a.option_value AS UNSIGNED) < %d",
+            $wpdb->esc_like( '_site_transient_timeout_' ) . '%',
+            $time
+        ) );
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-db-tuner', 'transients_purged' => '1' ), admin_url( 'tools.php' ) ) );
+        exit;
+    }
+
+    public function handle_clean_orphaned_meta() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_clean_meta_action', 'leanstack_nonce' );
+
+        global $wpdb;
+
+        // Clean orphaned postmeta
+        $wpdb->query( "DELETE pm FROM {$wpdb->postmeta} pm LEFT JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE p.ID IS NULL" );
+
+        // Clean orphaned commentmeta
+        if ( ! empty( $wpdb->commentmeta ) ) {
+            $wpdb->query( "DELETE cm FROM {$wpdb->commentmeta} cm LEFT JOIN {$wpdb->comments} c ON c.comment_ID = cm.comment_id WHERE c.comment_ID IS NULL" );
+        }
+
+        // Clean orphaned termmeta
+        if ( ! empty( $wpdb->termmeta ) ) {
+            $wpdb->query( "DELETE tm FROM {$wpdb->termmeta} tm LEFT JOIN {$wpdb->terms} t ON t.term_id = tm.term_id WHERE t.term_id IS NULL" );
+        }
+
+        // Clean orphaned usermeta
+        if ( ! empty( $wpdb->usermeta ) ) {
+            $wpdb->query( "DELETE um FROM {$wpdb->usermeta} um LEFT JOIN {$wpdb->users} u ON u.ID = um.user_id WHERE u.ID IS NULL" );
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-db-tuner', 'orphaned_cleaned' => '1' ), admin_url( 'tools.php' ) ) );
+        exit;
+    }
 
 }
 

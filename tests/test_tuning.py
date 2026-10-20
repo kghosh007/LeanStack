@@ -8,6 +8,7 @@ import unittest
 import os
 import sys
 import json
+import subprocess
 
 # Add installer directory to module path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "installer")))
@@ -679,6 +680,77 @@ class TestHardwareTuning(unittest.TestCase):
                 ls_db_tune.subprocess.run = orig_run
                 if orig_geteuid:
                     ls_db_tune.os.geteuid = orig_geteuid
+
+    def test_wp_autoload_analyzer_thresholds(self):
+        """Verify WPAutoloadAnalyzer correctly classifies autoload health into optimal (<800KB), warning (800-1200KB), and critical (>1200KB)."""
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        mock_optimal = [{
+            "schema": "tenant_site1",
+            "table": "wp_options",
+            "autoload_bytes": 450 * 1024, # 450 KB < 800 KB
+            "autoload_count": 350,
+            "total_bytes": 2048 * 1024,
+            "total_count": 1200,
+            "top_options": [{"option_name": "active_plugins", "bytes": 12000}]
+        }]
+        analyzer_opt = ls_db_tune.WPAutoloadAnalyzer(mock_data=mock_optimal)
+        res_opt = analyzer_opt.analyze()
+        self.assertEqual(len(res_opt), 1)
+        self.assertEqual(res_opt[0]["health"], "optimal")
+        self.assertIn("OPTIMAL", res_opt[0]["health_label"])
+        report_opt = analyzer_opt.render_report(res_opt)
+        self.assertIn("OPTIMAL", report_opt)
+
+        mock_warning = [{
+            "schema": "tenant_site2",
+            "table": "wp_options",
+            "autoload_bytes": 950 * 1024, # 950 KB (800-1200 KB)
+            "autoload_count": 800,
+            "total_bytes": 4096 * 1024,
+            "total_count": 3000,
+            "top_options": [{"option_name": "woocommerce_cart", "bytes": 85000}]
+        }]
+        analyzer_warn = ls_db_tune.WPAutoloadAnalyzer(mock_data=mock_warning)
+        res_warn = analyzer_warn.analyze()
+        self.assertEqual(res_warn[0]["health"], "warning")
+        self.assertIn("WARNING", res_warn[0]["health_label"])
+        report_warn = analyzer_warn.render_report(res_warn)
+        self.assertIn("WARNING", report_warn)
+
+        mock_critical = [{
+            "schema": "tenant_site3",
+            "table": "wp_options",
+            "autoload_bytes": 1500 * 1024, # 1.5 MB > 1200 KB
+            "autoload_count": 1500,
+            "total_bytes": 10240 * 1024,
+            "total_count": 6500,
+            "top_options": [{"option_name": "heavy_unserialized_blob", "bytes": 600000}]
+        }]
+        analyzer_crit = ls_db_tune.WPAutoloadAnalyzer(mock_data=mock_critical)
+        res_crit = analyzer_crit.analyze()
+        self.assertEqual(res_crit[0]["health"], "critical")
+        self.assertIn("CRITICAL", res_crit[0]["health_label"])
+        report_crit = analyzer_crit.render_report(res_crit)
+        self.assertIn("CRITICAL", report_crit)
+
+    def test_wp_autoload_cli_execution(self):
+        """Verify ls-db-tune --wp-autoload and --wp-autoload --json execute cleanly without error."""
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        res = subprocess.run([sys.executable, tuner_path, "--wp-autoload"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("WORDPRESS AUTOLOAD OPTIONS HEALTH & BLOAT AUDITOR", res.stdout)
+
+        res_json = subprocess.run([sys.executable, tuner_path, "--wp-autoload", "--json"], capture_output=True, text=True)
+        self.assertEqual(res_json.returncode, 0)
+        parsed = json.loads(res_json.stdout.strip())
+        self.assertIsInstance(parsed, list)
 
 
 if __name__ == "__main__":

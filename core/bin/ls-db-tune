@@ -1220,6 +1220,186 @@ def run_table_optimization(collector: MariaDBLiveCollector, fragmented: List[Dic
     print(f"{Colors.GREEN}✔ Table defragmentation complete.{Colors.RESET}")
 
 
+class WPAutoloadAnalyzer:
+    """
+    WordPress Autoload Options Health & Bloat Auditor
+    - < 800 KB: Optimal (healthy memory footprint per PHP execution)
+    - 800 KB - 1200 KB: Warning (moderate bloat, review large options)
+    - > 1200 KB: Critical (excessive memory spikes, TTFB degradation)
+    """
+    def __init__(self, collector: Optional[MariaDBLiveCollector] = None, target_db: Optional[str] = None, mock_data: Optional[List[Dict[str, Any]]] = None):
+        self.collector = collector
+        self.target_db = target_db
+        self.mock_data = mock_data
+
+    def analyze(self) -> List[Dict[str, Any]]:
+        if self.mock_data is not None:
+            return self._process_data(self.mock_data)
+
+        if not self.collector or not self.collector.cli_cmd:
+            return []
+
+        # Find candidate WordPress options tables
+        if self.target_db:
+            schemas_query = (
+                f"SELECT table_schema, table_name FROM information_schema.tables "
+                f"WHERE table_schema = '{self.target_db}' AND table_name LIKE '%options';"
+            )
+        else:
+            schemas_query = (
+                "SELECT table_schema, table_name FROM information_schema.tables "
+                "WHERE table_name LIKE '%options' "
+                "AND table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys');"
+            )
+
+        tables = self.collector.query(schemas_query) or []
+        raw_items = []
+        for row in tables:
+            if len(row) < 2:
+                continue
+            schema, table = row[0], row[1]
+
+            # Query autoload size & count
+            al_query = (
+                f"SELECT COUNT(*), COALESCE(SUM(LENGTH(option_value)), 0) "
+                f"FROM `{schema}`.`{table}` "
+                f"WHERE autoload IN ('yes', 'on', '1');"
+            )
+            al_res = self.collector.query(al_query)
+            al_count = int(al_res[0][0]) if al_res and len(al_res[0]) > 0 and al_res[0][0] else 0
+            al_bytes = int(al_res[0][1]) if al_res and len(al_res[0]) > 1 and al_res[0][1] else 0
+
+            # Query total options count & size
+            tot_query = (
+                f"SELECT COUNT(*), COALESCE(SUM(LENGTH(option_value)), 0) "
+                f"FROM `{schema}`.`{table}`;"
+            )
+            tot_res = self.collector.query(tot_query)
+            tot_count = int(tot_res[0][0]) if tot_res and len(tot_res[0]) > 0 and tot_res[0][0] else 0
+            tot_bytes = int(tot_res[0][1]) if tot_res and len(tot_res[0]) > 1 and tot_res[0][1] else 0
+
+            # Top largest autoload options
+            top_query = (
+                f"SELECT option_name, LENGTH(option_value) AS sz "
+                f"FROM `{schema}`.`{table}` "
+                f"WHERE autoload IN ('yes', 'on', '1') "
+                f"ORDER BY sz DESC LIMIT 10;"
+            )
+            top_res = self.collector.query(top_query) or []
+            top_options = []
+            for tr in top_res:
+                if len(tr) >= 2:
+                    top_options.append({
+                        "option_name": tr[0],
+                        "bytes": int(tr[1])
+                    })
+
+            raw_items.append({
+                "schema": schema,
+                "table": table,
+                "autoload_bytes": al_bytes,
+                "autoload_count": al_count,
+                "total_bytes": tot_bytes,
+                "total_count": tot_count,
+                "top_options": top_options
+            })
+
+        return self._process_data(raw_items)
+
+    def _process_data(self, raw_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        results = []
+        for item in raw_items:
+            al_bytes = int(item.get("autoload_bytes", 0))
+            al_count = int(item.get("autoload_count", 0))
+            tot_bytes = int(item.get("total_bytes", 0))
+            tot_count = int(item.get("total_count", 0))
+
+            kb = al_bytes / 1024.0
+            if kb < 800:
+                health = "optimal"
+                label = "OPTIMAL (<800KB)"
+            elif kb <= 1200:
+                health = "warning"
+                label = "WARNING (800-1200KB)"
+            else:
+                health = "critical"
+                label = "CRITICAL (>1200KB)"
+
+            top_opts = []
+            for tr in item.get("top_options", []):
+                opt_sz = int(tr.get("bytes", 0))
+                top_opts.append({
+                    "option_name": tr.get("option_name", ""),
+                    "bytes": opt_sz,
+                    "formatted": format_bytes(opt_sz)
+                })
+
+            results.append({
+                "schema": item.get("schema", "wordpress"),
+                "table": item.get("table", "wp_options"),
+                "autoload_bytes": al_bytes,
+                "autoload_bytes_formatted": format_bytes(al_bytes),
+                "autoload_count": al_count,
+                "total_bytes": tot_bytes,
+                "total_bytes_formatted": format_bytes(tot_bytes),
+                "total_count": tot_count,
+                "health": health,
+                "health_label": label,
+                "top_options": top_opts
+            })
+        return results
+
+    def render_report(self, results: List[Dict[str, Any]]) -> str:
+        lines = []
+        lines.append("┌" + "─" * 72 + "┐")
+        lines.append(box_row(f"{Colors.BOLD}{Colors.CYAN}       WORDPRESS AUTOLOAD OPTIONS HEALTH & BLOAT AUDITOR        {Colors.RESET}"))
+        lines.append("├" + "─" * 72 + "┤")
+        if not results:
+            lines.append(box_row(" No WordPress options tables found or MariaDB connection unavailable."))
+            lines.append("└" + "─" * 72 + "┘")
+            return "\n".join(lines)
+
+        for item in results:
+            schema = item["schema"]
+            table = item["table"]
+            health = item["health"]
+            label = item["health_label"]
+            al_fmt = item["autoload_bytes_formatted"]
+            al_cnt = item["autoload_count"]
+            tot_cnt = item["total_count"]
+            tot_fmt = item["total_bytes_formatted"]
+
+            if health == "optimal":
+                badge = f"{Colors.GREEN}{Colors.BOLD}✔ {label}{Colors.RESET}"
+            elif health == "warning":
+                badge = f"{Colors.YELLOW}{Colors.BOLD}⚠ {label}{Colors.RESET}"
+            else:
+                badge = f"{Colors.RED}{Colors.BOLD}✖ {label}{Colors.RESET}"
+
+            lines.append(box_row(f" Database: {Colors.BOLD}{schema}{Colors.RESET} (Table: {table})"))
+            lines.append(box_row(f" Health Status: {badge}"))
+            lines.append(box_row(f" Autoload Size: {Colors.BOLD}{al_fmt}{Colors.RESET} ({al_cnt} options out of {tot_cnt} total)"))
+            lines.append(box_row(f" Total Options Size: {tot_fmt}"))
+            lines.append("├" + "─" * 72 + "┤")
+            lines.append(box_row(f" {Colors.BOLD}Top Largest Autoloaded Options:{Colors.RESET}"))
+            if item["top_options"]:
+                for opt in item["top_options"]:
+                    name = opt["option_name"]
+                    if len(name) > 42:
+                        name = name[:39] + "..."
+                    sz_str = opt["formatted"]
+                    lines.append(box_row(f"   • {name:<45} {sz_str:>12}"))
+            else:
+                lines.append(box_row("   (No autoloaded options recorded)"))
+            lines.append("├" + "─" * 72 + "┤")
+
+        lines.append(box_row(f" {Colors.CYAN}Recommendations:{Colors.RESET}"))
+        lines.append(box_row(" • Use WP Admin Tools > DB & Autoload Tuner to toggle large options."))
+        lines.append(box_row(" • Purge expired transients and defragment wp_options regularly."))
+        lines.append("└" + "─" * 72 + "┘")
+        return "\n".join(lines)
+
+
 def run_external_mysqltuner():
     """Executes external mysqltuner perl utility if present, or provides instructions to install."""
     mt_bin = shutil.which("mysqltuner")
@@ -1257,10 +1437,22 @@ def main():
     parser.add_argument("--optimize", "--optimize-tables", action="store_true", dest="optimize", help="Run OPTIMIZE TABLE on fragmented tenant tables")
     parser.add_argument("--simulate-ram", type=int, default=None, help="Simulate host RAM in MB")
     parser.add_argument("--simulate-cores", type=int, default=None, help="Simulate CPU cores")
+    parser.add_argument("--wp-autoload", action="store_true", help="Analyze WordPress autoload options bloat (<800KB optimal, 800-1200KB warning, >1200KB critical)")
+    parser.add_argument("--database", "--db", type=str, default=None, help="Target specific database for --wp-autoload")
     args = parser.parse_args()
 
     if args.mysqltuner:
         run_external_mysqltuner()
+        sys.exit(0)
+
+    if args.wp_autoload:
+        collector = MariaDBLiveCollector()
+        analyzer = WPAutoloadAnalyzer(collector, target_db=args.database)
+        results = analyzer.analyze()
+        if args.json:
+            print(json.dumps(results, indent=2))
+        else:
+            print(analyzer.render_report(results))
         sys.exit(0)
 
     if (args.apply or args.optimize) and hasattr(os, "geteuid") and os.geteuid() != 0 and not args.dry_run:

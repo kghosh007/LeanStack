@@ -1338,6 +1338,17 @@ exit 0
         self.assertIn("session.cookie_httponly = 1", p5)
         self.assertIn("max_execution_time = 300", p5)
 
+    def test_database_and_autoload_tuner(self):
+        """Verify Database and Autoload Tuner UI registration and methods in bridge."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge = f.read()
+
+        self.assertIn("leanstack-db-tuner", bridge)
+        self.assertIn("handle_toggle_autoload", bridge)
+        self.assertIn("handle_optimize_autoload", bridge)
+        self.assertIn("handle_clean_orphaned_meta", bridge)
+
 if __name__ == "__main__":
     unittest.main()
 

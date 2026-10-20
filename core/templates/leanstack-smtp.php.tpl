@@ -25,6 +25,7 @@ class LeanStackSMTP {
     private function __construct() {
         add_action( 'phpmailer_init', array( $this, 'configure_phpmailer' ), 999 );
         add_action( 'wp_mail_failed', array( $this, 'log_mail_failure' ) );
+        add_action( 'wp_mail_succeeded', array( $this, 'log_mail_success' ) );
     }
 
     /**
@@ -176,7 +177,31 @@ class LeanStackSMTP {
     public function log_mail_failure( $wp_error ) {
         if ( is_wp_error( $wp_error ) ) {
             $msg = $wp_error->get_error_message();
+            if ( false !== strpos( $msg, 'Connection refused' ) || false !== strpos( $msg, 'connect() failed' ) ) {
+                $msg .= ' ' . __( '(Outbound mail port blocked or external SMTP not configured. Configure authenticated SMTP in Tools > LeanStack Cache > SMTP.)', 'leanstack' );
+            }
             set_transient( 'leanstack_last_mail_error', $msg, 3600 );
+
+            $home_dir = dirname( ABSPATH );
+            $mail_log = $home_dir . '/logs/mail.log';
+            if ( is_dir( $home_dir . '/logs' ) ) {
+                $entry = sprintf( "[%s] FAILED: %s\n", current_time( 'mysql' ), $msg );
+                @file_put_contents( $mail_log, $entry, FILE_APPEND );
+            }
+        }
+    }
+
+    /**
+     * Logs successful email dispatches to logs/mail.log.
+     */
+    public function log_mail_success( $mail_data ) {
+        $home_dir = dirname( ABSPATH );
+        $mail_log = $home_dir . '/logs/mail.log';
+        if ( is_dir( $home_dir . '/logs' ) ) {
+            $to = isset( $mail_data['to'] ) ? ( is_array( $mail_data['to'] ) ? implode( ', ', $mail_data['to'] ) : $mail_data['to'] ) : 'unknown';
+            $subj = isset( $mail_data['subject'] ) ? $mail_data['subject'] : '';
+            $entry = sprintf( "[%s] SENT: To: %s | Subject: %s\n", current_time( 'mysql' ), $to, $subj );
+            @file_put_contents( $mail_log, $entry, FILE_APPEND );
         }
     }
 
@@ -196,22 +221,24 @@ class LeanStackSMTP {
         $msmtprc = $home_dir . '/.msmtprc';
         $log_dir = $home_dir . '/logs';
 
-        if ( ! is_dir( $home_dir ) || ! is_writable( $home_dir ) && ! file_exists( $msmtprc ) ) {
+        if ( ! is_dir( $home_dir ) || ( ! is_writable( $home_dir ) && ! file_exists( $msmtprc ) ) ) {
             return false;
         }
 
-        $host     = ! empty( $cfg['host'] ) ? $cfg['host'] : '127.0.0.1';
-        $port     = ! empty( $cfg['port'] ) ? (int) $cfg['port'] : 587;
-        $user     = ! empty( $cfg['user'] ) ? $cfg['user'] : 'none';
-        $pass     = ! empty( $cfg['pass'] ) ? $cfg['pass'] : 'none';
+        $is_custom_smtp = ( ! empty( $cfg['enabled'] ) && ! empty( $cfg['host'] ) );
+        $host     = $is_custom_smtp ? $cfg['host'] : '127.0.0.1';
+        $port     = $is_custom_smtp ? (int) $cfg['port'] : 25;
+        $user     = $is_custom_smtp ? ( ! empty( $cfg['user'] ) ? $cfg['user'] : 'none' ) : 'none';
+        $pass     = $is_custom_smtp ? ( ! empty( $cfg['pass'] ) ? $cfg['pass'] : 'none' ) : 'none';
         $from     = ! empty( $cfg['from_email'] ) ? $cfg['from_email'] : get_option( 'admin_email' );
-        $tls_mode = ( 'ssl' === $cfg['encryption'] || 'tls' === $cfg['encryption'] ) ? 'on' : 'off';
-        $tls_starttls = ( 'tls' === $cfg['encryption'] ) ? 'on' : 'off';
+        $auth     = $is_custom_smtp ? ( ! empty( $cfg['auth'] ) ? 'on' : 'off' ) : 'off';
+        $tls_mode = $is_custom_smtp ? ( ( 'ssl' === $cfg['encryption'] || 'tls' === $cfg['encryption'] ) ? 'on' : 'off' ) : 'off';
+        $tls_starttls = $is_custom_smtp ? ( ( 'tls' === $cfg['encryption'] ) ? 'on' : 'off' ) : 'off';
 
-        $msmtp_content  = "# LeanStack Lightweight OS Mail Relay Configuration\n";
+        $msmtp_content  = "# LeanStack Lightweight OS Mail Relay Configuration (msmtp)\n";
         $msmtp_content .= "# Strict permissions enforced: chmod 600\n";
         $msmtp_content .= "defaults\n";
-        $msmtp_content .= "auth           " . ( ! empty( $cfg['auth'] ) ? 'on' : 'off' ) . "\n";
+        $msmtp_content .= "auth           " . $auth . "\n";
         $msmtp_content .= "tls            " . $tls_mode . "\n";
         if ( 'on' === $tls_mode ) {
             $msmtp_content .= "tls_starttls   " . $tls_starttls . "\n";
@@ -225,8 +252,10 @@ class LeanStackSMTP {
         $msmtp_content .= "host           " . $host . "\n";
         $msmtp_content .= "port           " . $port . "\n";
         $msmtp_content .= "from           " . $from . "\n";
-        $msmtp_content .= "user           " . $user . "\n";
-        $msmtp_content .= "password       " . $pass . "\n";
+        if ( 'on' === $auth ) {
+            $msmtp_content .= "user           " . $user . "\n";
+            $msmtp_content .= "password       " . $pass . "\n";
+        }
 
         $res = @file_put_contents( $msmtprc, $msmtp_content );
         if ( false !== $res ) {

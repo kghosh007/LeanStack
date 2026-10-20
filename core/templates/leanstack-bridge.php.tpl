@@ -2764,6 +2764,18 @@ class LeanStackBridge {
             exit;
         }
 
+        // Validate that an external SMTP provider or relay is configured
+        $smtp_opt = get_option( 'leanstack_smtp_settings' );
+        $has_smtp = ( is_array( $smtp_opt ) && ! empty( $smtp_opt['enabled'] ) && ! empty( $smtp_opt['host'] ) ) ||
+                    ( defined( 'LEANSTACK_SMTP_HOST' ) && '' !== LEANSTACK_SMTP_HOST ) ||
+                    ( ! empty( getenv( 'SMTP_HOST' ) ) );
+        if ( ! $has_smtp ) {
+            $err_msg = __( 'No external SMTP provider configured. LeanStack uses zero-daemon msmtp architecture and does not run a local Postfix/Exim MTA on localhost (VPS providers also block outbound port 25). Please enter your external SMTP credentials (SendGrid, Postmark, Brevo, AWS SES, or SMTP2GO) above and click Save SMTP Configuration before sending a test email.', 'leanstack' );
+            set_transient( 'leanstack_last_mail_error', $err_msg, 3600 );
+            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_error' => urlencode( $err_msg ) ), admin_url( 'tools.php' ) ) );
+            exit;
+        }
+
         $mail_error = '';
         $error_catcher = function( $wp_error ) use ( &$mail_error ) {
             if ( is_wp_error( $wp_error ) ) {
@@ -3829,7 +3841,11 @@ class LeanStackBridge {
         update_option( 'leanstack_robots_content', $content );
 
         $robots_file = ABSPATH . 'robots.txt';
-        @file_put_contents( $robots_file, $content . "\n" );
+        $res = @file_put_contents( $robots_file, $content . "\n" );
+        if ( false === $res ) {
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-crawlers', 'tab' => 'robots', 'error' => 'write_failed' ), admin_url( 'options-general.php' ) ) );
+            exit;
+        }
         @chmod( $robots_file, 0644 );
 
         $this->purge_fastcgi_url( home_url( '/robots.txt' ) );
@@ -3926,7 +3942,11 @@ class LeanStackBridge {
         update_option( 'leanstack_llms_auto_sync', isset( $_POST['llms_auto_sync'] ) ? 1 : 0 );
 
         $llms_file = ABSPATH . 'llms.txt';
-        @file_put_contents( $llms_file, $content . "\n" );
+        $res = @file_put_contents( $llms_file, $content . "\n" );
+        if ( false === $res ) {
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-crawlers', 'tab' => 'llms', 'error' => 'write_failed' ), admin_url( 'options-general.php' ) ) );
+            exit;
+        }
         @chmod( $llms_file, 0644 );
 
         $this->purge_fastcgi_url( home_url( '/llms.txt' ) );
@@ -4008,8 +4028,9 @@ class LeanStackBridge {
             <h1><?php _e( 'Crawlers & AI Agents Studio', 'leanstack' ); ?></h1>
             <p><?php _e( 'Enterprise robots.txt manager, AI scraper controls, and automated llms.txt generation for modern LLMs.', 'leanstack' ); ?></p>
 
-            <?php $this->render_status_banner(); ?>
-
+            <?php if ( isset( $_GET['error'] ) && 'write_failed' === $_GET['error'] ) : ?>
+                <div class="notice notice-error is-dismissible"><p><?php _e( 'Error: Failed to write configuration file to disk. Please verify filesystem permissions (chmod 644) and tenant ownership.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
             <?php if ( isset( $_GET['saved'] ) ) : ?>
                 <div class="notice notice-success is-dismissible"><p><?php _e( 'Configuration saved successfully, disk file updated, and edge cache invalidated.', 'leanstack' ); ?></p></div>
             <?php endif; ?>
@@ -4144,6 +4165,7 @@ class LeanStackBridge {
         </div>
         <?php
     }
+
     // =========================================================================
     // WordPress Optimizations & Bloat Removal (Settings > Optimizations)
     // =========================================================================
@@ -4567,7 +4589,6 @@ class LeanStackBridge {
         exit;
     }
 
-
     // =========================================================================
     // Appearance > Default Theme Selector (WP_DEFAULT_THEME in wp-config.php)
     // =========================================================================
@@ -4699,7 +4720,6 @@ class LeanStackBridge {
         wp_redirect( add_query_arg( array( 'page' => 'leanstack-default-theme', 'saved' => '1' ), admin_url( 'themes.php' ) ) );
         exit;
     }
-
 
     // =========================================================================
     // Tools > Database & Autoload Options Tuner
@@ -5011,7 +5031,6 @@ class LeanStackBridge {
         wp_redirect( add_query_arg( array( 'page' => 'leanstack-db-tuner', 'orphaned_cleaned' => '1' ), admin_url( 'tools.php' ) ) );
         exit;
     }
-
 }
 
 add_action( 'plugins_loaded', array( 'LeanStackBridge', 'get_instance' ) );

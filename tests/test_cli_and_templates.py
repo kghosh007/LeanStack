@@ -1349,6 +1349,29 @@ exit 0
         self.assertIn("handle_optimize_autoload", bridge)
         self.assertIn("handle_clean_orphaned_meta", bridge)
 
+    def test_msmtp_configuration_and_logging(self):
+        """Verify msmtp default scaffolding in lsctl, logging in leanstack-smtp.php.tpl, and pre-flight validation in bridge."""
+        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_bin, "r") as f:
+            lsctl = f.read()
+        self.assertIn("auth           off", lsctl)
+        self.assertIn("tls            off", lsctl)
+        self.assertIn("port           25", lsctl)
+
+        smtp_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-smtp.php.tpl")
+        with open(smtp_tpl, "r") as f:
+            smtp = f.read()
+
+        self.assertIn("logs/mail.log", smtp)
+        self.assertIn("log_mail_success", smtp)
+        self.assertIn("log_mail_failure", smtp)
+
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge = f.read()
+
+        self.assertIn("No external SMTP provider configured", bridge)
+
 if __name__ == "__main__":
     unittest.main()
 

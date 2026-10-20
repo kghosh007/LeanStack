@@ -1272,7 +1272,7 @@ exit 0
         self.assertIn("EMPTY_TRASH_DAYS", up)
 
 
-    def test_optimizations_page(self):
+    def test_optimizations_and_default_theme_pages(self):
         """Verify WordPress Optimizations & Bloat Removal page registration and options."""
         bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
         with open(bridge_tpl, "r") as f:
@@ -1285,6 +1285,8 @@ exit 0
         self.assertIn("disable_pingbacks", bridge)
         self.assertIn("remove_wp_version", bridge)
         self.assertIn("leanstack_periodic_db_optimize", bridge)
+        self.assertIn("leanstack-default-theme", bridge)
+        self.assertIn("WP_DEFAULT_THEME", bridge)
 
     def test_watcher_and_lsctl_htaccess_permissions(self):
         """Verify ls-watcher, lsctl, and ls-upgrade enforce chmod 644 on .htaccess, robots.txt, and llms.txt."""

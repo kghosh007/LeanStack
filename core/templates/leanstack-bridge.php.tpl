@@ -157,6 +157,9 @@ class LeanStackBridge {
         add_action( 'admin_post_leanstack_clean_action_scheduler', array( $this, 'handle_clean_action_scheduler' ) );
         add_action( 'admin_post_leanstack_run_db_optimize', array( $this, 'handle_run_db_optimize' ) );
 
+        // Default Theme Handlers
+        add_action( 'admin_post_leanstack_save_default_theme', array( $this, 'handle_save_default_theme' ) );
+
         // Apply active optimizations
         $this->init_optimizations();
     }
@@ -245,7 +248,16 @@ class LeanStackBridge {
             array( $this, 'render_optimizations_page' )
         );
 
-        // 4. Tools > LeanStack Cache & Performance
+        // 4. Appearance > Default Theme
+        add_theme_page(
+            __( 'Default Fallback Theme', 'leanstack' ),
+            __( 'Default Theme', 'leanstack' ),
+            'manage_options',
+            'leanstack-default-theme',
+            array( $this, 'render_default_theme_page' )
+        );
+
+        // 5. Tools > LeanStack Cache & Performance
         add_management_page(
             __( 'LeanStack Cache & Performance', 'leanstack' ),
             __( 'LeanStack Cache', 'leanstack' ),
@@ -4537,6 +4549,139 @@ class LeanStackBridge {
         $target_url = ( 'leanstack-db-tuner' === $page ) ? admin_url( 'tools.php' ) : admin_url( 'options-general.php' );
 
         wp_redirect( add_query_arg( array( 'page' => $page, 'db_optimized' => '1' ), $target_url ) );
+        exit;
+    }
+
+
+    // =========================================================================
+    // Appearance > Default Theme Selector (WP_DEFAULT_THEME in wp-config.php)
+    // =========================================================================
+
+    public function render_default_theme_page() {
+        if ( ! current_user_can( 'switch_themes' ) && ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+
+        $all_themes = wp_get_themes();
+        $active_theme = wp_get_theme();
+        $current_default = defined( 'WP_DEFAULT_THEME' ) ? WP_DEFAULT_THEME : '';
+
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'Default Fallback Theme Selector', 'leanstack' ); ?></h1>
+            <p><?php _e( 'Select the fallback theme to persist as <code>WP_DEFAULT_THEME</code> in <code>wp-config.php</code>. If the active production theme encounters fatal errors or files are removed, WordPress safely falls back to this theme.', 'leanstack' ); ?></p>
+
+            <?php if ( isset( $_GET['saved'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Default fallback theme saved and wp-config.php updated.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['error'] ) ) : ?>
+                <div class="notice notice-error is-dismissible"><p><?php echo esc_html( sanitize_text_field( $_GET['error'] ) ); ?></p></div>
+            <?php endif; ?>
+
+            <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; margin-top: 15px;">
+                <p>
+                    <strong><?php _e( 'Currently Active Theme:', 'leanstack' ); ?></strong>
+                    <code><?php echo esc_html( $active_theme->get( 'Name' ) ); ?></code>
+                    (slug: <code><?php echo esc_html( $active_theme->get_stylesheet() ); ?></code>, v<?php echo esc_html( $active_theme->get( 'Version' ) ); ?>)
+                </p>
+                <p>
+                    <strong><?php _e( 'Current Fallback Theme Constant (WP_DEFAULT_THEME):', 'leanstack' ); ?></strong>
+                    <code><?php echo $current_default ? esc_html( $current_default ) : '<em>' . __( 'Not explicitly defined (core default)', 'leanstack' ) . '</em>'; ?></code>
+                </p>
+
+                <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                    <?php wp_nonce_field( 'leanstack_save_default_theme_action', 'leanstack_nonce' ); ?>
+                    <input type="hidden" name="action" value="leanstack_save_default_theme">
+
+                    <h3><?php _e( 'Installed Themes', 'leanstack' ); ?></h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; margin-top: 15px;">
+                        <?php foreach ( $all_themes as $slug => $theme ) : ?>
+                            <?php
+                            $is_current_default = ( $current_default === $slug ) || ( empty( $current_default ) && 'twentytwentyfour' === $slug );
+                            $is_active = ( $active_theme->get_stylesheet() === $slug );
+                            ?>
+                            <div style="border: 2px solid <?php echo $is_current_default ? '#2271b1' : '#ccd0d4'; ?>; border-radius: 6px; padding: 15px; background: <?php echo $is_current_default ? '#f0f6fc' : '#fafafa'; ?>;">
+                                <label style="display: block; cursor: pointer;">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                                        <span style="font-weight: 600; font-size: 14px;"><?php echo esc_html( $theme->get( 'Name' ) ); ?></span>
+                                        <input type="radio" name="default_theme" value="<?php echo esc_attr( $slug ); ?>" <?php checked( $is_current_default, true ); ?>>
+                                    </div>
+                                    <div style="font-size: 12px; color: #646970; line-height: 1.4;">
+                                        <div><strong>Slug:</strong> <code><?php echo esc_html( $slug ); ?></code></div>
+                                        <div><strong>Version:</strong> <?php echo esc_html( $theme->get( 'Version' ) ); ?></div>
+                                        <div><strong>Author:</strong> <?php echo esc_html( $theme->get( 'Author' ) ); ?></div>
+                                    </div>
+                                    <div style="margin-top: 10px;">
+                                        <?php if ( $is_active ) : ?>
+                                            <span style="display: inline-block; background: #008a20; color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; text-transform: uppercase;"><?php _e( 'Active Theme', 'leanstack' ); ?></span>
+                                        <?php endif; ?>
+                                        <?php if ( $is_current_default ) : ?>
+                                            <span style="display: inline-block; background: #2271b1; color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; text-transform: uppercase;"><?php _e( 'Default Fallback', 'leanstack' ); ?></span>
+                                        <?php endif; ?>
+                                    </div>
+                                </label>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+
+                    <p class="submit" style="margin-top: 25px;">
+                        <button type="submit" class="button button-primary button-large"><?php _e( 'Set as WP_DEFAULT_THEME in wp-config.php', 'leanstack' ); ?></button>
+                    </p>
+                </form>
+            </div>
+        </div>
+        <?php
+    }
+
+    public function handle_save_default_theme() {
+        if ( ! current_user_can( 'switch_themes' ) && ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_save_default_theme_action', 'leanstack_nonce' );
+
+        $selected = isset( $_POST['default_theme'] ) ? sanitize_text_field( $_POST['default_theme'] ) : '';
+        $all_themes = wp_get_themes();
+
+        if ( ! isset( $all_themes[ $selected ] ) ) {
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-default-theme', 'error' => urlencode( __( 'Invalid theme selected.', 'leanstack' ) ) ), admin_url( 'themes.php' ) ) );
+            exit;
+        }
+
+        // Find wp-config.php
+        $wp_config_file = ABSPATH . 'wp-config.php';
+        if ( ! file_exists( $wp_config_file ) && file_exists( dirname( ABSPATH ) . '/wp-config.php' ) ) {
+            $wp_config_file = dirname( ABSPATH ) . '/wp-config.php';
+        }
+
+        if ( ! file_exists( $wp_config_file ) || ! is_writable( $wp_config_file ) ) {
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-default-theme', 'error' => urlencode( __( 'wp-config.php is not writable.', 'leanstack' ) ) ), admin_url( 'themes.php' ) ) );
+            exit;
+        }
+
+        $content = file_get_contents( $wp_config_file );
+        $const_regex = "/define\s*\(\s*['\"]WP_DEFAULT_THEME['\"]\s*,\s*['\"][^'\"]*['\"]\s*\);/";
+
+        if ( preg_match( $const_regex, $content ) ) {
+            $content = preg_replace( $const_regex, "define( 'WP_DEFAULT_THEME', '{$selected}' );", $content );
+        } else {
+            $def_line = "define( 'WP_DEFAULT_THEME', '{$selected}' );\n";
+            if ( preg_match( '/\/\*\s*That\'s all, stop editing!/i', $content ) ) {
+                $content = preg_replace( '/(\/\*\s*That\'s all, stop editing!)/i', $def_line . "$1", $content, 1 );
+            } else {
+                $content = preg_replace( '/(require_once.*wp-settings\.php.*)/i', $def_line . "$1", $content, 1 );
+            }
+        }
+
+        $written = @file_put_contents( $wp_config_file, $content );
+        if ( false === $written ) {
+            wp_redirect( add_query_arg( array( 'page' => 'leanstack-default-theme', 'error' => urlencode( __( 'Failed to write updates to wp-config.php.', 'leanstack' ) ) ), admin_url( 'themes.php' ) ) );
+            exit;
+        }
+        @chmod( $wp_config_file, 0600 );
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-default-theme', 'saved' => '1' ), admin_url( 'themes.php' ) ) );
         exit;
     }
 

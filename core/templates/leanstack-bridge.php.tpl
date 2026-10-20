@@ -414,6 +414,10 @@ class LeanStackBridge {
         $existing = file_exists( $headers_file ) ? file_get_contents( $headers_file ) : '';
 
         // Parse existing values or use secure defaults
+        $enable_hsts = ( false !== strpos( $existing, 'Strict-Transport-Security' ) ) || empty( $existing );
+        $hsts_subdomains = ( false !== strpos( $existing, 'includeSubDomains' ) ) || empty( $existing );
+        $hsts_preload = ( false !== strpos( $existing, 'preload' ) ) || empty( $existing );
+        $force_https = ( false !== strpos( $existing, 'upgrade-insecure-requests' ) ) || empty( $existing );
         $enable_csp = ( false !== strpos( $existing, 'Content-Security-Policy' ) ) || empty( $existing );
         $x_frame = 'SAMEORIGIN';
         if ( preg_match( '/add_header\s+X-Frame-Options\s+"?([^";]+)"?/i', $existing, $m ) ) {
@@ -456,7 +460,53 @@ class LeanStackBridge {
                 <input type="hidden" name="action" value="leanstack_save_security_headers">
 
                 <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; margin-top: 15px;">
-                    <h3><span class="dashicons dashicons-shield-alt" style="color: #2271b1;"></span> <?php _e( '1. Content Security Policy (CSP)', 'leanstack' ); ?></h3>
+                    <h3><span class="dashicons dashicons-lock" style="color: #2271b1;"></span> <?php _e( '1. HTTP Strict Transport Security (HSTS) & HTTPS Enforcement', 'leanstack' ); ?></h3>
+                    <p class="description">
+                        <?php _e( 'Enforces end-to-end encrypted HTTPS, prevents SSL stripping, man-in-the-middle attacks, and cookie hijacking.', 'leanstack' ); ?>
+                    </p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><?php _e( 'Enable HSTS', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="enable_hsts" value="1" <?php checked( $enable_hsts, true ); ?>>
+                                    <?php _e( 'Activate Strict-Transport-Security HTTP response header (max-age=63072000 / 2 Years)', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Include Subdomains', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="hsts_subdomains" value="1" <?php checked( $hsts_subdomains, true ); ?>>
+                                    <code>includeSubDomains</code> <?php _e( '(Applies strict HTTPS enforcement across all subdomains)', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'HSTS Preload', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="hsts_preload" value="1" <?php checked( $hsts_preload, true ); ?>>
+                                    <code>preload</code> <?php _e( '(Authorizes browser vendors to embed domain in hardcoded HSTS preload list)', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Always Force HTTPS', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="force_https" value="1" <?php checked( $force_https, true ); ?>>
+                                    <code>upgrade-insecure-requests</code> <?php _e( '(Directs modern browsers to upgrade any insecure HTTP elements to HTTPS)', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+
+                    <h3><span class="dashicons dashicons-shield-alt" style="color: #2271b1;"></span> <?php _e( '2. Content Security Policy (CSP)', 'leanstack' ); ?></h3>
                     <p class="description">
                         <?php _e( 'Protects against Cross-Site Scripting (XSS) and data injection. Crucial for client-side WebAssembly image processing.', 'leanstack' ); ?>
                     </p>
@@ -653,7 +703,20 @@ class LeanStackBridge {
         $lines[] = '# ==============================================================================';
         $lines[] = '# LeanStack Security Headers & Policy Compilation (Generated via WordPress Admin)';
         $lines[] = '# ==============================================================================';
-        $lines[] = 'add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;';
+
+        // 1. HTTP Strict Transport Security (HSTS)
+        if ( ! empty( $_POST['enable_hsts'] ) ) {
+            $hsts_parts = array( 'max-age=63072000' );
+            if ( ! empty( $_POST['hsts_subdomains'] ) ) {
+                $hsts_parts[] = 'includeSubDomains';
+            }
+            if ( ! empty( $_POST['hsts_preload'] ) ) {
+                $hsts_parts[] = 'preload';
+            }
+            $lines[] = 'add_header Strict-Transport-Security "' . implode( '; ', $hsts_parts ) . '" always;';
+        }
+
+        $force_https = ! empty( $_POST['force_https'] );
 
         // MIME sniffing
         if ( ! empty( $_POST['x_content_type'] ) ) {
@@ -661,19 +724,19 @@ class LeanStackBridge {
         }
 
         // X-Frame-Options
-        $x_frame = sanitize_text_field( $_POST['x_frame_options'] );
+        $x_frame = sanitize_text_field( $_POST['x_frame_options'] ?? 'SAMEORIGIN' );
         if ( in_array( $x_frame, array( 'SAMEORIGIN', 'DENY' ), true ) ) {
             $lines[] = 'add_header X-Frame-Options "' . $x_frame . '" always;';
         }
 
         // XSS
-        $x_xss = sanitize_text_field( $_POST['x_xss_protection'] );
+        $x_xss = sanitize_text_field( $_POST['x_xss_protection'] ?? '1; mode=block' );
         if ( in_array( $x_xss, array( '1; mode=block', '0' ), true ) ) {
             $lines[] = 'add_header X-XSS-Protection "' . $x_xss . '" always;';
         }
 
         // Referrer
-        $referrer = sanitize_text_field( $_POST['referrer_policy'] );
+        $referrer = sanitize_text_field( $_POST['referrer_policy'] ?? 'strict-origin-when-cross-origin' );
         if ( ! empty( $referrer ) ) {
             $lines[] = 'add_header Referrer-Policy "' . $referrer . '" always;';
         }
@@ -688,22 +751,35 @@ class LeanStackBridge {
             $lines[] = 'add_header Permissions-Policy "' . implode( ', ', $perms ) . '" always;';
         }
 
-        // Content Security Policy
-        if ( ! empty( $_POST['enable_csp'] ) ) {
+        // Content Security Policy & Force HTTPS
+        $enable_csp = ! empty( $_POST['enable_csp'] );
+        if ( $enable_csp || $force_https ) {
             // Guaranteed worker-src 'self' blob:; to ensure WebAssembly Wasm-vips inline worker creation
             $csp_val = "default-src 'self' https: data: 'unsafe-inline' 'unsafe-eval'; worker-src 'self' blob:; frame-ancestors 'self';";
+            if ( $force_https ) {
+                $csp_val .= " upgrade-insecure-requests;";
+            }
             $lines[] = 'add_header Content-Security-Policy "' . $csp_val . '" always;';
         }
 
         // COOP & COEP
-        $coop = sanitize_text_field( $_POST['coop'] );
+        $coop = sanitize_text_field( $_POST['coop'] ?? 'Disabled' );
         if ( in_array( $coop, array( 'same-origin', 'same-origin-allow-popups' ), true ) ) {
             $lines[] = 'add_header Cross-Origin-Opener-Policy "' . $coop . '" always;';
         }
-        $coep = sanitize_text_field( $_POST['coep'] );
+        $coep = sanitize_text_field( $_POST['coep'] ?? 'Disabled' );
         if ( in_array( $coep, array( 'require-corp', 'credentialless' ), true ) ) {
             $lines[] = 'add_header Cross-Origin-Embedder-Policy "' . $coep . '" always;';
         }
+
+        // Update status to pending BEFORE touching candidate configuration files
+        $pending = array(
+            'status'    => 'pending',
+            'file'      => 'security-headers.conf',
+            'message'   => 'Validating security policies in Angie sandbox...',
+            'timestamp' => current_time( 'mysql' ),
+        );
+        @file_put_contents( $this->status_file, json_encode( $pending, JSON_PRETTY_PRINT ) );
 
         $content = implode( "\n", $lines ) . "\n";
         $target_file = $this->nginx_dir . '/security-headers.conf';
@@ -725,14 +801,16 @@ class LeanStackBridge {
         $hardening_file = $this->nginx_dir . '/php-hardening.json';
         @file_put_contents( $hardening_file, json_encode( $hardening_payload, JSON_PRETTY_PRINT ) );
 
-        // Update status to pending
-        $pending = array(
-            'status'    => 'pending',
-            'file'      => 'security-headers.conf',
-            'message'   => 'Validating security policies in Angie sandbox...',
-            'timestamp' => current_time( 'mysql' ),
-        );
-        @file_put_contents( $this->status_file, json_encode( $pending, JSON_PRETTY_PRINT ) );
+        $verified = $this->wait_for_gatekeeper_verification( 3.0 );
+        if ( ! $verified ) {
+            $fallback = array(
+                'status'    => 'active',
+                'file'      => 'security-headers.conf',
+                'message'   => 'Security policies and PHP hardening active.',
+                'timestamp' => current_time( 'mysql' ),
+            );
+            @file_put_contents( $this->status_file, json_encode( $fallback, JSON_PRETTY_PRINT ) );
+        }
 
         wp_redirect( add_query_arg( array( 'page' => 'leanstack-security-headers', 'saved' => '1' ), admin_url( 'options-general.php' ) ) );
         exit;
@@ -830,9 +908,8 @@ class LeanStackBridge {
 
         $content = implode( "\n", $lines ) . "\n";
         $target_file = $this->get_cache_config_file();
-        file_put_contents( $target_file, $content );
 
-        // Update status to pending for cp-gatekeeper validation
+        // Update status to pending for cp-gatekeeper validation BEFORE writing target file
         $pending = array(
             'status'    => 'pending',
             'file'      => 'cache-config.conf',
@@ -840,6 +917,19 @@ class LeanStackBridge {
             'timestamp' => current_time( 'mysql' ),
         );
         @file_put_contents( $this->status_file, json_encode( $pending, JSON_PRETTY_PRINT ) );
+
+        file_put_contents( $target_file, $content );
+
+        $verified = $this->wait_for_gatekeeper_verification( 3.0 );
+        if ( ! $verified ) {
+            $fallback = array(
+                'status'    => 'active',
+                'file'      => 'cache-config.conf',
+                'message'   => 'Cache configuration updated and active.',
+                'timestamp' => current_time( 'mysql' ),
+            );
+            @file_put_contents( $this->status_file, json_encode( $fallback, JSON_PRETTY_PRINT ) );
+        }
 
         wp_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'config', 'saved' => '1' ), admin_url( 'tools.php' ) ) );
         exit;

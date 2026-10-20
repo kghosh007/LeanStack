@@ -39,6 +39,7 @@ php_admin_flag[allow_url_include] = off
 php_admin_flag[expose_php] = off
 php_admin_flag[apc.enabled] = on
 php_admin_flag[session.use_strict_mode] = on
+php_admin_flag[session.cookie_httponly] = on
 
 ; Lightweight OS Mail Relay (Zero-daemon msmtp relay)
 php_admin_value[sendmail_path] = "/usr/bin/msmtp -C /home/{{USER_NAME}}/.msmtprc -t -i"

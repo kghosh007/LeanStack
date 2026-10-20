@@ -1561,6 +1561,9 @@ www-data hard nofile 65535
         if "session.use_strict_mode" not in p_content:
             p_content = p_content.strip() + "\nphp_admin_flag[session.use_strict_mode] = on\n"
             p_changed = True
+        if "session.cookie_httponly" not in p_content:
+            p_content = p_content.strip() + "\nphp_admin_flag[session.cookie_httponly] = on\n"
+            p_changed = True
 
         return p_content, p_changed
 

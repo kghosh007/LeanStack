@@ -94,6 +94,8 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
         sed -i 's/^max_execution_time = .*/max_execution_time = 120/' "$FPM_INI"
         sed -i 's/^;*session\.use_strict_mode\s*=.*/session.use_strict_mode = 1/' "$FPM_INI"
         grep -q "^session.use_strict_mode" "$FPM_INI" || echo "session.use_strict_mode = 1" >> "$FPM_INI"
+        sed -i 's/^;*session\.cookie_httponly\s*=.*/session.cookie_httponly = 1/' "$FPM_INI"
+        grep -q "^session.cookie_httponly" "$FPM_INI" || echo "session.cookie_httponly = 1" >> "$FPM_INI"
         sed -i 's/^;*max_input_vars = .*/max_input_vars = 5000/' "$FPM_INI"
         grep -q "^max_input_vars" "$FPM_INI" || echo "max_input_vars = 5000" >> "$FPM_INI"
         sed -i 's/^;*disable_functions\s*=.*/disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset/' "$FPM_INI"
@@ -102,6 +104,8 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
         if [ -f "$CLI_INI" ]; then
             sed -i 's/^;*session\.use_strict_mode\s*=.*/session.use_strict_mode = 1/' "$CLI_INI"
             grep -q "^session.use_strict_mode" "$CLI_INI" || echo "session.use_strict_mode = 1" >> "$CLI_INI"
+            sed -i 's/^;*session\.cookie_httponly\s*=.*/session.cookie_httponly = 1/' "$CLI_INI"
+            grep -q "^session.cookie_httponly" "$CLI_INI" || echo "session.cookie_httponly = 1" >> "$CLI_INI"
             sed -i 's/^;*max_input_vars = .*/max_input_vars = 5000/' "$CLI_INI"
             grep -q "^max_input_vars" "$CLI_INI" || echo "max_input_vars = 5000" >> "$CLI_INI"
         fi

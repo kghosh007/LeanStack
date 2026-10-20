@@ -151,6 +151,14 @@ class LeanStackBridge {
         add_action( 'init', array( $this, 'maybe_serve_dynamic_llms' ) );
         add_action( 'publish_post', array( $this, 'maybe_auto_sync_llms' ), 20, 2 );
         add_action( 'publish_page', array( $this, 'maybe_auto_sync_llms' ), 20, 2 );
+
+        // Optimizations Handlers
+        add_action( 'admin_post_leanstack_save_optimizations', array( $this, 'handle_save_optimizations' ) );
+        add_action( 'admin_post_leanstack_clean_action_scheduler', array( $this, 'handle_clean_action_scheduler' ) );
+        add_action( 'admin_post_leanstack_run_db_optimize', array( $this, 'handle_run_db_optimize' ) );
+
+        // Apply active optimizations
+        $this->init_optimizations();
     }
 
     private function detect_paths() {
@@ -228,7 +236,16 @@ class LeanStackBridge {
             array( $this, 'render_security_headers_page' )
         );
 
-        // 3. Tools > LeanStack Cache & Performance
+        // 3. Settings > Optimizations
+        add_options_page(
+            __( 'WordPress Optimizations & Bloat Removal', 'leanstack' ),
+            __( 'Optimizations', 'leanstack' ),
+            'manage_options',
+            'leanstack-optimizations',
+            array( $this, 'render_optimizations_page' )
+        );
+
+        // 4. Tools > LeanStack Cache & Performance
         add_management_page(
             __( 'LeanStack Cache & Performance', 'leanstack' ),
             __( 'LeanStack Cache', 'leanstack' ),
@@ -4010,6 +4027,430 @@ class LeanStackBridge {
         </div>
         <?php
     }
+    // =========================================================================
+    // WordPress Optimizations & Bloat Removal (Settings > Optimizations)
+    // =========================================================================
+
+    public function get_optimizations_options() {
+        $defaults = array(
+            'disable_jquery_migrate'     => 1,
+            'disable_dashicons'          => 1,
+            'disable_embeds'             => 1,
+            'disable_pingbacks'          => 1,
+            'remove_wp_version'          => 1,
+            'revisions_limit'            => 5,
+            'empty_trash_days'           => 7,
+            'action_scheduler_retention' => 7,
+            'periodic_db_optimize'       => 1,
+            'periodic_db_interval'       => 'weekly',
+        );
+        $saved = get_option( 'leanstack_optimizations', array() );
+        return wp_parse_args( is_array( $saved ) ? $saved : array(), $defaults );
+    }
+
+    public function init_optimizations() {
+        $opts = $this->get_optimizations_options();
+
+        // 1. Disable jQuery Migrate
+        if ( ! empty( $opts['disable_jquery_migrate'] ) ) {
+            add_action( 'wp_default_scripts', function( $scripts ) {
+                if ( ! is_admin() && isset( $scripts->registered['jquery'] ) ) {
+                    $script = $scripts->registered['jquery'];
+                    if ( ! empty( $script->deps ) && is_array( $script->deps ) ) {
+                        $script->deps = array_diff( $script->deps, array( 'jquery-migrate' ) );
+                    }
+                }
+            } );
+        }
+
+        // 2. Disable Dashicons on Frontend for Visitors
+        if ( ! empty( $opts['disable_dashicons'] ) ) {
+            add_action( 'wp_enqueue_scripts', function() {
+                if ( ! is_user_logged_in() ) {
+                    wp_deregister_style( 'dashicons' );
+                }
+            }, 100 );
+        }
+
+        // 3. Disable Embeds
+        if ( ! empty( $opts['disable_embeds'] ) ) {
+            add_action( 'init', function() {
+                remove_action( 'wp_head', 'wp_oembed_add_discovery_links' );
+                remove_action( 'wp_head', 'wp_oembed_add_host_js' );
+                remove_action( 'rest_api_init', 'wp_oembed_register_route' );
+                remove_filter( 'oembed_dataparse', 'wp_filter_oembed_result', 10 );
+                add_filter( 'embed_oembed_discover', '__return_false' );
+                add_filter( 'tiny_mce_plugins', function( $plugins ) {
+                    return is_array( $plugins ) ? array_diff( $plugins, array( 'wpembed' ) ) : array();
+                } );
+                add_filter( 'rewrite_rules_array', function( $rules ) {
+                    if ( ! is_array( $rules ) ) {
+                        return $rules;
+                    }
+                    foreach ( $rules as $rule => $rewrite ) {
+                        if ( false !== strpos( $rewrite, 'embed=true' ) ) {
+                            unset( $rules[ $rule ] );
+                        }
+                    }
+                    return $rules;
+                } );
+            }, 9999 );
+        }
+
+        // 4. Disable Pingbacks & XML-RPC
+        if ( ! empty( $opts['disable_pingbacks'] ) ) {
+            add_filter( 'xmlrpc_enabled', '__return_false' );
+            add_filter( 'wp_headers', function( $headers ) {
+                if ( isset( $headers['X-Pingback'] ) ) {
+                    unset( $headers['X-Pingback'] );
+                }
+                return $headers;
+            } );
+            add_filter( 'pings_open', '__return_false', 20 );
+            remove_action( 'wp_head', 'rsd_link' );
+            remove_action( 'wp_head', 'wlwmanifest_link' );
+        }
+
+        // 5. Remove WP Version Sharing
+        if ( ! empty( $opts['remove_wp_version'] ) ) {
+            remove_action( 'wp_head', 'wp_generator' );
+            add_filter( 'the_generator', '__return_empty_string' );
+            add_filter( 'script_loader_src', array( $this, 'remove_wp_version_string' ), 9999 );
+            add_filter( 'style_loader_src', array( $this, 'remove_wp_version_string' ), 9999 );
+        }
+
+        // 6. Limit Post Revisions
+        if ( isset( $opts['revisions_limit'] ) && (int) $opts['revisions_limit'] >= 0 ) {
+            $limit = (int) $opts['revisions_limit'];
+            add_filter( 'wp_revisions_to_keep', function( $num, $post ) use ( $limit ) {
+                return $limit;
+            }, 10, 2 );
+        }
+
+        // 7. Media Trash Days
+        if ( ! empty( $opts['empty_trash_days'] ) && ! defined( 'EMPTY_TRASH_DAYS' ) ) {
+            @define( 'EMPTY_TRASH_DAYS', (int) $opts['empty_trash_days'] );
+        }
+
+        // 8. Action Scheduler Log Cleaning & Retention
+        if ( ! empty( $opts['action_scheduler_retention'] ) ) {
+            $retention_days = (int) $opts['action_scheduler_retention'];
+            add_filter( 'action_scheduler_retention_period', function() use ( $retention_days ) {
+                return $retention_days * DAY_IN_SECONDS;
+            } );
+        }
+
+        // 9. Periodic Database Optimization Cron Hook
+        add_action( 'leanstack_periodic_db_optimize', array( $this, 'run_periodic_db_optimization' ) );
+        if ( ! empty( $opts['periodic_db_optimize'] ) ) {
+            $interval = ! empty( $opts['periodic_db_interval'] ) ? $opts['periodic_db_interval'] : 'weekly';
+            if ( ! wp_next_scheduled( 'leanstack_periodic_db_optimize' ) ) {
+                wp_schedule_event( time() + 3600, $interval, 'leanstack_periodic_db_optimize' );
+            }
+        } else {
+            $timestamp = wp_next_scheduled( 'leanstack_periodic_db_optimize' );
+            if ( $timestamp ) {
+                wp_unschedule_event( $timestamp, 'leanstack_periodic_db_optimize' );
+            }
+        }
+    }
+
+    public function remove_wp_version_string( $src ) {
+        if ( ! is_admin() && is_string( $src ) && false !== strpos( $src, 'ver=' ) ) {
+            $src = remove_query_arg( 'ver', $src );
+        }
+        return $src;
+    }
+
+    public function run_periodic_db_optimization() {
+        global $wpdb;
+        $time = time();
+
+        // 1. Purge stale transients
+        $wpdb->query( $wpdb->prepare(
+            "DELETE a, b FROM {$wpdb->options} a
+             INNER JOIN {$wpdb->options} b ON b.option_name = REPLACE(a.option_name, '_timeout', '')
+             WHERE a.option_name LIKE %s AND CAST(a.option_value AS UNSIGNED) < %d",
+            $wpdb->esc_like( '_transient_timeout_' ) . '%',
+            $time
+        ) );
+        $wpdb->query( $wpdb->prepare(
+            "DELETE a, b FROM {$wpdb->options} a
+             INNER JOIN {$wpdb->options} b ON b.option_name = REPLACE(a.option_name, '_timeout', '')
+             WHERE a.option_name LIKE %s AND CAST(a.option_value AS UNSIGNED) < %d",
+            $wpdb->esc_like( '_site_transient_timeout_' ) . '%',
+            $time
+        ) );
+
+        // 2. Defragment tables
+        $tables = $wpdb->get_col( "SHOW TABLES LIKE '" . $wpdb->esc_like( $wpdb->prefix ) . "%'" );
+        if ( is_array( $tables ) ) {
+            foreach ( $tables as $table ) {
+                $clean_tbl = preg_replace( '/[^a-zA-Z0-9_]/', '', $table );
+                $wpdb->query( "OPTIMIZE TABLE `{$clean_tbl}`" );
+            }
+        }
+
+        // 3. Purge trashed posts & attachments older than empty_trash_days
+        $opts = $this->get_optimizations_options();
+        $trash_days = ! empty( $opts['empty_trash_days'] ) ? (int) $opts['empty_trash_days'] : ( defined( 'EMPTY_TRASH_DAYS' ) ? (int) EMPTY_TRASH_DAYS : 7 );
+        if ( $trash_days > 0 ) {
+            $cutoff = date( 'Y-m-d H:i:s', time() - ( $trash_days * DAY_IN_SECONDS ) );
+            $trashed_ids = $wpdb->get_col( $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} WHERE post_status = 'trash' AND post_modified < %s",
+                $cutoff
+            ) );
+            if ( ! empty( $trashed_ids ) ) {
+                foreach ( $trashed_ids as $tid ) {
+                    wp_delete_post( (int) $tid, true );
+                }
+            }
+        }
+
+        update_option( 'leanstack_last_db_optimize', current_time( 'mysql' ) );
+    }
+
+    public function render_optimizations_page() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized access.', 'leanstack' ) );
+        }
+
+        $opts = $this->get_optimizations_options();
+        $last_opt = get_option( 'leanstack_last_db_optimize', __( 'Never', 'leanstack' ) );
+
+        ?>
+        <div class="wrap">
+            <h1><?php _e( 'WordPress Optimizations & Bloat Removal', 'leanstack' ); ?></h1>
+            <p><?php _e( 'High-performance site hygiene engine. Strips legacy bloat, restricts database table expansion, and optimizes core execution paths.', 'leanstack' ); ?></p>
+
+            <?php if ( isset( $_GET['saved'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Optimization settings updated successfully.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['as_cleaned'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Action Scheduler expired actions and logs purged successfully.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['db_optimized'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Database tables defragmented and expired transients purged successfully.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                <?php wp_nonce_field( 'leanstack_save_optimizations_action', 'leanstack_nonce' ); ?>
+                <input type="hidden" name="action" value="leanstack_save_optimizations">
+
+                <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; margin-top: 15px;">
+                    <h3><span class="dashicons dashicons-performance" style="color: #2271b1;"></span> <?php _e( '1. Frontend Bloat Removal', 'leanstack' ); ?></h3>
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><?php _e( 'Disable jQuery Migrate', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="disable_jquery_migrate" value="1" <?php checked( $opts['disable_jquery_migrate'], 1 ); ?>>
+                                    <?php _e( 'Eliminates legacy jQuery Migrate script on the frontend (~10KB JS payload)', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Disable Frontend Dashicons', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="disable_dashicons" value="1" <?php checked( $opts['disable_dashicons'], 1 ); ?>>
+                                    <?php _e( 'Deregister dashicons.min.css for non-logged-in frontend visitors (~35KB CSS payload)', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Disable Embeds', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="disable_embeds" value="1" <?php checked( $opts['disable_embeds'], 1 ); ?>>
+                                    <?php _e( 'Disable oEmbed discovery links, wp-embed.min.js script, and oEmbed REST endpoints', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Disable XML-RPC & Pingbacks', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="disable_pingbacks" value="1" <?php checked( $opts['disable_pingbacks'], 1 ); ?>>
+                                    <?php _e( 'Block pingbacks, remove X-Pingback headers, and disable legacy XML-RPC pingback attacks', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Remove WordPress Version Sharing', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="remove_wp_version" value="1" <?php checked( $opts['remove_wp_version'], 1 ); ?>>
+                                    <?php _e( 'Strip generator meta tag and remove ?ver= query strings from frontend scripts and stylesheets', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <hr style="margin: 20px 0; border: 0; border-top: 1px solid #eee;">
+
+                    <h3><span class="dashicons dashicons-database" style="color: #2271b1;"></span> <?php _e( '2. Database & Content Hygiene', 'leanstack' ); ?></h3>
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><?php _e( 'Post Revisions Limit', 'leanstack' ); ?></th>
+                            <td>
+                                <select name="revisions_limit">
+                                    <option value="0" <?php selected( $opts['revisions_limit'], 0 ); ?>><?php _e( '0 (Disable Revisions)', 'leanstack' ); ?></option>
+                                    <option value="2" <?php selected( $opts['revisions_limit'], 2 ); ?>>2</option>
+                                    <option value="3" <?php selected( $opts['revisions_limit'], 3 ); ?>>3</option>
+                                    <option value="5" <?php selected( $opts['revisions_limit'], 5 ); ?>><?php _e( '5 (Recommended)', 'leanstack' ); ?></option>
+                                    <option value="10" <?php selected( $opts['revisions_limit'], 10 ); ?>>10</option>
+                                    <option value="-1" <?php selected( $opts['revisions_limit'], -1 ); ?>><?php _e( 'Unlimited (Default WP behavior)', 'leanstack' ); ?></option>
+                                </select>
+                                <p class="description"><?php _e( 'Prevents wp_posts and wp_postmeta bloat by limiting saved revisions per post.', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Trash Retention Days', 'leanstack' ); ?></th>
+                            <td>
+                                <input type="number" name="empty_trash_days" value="<?php echo esc_attr( $opts['empty_trash_days'] ); ?>" min="1" max="90" class="small-text"> <?php _e( 'days', 'leanstack' ); ?>
+                                <p class="description"><?php _e( 'Number of days posts and media remain in the trash before permanent purge (default: 30 days).', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Action Scheduler Log Retention', 'leanstack' ); ?></th>
+                            <td>
+                                <input type="number" name="action_scheduler_retention" value="<?php echo esc_attr( $opts['action_scheduler_retention'] ); ?>" min="1" max="60" class="small-text"> <?php _e( 'days', 'leanstack' ); ?>
+                                <p class="description"><?php _e( 'Retain completed/failed Action Scheduler tasks for N days instead of standard 30 days.', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Periodic Database Optimization', 'leanstack' ); ?></th>
+                            <td>
+                                <label style="display: block; margin-bottom: 8px;">
+                                    <input type="checkbox" name="periodic_db_optimize" value="1" <?php checked( $opts['periodic_db_optimize'], 1 ); ?>>
+                                    <?php _e( 'Enable scheduled automated table defragmentation and expired transient cleanup', 'leanstack' ); ?>
+                                </label>
+                                <select name="periodic_db_interval">
+                                    <option value="daily" <?php selected( $opts['periodic_db_interval'], 'daily' ); ?>><?php _e( 'Daily', 'leanstack' ); ?></option>
+                                    <option value="weekly" <?php selected( $opts['periodic_db_interval'], 'weekly' ); ?>><?php _e( 'Weekly (Recommended)', 'leanstack' ); ?></option>
+                                </select>
+                                <p class="description"><?php printf( __( 'Last optimized: <strong>%s</strong>', 'leanstack' ), esc_html( $last_opt ) ); ?></p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <p class="submit" style="display: flex; gap: 10px; align-items: center;">
+                        <button type="submit" class="button button-primary button-large"><?php _e( 'Save Optimization Settings', 'leanstack' ); ?></button>
+                    </p>
+                </div>
+            </form>
+
+            <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; margin-top: 20px;">
+                <h3><span class="dashicons dashicons-admin-tools" style="color: #2271b1;"></span> <?php _e( 'Instant Maintenance Actions', 'leanstack' ); ?></h3>
+                <p class="description"><?php _e( 'Execute immediate database cleanup tasks without waiting for cron intervals.', 'leanstack' ); ?></p>
+
+                <div style="display: flex; gap: 15px; margin-top: 15px; flex-wrap: wrap;">
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_clean_as_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_clean_action_scheduler">
+                        <button type="submit" class="button button-secondary" onclick="return confirm(<?php echo esc_attr( json_encode( __( 'Purge completed and canceled Action Scheduler tasks now?', 'leanstack' ) ) ); ?>);">
+                            <span class="dashicons dashicons-trash" style="vertical-align: text-bottom;"></span> <?php _e( 'Purge Action Scheduler Logs Now', 'leanstack' ); ?>
+                        </button>
+                    </form>
+
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( 'leanstack_run_db_opt_action', 'leanstack_nonce' ); ?>
+                        <input type="hidden" name="action" value="leanstack_run_db_optimize">
+                        <input type="hidden" name="redirect_to" value="leanstack-optimizations">
+                        <button type="submit" class="button button-secondary">
+                            <span class="dashicons dashicons-database" style="vertical-align: text-bottom;"></span> <?php _e( 'Optimize Database Tables & Transients Now', 'leanstack' ); ?>
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <?php
+    }
+
+    public function handle_save_optimizations() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_save_optimizations_action', 'leanstack_nonce' );
+
+        $opts = array(
+            'disable_jquery_migrate'     => ! empty( $_POST['disable_jquery_migrate'] ) ? 1 : 0,
+            'disable_dashicons'          => ! empty( $_POST['disable_dashicons'] ) ? 1 : 0,
+            'disable_embeds'             => ! empty( $_POST['disable_embeds'] ) ? 1 : 0,
+            'disable_pingbacks'          => ! empty( $_POST['disable_pingbacks'] ) ? 1 : 0,
+            'remove_wp_version'          => ! empty( $_POST['remove_wp_version'] ) ? 1 : 0,
+            'revisions_limit'            => isset( $_POST['revisions_limit'] ) ? (int) $_POST['revisions_limit'] : 5,
+            'empty_trash_days'           => isset( $_POST['empty_trash_days'] ) ? max( 1, (int) $_POST['empty_trash_days'] ) : 7,
+            'action_scheduler_retention' => isset( $_POST['action_scheduler_retention'] ) ? max( 1, (int) $_POST['action_scheduler_retention'] ) : 7,
+            'periodic_db_optimize'       => ! empty( $_POST['periodic_db_optimize'] ) ? 1 : 0,
+            'periodic_db_interval'       => ( isset( $_POST['periodic_db_interval'] ) && 'daily' === $_POST['periodic_db_interval'] ) ? 'daily' : 'weekly',
+        );
+
+        update_option( 'leanstack_optimizations', $opts );
+
+        // Reschedule or unschedule periodic db optimization
+        $timestamp = wp_next_scheduled( 'leanstack_periodic_db_optimize' );
+        if ( $timestamp ) {
+            wp_unschedule_event( $timestamp, 'leanstack_periodic_db_optimize' );
+        }
+        if ( ! empty( $opts['periodic_db_optimize'] ) ) {
+            wp_schedule_event( time() + 3600, $opts['periodic_db_interval'], 'leanstack_periodic_db_optimize' );
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-optimizations', 'saved' => '1' ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
+    public function handle_clean_action_scheduler() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_clean_as_action', 'leanstack_nonce' );
+
+        global $wpdb;
+        $actions_tbl = $wpdb->prefix . 'actionscheduler_actions';
+        $logs_tbl = $wpdb->prefix . 'actionscheduler_logs';
+
+        // Check if Action Scheduler tables exist
+        if ( $wpdb->get_var( "SHOW TABLES LIKE '{$actions_tbl}'" ) === $actions_tbl ) {
+            $retention_days = 7;
+            $opts = get_option( 'leanstack_optimizations', array() );
+            if ( ! empty( $opts['action_scheduler_retention'] ) ) {
+                $retention_days = (int) $opts['action_scheduler_retention'];
+            }
+            $cutoff = gmdate( 'Y-m-d H:i:s', time() - ( $retention_days * DAY_IN_SECONDS ) );
+
+            $wpdb->query( $wpdb->prepare(
+                "DELETE FROM {$actions_tbl} WHERE status IN ('complete', 'failed', 'canceled') AND last_attempt_gmt < %s",
+                $cutoff
+            ) );
+
+            if ( $wpdb->get_var( "SHOW TABLES LIKE '{$logs_tbl}'" ) === $logs_tbl ) {
+                $wpdb->query( "DELETE l FROM {$logs_tbl} l LEFT JOIN {$actions_tbl} a ON a.action_id = l.action_id WHERE a.action_id IS NULL" );
+            }
+        }
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-optimizations', 'as_cleaned' => '1' ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
+    public function handle_run_db_optimize() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_run_db_opt_action', 'leanstack_nonce' );
+
+        $this->run_periodic_db_optimization();
+
+        $page = isset( $_POST['redirect_to'] ) && 'leanstack-db-tuner' === $_POST['redirect_to'] ? 'leanstack-db-tuner' : 'leanstack-optimizations';
+        $target_url = ( 'leanstack-db-tuner' === $page ) ? admin_url( 'tools.php' ) : admin_url( 'options-general.php' );
+
+        wp_redirect( add_query_arg( array( 'page' => $page, 'db_optimized' => '1' ), $target_url ) );
+        exit;
+    }
+
+
 }
 
 add_action( 'plugins_loaded', array( 'LeanStackBridge', 'get_instance' ) );

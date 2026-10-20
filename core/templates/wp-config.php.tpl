@@ -60,6 +60,12 @@ define( 'WP_DEBUG_LOG', '/home/{{USER_NAME}}/logs/wp-debug.log' );
 define( 'WP_DEBUG_DISPLAY', false );
 @ini_set( 'display_errors', '0' );
 
+// --- Post Revisions & Media Trash Retention ---
+define( 'WP_POST_REVISIONS', 5 );
+define( 'MEDIA_TRASH', true );
+define( 'EMPTY_TRASH_DAYS', 7 );
+
+
 // Auto-disable Query Monitor backtrace profiling on benchmark requests
 if ( ! defined( 'QM_DISABLE' ) ) {
     if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp/i', (string) $_REQUEST['action'] ) ) ||

@@ -1254,6 +1254,9 @@ exit 0
         self.assertIn("define( 'WP_REDIS_IGBINARY', true );", cfg)
         self.assertIn("define( 'WP_REDIS_LOAD_APEXCHARTS', false );", cfg)
         self.assertIn("define( 'WP_REDIS_DISABLE_BANNERS', true );", cfg)
+        self.assertIn("define( 'WP_POST_REVISIONS', 5 );", cfg)
+        self.assertIn("define( 'MEDIA_TRASH', true );", cfg)
+        self.assertIn("define( 'EMPTY_TRASH_DAYS', 7 );", cfg)
 
         upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
         with open(upgrade_bin, "r") as f:
@@ -1264,7 +1267,24 @@ exit 0
         self.assertIn("WP_REDIS_IGBINARY", up)
         self.assertIn("WP_REDIS_LOAD_APEXCHARTS", up)
         self.assertIn("WP_REDIS_DISABLE_BANNERS", up)
+        self.assertIn("WP_POST_REVISIONS", up)
+        self.assertIn("MEDIA_TRASH", up)
+        self.assertIn("EMPTY_TRASH_DAYS", up)
 
+
+    def test_optimizations_page(self):
+        """Verify WordPress Optimizations & Bloat Removal page registration and options."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge = f.read()
+
+        self.assertIn("leanstack-optimizations", bridge)
+        self.assertIn("disable_jquery_migrate", bridge)
+        self.assertIn("disable_dashicons", bridge)
+        self.assertIn("disable_embeds", bridge)
+        self.assertIn("disable_pingbacks", bridge)
+        self.assertIn("remove_wp_version", bridge)
+        self.assertIn("leanstack_periodic_db_optimize", bridge)
 
 if __name__ == "__main__":
     unittest.main()

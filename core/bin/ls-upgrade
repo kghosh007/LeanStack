@@ -2048,6 +2048,9 @@ password       none
                             ("WP_REDIS_IGBINARY", "define( 'WP_REDIS_IGBINARY', true );"),
                             ("WP_REDIS_LOAD_APEXCHARTS", "define( 'WP_REDIS_LOAD_APEXCHARTS', false );"),
                             ("WP_REDIS_DISABLE_BANNERS", "define( 'WP_REDIS_DISABLE_BANNERS', true );"),
+                            ("WP_POST_REVISIONS", "define( 'WP_POST_REVISIONS', 5 );"),
+                            ("MEDIA_TRASH", "define( 'MEDIA_TRASH', true );"),
+                            ("EMPTY_TRASH_DAYS", "define( 'EMPTY_TRASH_DAYS', 7 );"),
                         ]
                         missing_redis = [code for const, code in redis_optimizations if const not in wpc]
                         if missing_redis:
@@ -2058,7 +2061,7 @@ password       none
                             elif "/* That's all, stop editing!" in wpc:
                                 wpc = re.sub(r"(/\*\s*That's all, stop editing!)", f"{redis_block.strip()}\n\n\\1", wpc, count=1)
                                 modified = True
-                            self.log(f"Reconciled WP_REDIS, WP_CACHE, DISALLOW_FILE_EDIT & QM_DISABLE in {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
+                            self.log(f"Reconciled WP_REDIS, WP_CACHE, DISALLOW_FILE_EDIT, Bloat Controls & QM_DISABLE in {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
 
                         # Enforce mode 0600 and tenant ownership on wp-config.php across candidate paths
                         for wpc_target in {wp_config, os.path.join(site_path, "wp-config.php"), os.path.join(os.path.dirname(site_path), "wp-config.php")}:

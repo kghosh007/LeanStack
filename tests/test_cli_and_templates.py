@@ -1286,6 +1286,29 @@ exit 0
         self.assertIn("remove_wp_version", bridge)
         self.assertIn("leanstack_periodic_db_optimize", bridge)
 
+    def test_watcher_and_lsctl_htaccess_permissions(self):
+        """Verify ls-watcher, lsctl, and ls-upgrade enforce chmod 644 on .htaccess, robots.txt, and llms.txt."""
+        watcher_bin = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
+        with open(watcher_bin, "r") as f:
+            watcher = f.read()
+        self.assertIn("chmod 644", watcher)
+        self.assertIn(".htaccess", watcher)
+        self.assertIn("robots.txt", watcher)
+        self.assertIn("llms.txt", watcher)
+
+        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_bin, "r") as f:
+            lsctl = f.read()
+        self.assertIn("chmod 644", lsctl)
+        self.assertIn(".htaccess", lsctl)
+
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            up = f.read()
+        self.assertIn(".htaccess", up)
+        self.assertIn("robots.txt", up)
+        self.assertIn("llms.txt", up)
+
 if __name__ == "__main__":
     unittest.main()
 

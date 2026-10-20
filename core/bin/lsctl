@@ -1503,6 +1503,7 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
         chown "${USER_NAME}:${USER_NAME}" "$WP_CONFIG" 2>/dev/null || chown "${USER_NAME}:www-data" "$WP_CONFIG" 2>/dev/null || true
         chmod 600 "$WP_CONFIG"
         chmod 600 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
+        [ -f "$WEB_ROOT/.htaccess" ] && chmod 644 "$WEB_ROOT/.htaccess" 2>/dev/null || true
 
         # Scaffold Lightweight OS Mail Relay (msmtp) Configuration
         MSMTPRC="/home/${USER_NAME}/.msmtprc"
@@ -1656,6 +1657,7 @@ EOF
         chmod 750 "$WEB_ROOT"
         chown "${USER_NAME}:${USER_NAME}" "$WEB_ROOT/wp-config.php" 2>/dev/null || chown "${USER_NAME}:www-data" "$WEB_ROOT/wp-config.php" 2>/dev/null || true
         chmod 600 "$WEB_ROOT/wp-config.php" 2>/dev/null || true
+        [ -f "$WEB_ROOT/.htaccess" ] && chmod 644 "$WEB_ROOT/.htaccess" 2>/dev/null || true
 
         # Enforce 0755 permissions on wp-content and subdirectories
         if [ -d "${WEB_ROOT}/wp-content" ]; then

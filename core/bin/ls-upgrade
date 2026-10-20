@@ -2085,6 +2085,34 @@ password       none
                                 except Exception:
                                     pass
                     except Exception as e:
+                                                # Enforce mode 0644 and tenant ownership on .htaccess across candidate paths
+                        for hta_target in {os.path.join(site_path, ".htaccess"), os.path.join(os.path.dirname(site_path), ".htaccess")}:
+                            if os.path.isfile(hta_target):
+                                try:
+                                    import pwd
+                                    u_info = pwd.getpwnam(user)
+                                    os.chown(hta_target, u_info.pw_uid, u_info.pw_gid)
+                                except Exception:
+                                    pass
+                                try:
+                                    os.chmod(hta_target, 0o644)
+                                except Exception:
+                                    pass
+
+                        # Enforce mode 0644 and tenant ownership on robots.txt and llms.txt across candidate paths
+                        for txt_target in {os.path.join(site_path, "robots.txt"), os.path.join(site_path, "llms.txt")}:
+                            if os.path.isfile(txt_target):
+                                try:
+                                    import pwd
+                                    u_info = pwd.getpwnam(user)
+                                    os.chown(txt_target, u_info.pw_uid, u_info.pw_gid)
+                                except Exception:
+                                    pass
+                                try:
+                                    os.chmod(txt_target, 0o644)
+                                except Exception:
+                                    pass
+                    except Exception as e:
                         self.log(f"Warning: Reconciling wp-config.php for {domain}: {e}", Colors.YELLOW, prefix="  ⚠️")
 
                 # 4b. Reconcile MariaDB Tenant Database & User Permissions

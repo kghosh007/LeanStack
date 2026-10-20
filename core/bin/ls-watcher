@@ -346,6 +346,40 @@ heal_tenant_permissions() {
                     fi
                 fi
             done
+
+            # Enforce mode 644 and tenant ownership on .htaccess
+            for hta in "${web_root}/.htaccess" "${homedir}/.htaccess"; do
+                if [ -f "$hta" ]; then
+                    local hta_mode hta_user hta_group
+                    hta_mode=$(stat -c '%a' "$hta" 2>/dev/null || true)
+                    [ -n "$hta_mode" ] && hta_mode="${hta_mode: -3}"
+                    hta_user=$(stat -c '%U' "$hta" 2>/dev/null || true)
+                    hta_group=$(stat -c '%G' "$hta" 2>/dev/null || true)
+                    if [ "$hta_user" != "$tenant" ] || [ "$hta_group" != "$tenant" ]; then
+                        chown "${tenant}:${tenant}" "$hta" 2>/dev/null || chown "${tenant}:www-data" "$hta" 2>/dev/null || true
+                    fi
+                    if [ "$hta_mode" != "644" ]; then
+                        chmod 644 "$hta" 2>/dev/null || true
+                    fi
+                fi
+            done
+
+            # Enforce mode 644 and tenant ownership on robots.txt and llms.txt
+            for txt in "${web_root}/robots.txt" "${web_root}/llms.txt"; do
+                if [ -f "$txt" ]; then
+                    local txt_mode txt_user txt_group
+                    txt_mode=$(stat -c '%a' "$txt" 2>/dev/null || true)
+                    [ -n "$txt_mode" ] && txt_mode="${txt_mode: -3}"
+                    txt_user=$(stat -c '%U' "$txt" 2>/dev/null || true)
+                    txt_group=$(stat -c '%G' "$txt" 2>/dev/null || true)
+                    if [ "$txt_user" != "$tenant" ] || [ "$txt_group" != "$tenant" ]; then
+                        chown "${tenant}:${tenant}" "$txt" 2>/dev/null || chown "${tenant}:www-data" "$txt" 2>/dev/null || true
+                    fi
+                    if [ "$txt_mode" != "644" ]; then
+                        chmod 644 "$txt" 2>/dev/null || true
+                    fi
+                fi
+            done
         fi
     done
 }

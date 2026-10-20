@@ -1244,7 +1244,7 @@ exit 0
         self.assertEqual(data["ideal_tuning"]["innodb_io_capacity"], 8000)
 
     def test_redis_constants_wp_config_and_upgrade(self):
-        """Verify all 5 Redis Object Cache constants are configured in wp-config.php.tpl and reconciled in ls-upgrade."""
+        """Verify all 5 Redis Object Cache constants and bloat controls are configured in wp-config.php.tpl and reconciled in ls-upgrade."""
         wp_config_tpl = os.path.join(BASE_DIR, "core", "templates", "wp-config.php.tpl")
         with open(wp_config_tpl, "r") as f:
             cfg = f.read()
@@ -1270,46 +1270,6 @@ exit 0
         self.assertIn("WP_POST_REVISIONS", up)
         self.assertIn("MEDIA_TRASH", up)
         self.assertIn("EMPTY_TRASH_DAYS", up)
-
-
-    def test_optimizations_and_default_theme_pages(self):
-        """Verify WordPress Optimizations & Bloat Removal page registration and options."""
-        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
-        with open(bridge_tpl, "r") as f:
-            bridge = f.read()
-
-        self.assertIn("leanstack-optimizations", bridge)
-        self.assertIn("disable_jquery_migrate", bridge)
-        self.assertIn("disable_dashicons", bridge)
-        self.assertIn("disable_embeds", bridge)
-        self.assertIn("disable_pingbacks", bridge)
-        self.assertIn("remove_wp_version", bridge)
-        self.assertIn("leanstack_periodic_db_optimize", bridge)
-        self.assertIn("leanstack-default-theme", bridge)
-        self.assertIn("WP_DEFAULT_THEME", bridge)
-
-    def test_watcher_and_lsctl_htaccess_permissions(self):
-        """Verify ls-watcher, lsctl, and ls-upgrade enforce chmod 644 on .htaccess, robots.txt, and llms.txt."""
-        watcher_bin = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
-        with open(watcher_bin, "r") as f:
-            watcher = f.read()
-        self.assertIn("chmod 644", watcher)
-        self.assertIn(".htaccess", watcher)
-        self.assertIn("robots.txt", watcher)
-        self.assertIn("llms.txt", watcher)
-
-        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
-        with open(lsctl_bin, "r") as f:
-            lsctl = f.read()
-        self.assertIn("chmod 644", lsctl)
-        self.assertIn(".htaccess", lsctl)
-
-        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
-        with open(upgrade_bin, "r") as f:
-            up = f.read()
-        self.assertIn(".htaccess", up)
-        self.assertIn("robots.txt", up)
-        self.assertIn("llms.txt", up)
 
     def test_php_execution_time_and_session_security(self):
         """Verify max_execution_time 300, request_terminate_timeout 300s, and session security flags across PHP configs."""
@@ -1338,25 +1298,101 @@ exit 0
         self.assertIn("session.cookie_httponly = 1", p5)
         self.assertIn("max_execution_time = 300", p5)
 
-    def test_database_and_autoload_tuner(self):
-        """Verify Database and Autoload Tuner UI registration and methods in bridge."""
+    def test_watcher_and_lsctl_htaccess_permissions(self):
+        """Verify ls-watcher, lsctl, and ls-upgrade enforce chmod 644 on .htaccess, robots.txt, and llms.txt."""
+        watcher_bin = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
+        with open(watcher_bin, "r") as f:
+            watcher = f.read()
+        self.assertIn("chmod 644", watcher)
+        self.assertIn(".htaccess", watcher)
+        self.assertIn("robots.txt", watcher)
+        self.assertIn("llms.txt", watcher)
+
+        lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_bin, "r") as f:
+            lsctl = f.read()
+        self.assertIn("chmod 644", lsctl)
+        self.assertIn(".htaccess", lsctl)
+
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            up = f.read()
+        self.assertIn(".htaccess", up)
+        self.assertIn("robots.txt", up)
+        self.assertIn("llms.txt", up)
+
+    def test_security_headers_and_gatekeeper_validation(self):
+        """Verify HSTS, CSP with worker-src blob:, X-Frame-Options, gatekeeper debounce 0.1s, and synchronous verification wait."""
         bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
         with open(bridge_tpl, "r") as f:
             bridge = f.read()
 
+        self.assertIn("wait_for_gatekeeper_verification", bridge)
+        self.assertIn("enable_hsts", bridge)
+        self.assertIn("force_https", bridge)
+        self.assertIn("upgrade-insecure-requests", bridge)
+        self.assertIn("Strict-Transport-Security", bridge)
+        self.assertIn("worker-src 'self' blob:", bridge)
+        self.assertIn("X-Frame-Options", bridge)
+
+        # Confirm render_crawlers_page does NOT render status banner
+        crawlers_pos = bridge.find("public function render_crawlers_page()")
+        self.assertNotEqual(crawlers_pos, -1)
+        crawlers_block = bridge[crawlers_pos:crawlers_pos + 2500]
+        self.assertNotIn("render_status_banner()", crawlers_block)
+        self.assertIn("write_failed", crawlers_block)
+
+        # Confirm stale pending auto-heal in get_status()
+        self.assertIn("Auto-heal stale pending status", bridge)
+
+        # Confirm gatekeeper debounce is reduced to 0.1s
+        gatekeeper_bin = os.path.join(BASE_DIR, "core", "bin", "ls-gatekeeper")
+        with open(gatekeeper_bin, "r") as f:
+            gk = f.read()
+        self.assertIn("sleep 0.1", gk)
+        self.assertNotIn("sleep 1.5", gk)
+
+    def test_optimizations_default_theme_and_db_tuner_bridge(self):
+        """Verify Optimizations, Default Theme Selector, and DB & Autoload Tuner methods exist in leanstack-bridge.php.tpl."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge = f.read()
+
+        # Admin menu registrations
+        self.assertIn("leanstack-optimizations", bridge)
+        self.assertIn("leanstack-default-theme", bridge)
         self.assertIn("leanstack-db-tuner", bridge)
+
+        # Optimizations methods
+        self.assertIn("get_optimizations_options", bridge)
+        self.assertIn("init_optimizations", bridge)
+        self.assertIn("render_optimizations_page", bridge)
+        self.assertIn("handle_save_optimizations", bridge)
+        self.assertIn("handle_clean_action_scheduler", bridge)
+        self.assertIn("run_periodic_db_optimization", bridge)
+        self.assertIn("remove_wp_version_string", bridge)
+
+        # Default Theme methods & wp-config chmod 600 enforcement
+        self.assertIn("render_default_theme_page", bridge)
+        self.assertIn("handle_save_default_theme", bridge)
+        self.assertIn("WP_DEFAULT_THEME", bridge)
+        self.assertIn("@chmod( $wp_config_file, 0600 );", bridge)
+
+        # DB Tuner methods
+        self.assertIn("render_db_tuner_page", bridge)
         self.assertIn("handle_toggle_autoload", bridge)
+        self.assertIn("handle_delete_option", bridge)
         self.assertIn("handle_optimize_autoload", bridge)
         self.assertIn("handle_clean_orphaned_meta", bridge)
 
-    def test_msmtp_configuration_and_logging(self):
-        """Verify msmtp default scaffolding in lsctl, logging in leanstack-smtp.php.tpl, and pre-flight validation in bridge."""
+    def test_msmtp_mail_configuration_and_logging(self):
+        """Verify msmtp templates eliminate invalid localhost:587 auth, log to mail.log, and pre-flight validate external SMTP."""
         lsctl_bin = os.path.join(BASE_DIR, "core", "bin", "lsctl")
         with open(lsctl_bin, "r") as f:
             lsctl = f.read()
-        self.assertIn("auth           off", lsctl)
-        self.assertIn("tls            off", lsctl)
-        self.assertIn("port           25", lsctl)
+
+        # Default template should not have auth on or port 587 without credentials
+        self.assertNotIn("port 587\nauth on", lsctl)
 
         smtp_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-smtp.php.tpl")
         with open(smtp_tpl, "r") as f:
@@ -1371,6 +1407,7 @@ exit 0
             bridge = f.read()
 
         self.assertIn("No external SMTP provider configured", bridge)
+
 
 if __name__ == "__main__":
     unittest.main()

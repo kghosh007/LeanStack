@@ -1256,11 +1256,49 @@ opcache.jit_hot_loop = 1
                     if os.path.isfile(ini_path) and not self.dry_run:
                         with open(ini_path, "r", encoding="utf-8") as f:
                             ini_data = f.read()
+                        ini_modified = False
                         if not re.search(r"^date\.timezone\s*=\s*UTC", ini_data, re.M):
                             if re.search(r"^;*date\.timezone\s*=.*", ini_data, re.M):
                                 ini_data = re.sub(r"^;*date\.timezone\s*=.*", "date.timezone = UTC", ini_data, flags=re.M)
                             else:
                                 ini_data += "\ndate.timezone = UTC\n"
+                            ini_modified = True
+
+                        # Reconcile max_execution_time >= 300
+                        m_exec = re.search(r"^;*max_execution_time\s*=\s*(\d+)", ini_data, re.M)
+                        if m_exec:
+                            if int(m_exec.group(1)) < 300:
+                                ini_data = re.sub(r"^;*max_execution_time\s*=.*", "max_execution_time = 300", ini_data, flags=re.M)
+                                ini_modified = True
+                        else:
+                            ini_data += "\nmax_execution_time = 300\n"
+                            ini_modified = True
+
+                        # Reconcile session.use_strict_mode = 1
+                        if not re.search(r"^session\.use_strict_mode\s*=\s*1", ini_data, re.M):
+                            if re.search(r"^;*session\.use_strict_mode\s*=.*", ini_data, re.M):
+                                ini_data = re.sub(r"^;*session\.use_strict_mode\s*=.*", "session.use_strict_mode = 1", ini_data, flags=re.M)
+                            else:
+                                ini_data += "\nsession.use_strict_mode = 1\n"
+                            ini_modified = True
+
+                        # Reconcile session.cookie_httponly = 1
+                        if not re.search(r"^session\.cookie_httponly\s*=\s*1", ini_data, re.M):
+                            if re.search(r"^;*session\.cookie_httponly\s*=.*", ini_data, re.M):
+                                ini_data = re.sub(r"^;*session\.cookie_httponly\s*=.*", "session.cookie_httponly = 1", ini_data, flags=re.M)
+                            else:
+                                ini_data += "\nsession.cookie_httponly = 1\n"
+                            ini_modified = True
+
+                        # Reconcile post_max_size = 128M
+                        if "fpm" in ini_path and not re.search(r"^post_max_size\s*=\s*128M", ini_data, re.M):
+                            if re.search(r"^;*post_max_size\s*=.*", ini_data, re.M):
+                                ini_data = re.sub(r"^;*post_max_size\s*=.*", "post_max_size = 128M", ini_data, flags=re.M)
+                            else:
+                                ini_data += "\npost_max_size = 128M\n"
+                            ini_modified = True
+
+                        if ini_modified:
                             with open(ini_path, "w", encoding="utf-8") as f:
                                 f.write(ini_data)
                             reloaded = True
@@ -1557,7 +1595,7 @@ www-data hard nofile 65535
             p_content = p_content.strip() + f'\nphp_admin_value[sendmail_path] = "/usr/bin/msmtp -C /home/{user}/.msmtprc -t -i"\n'
             p_changed = True
 
-        # 6. Session Strict Mode
+        # 6. Session Strict Mode & HttpOnly
         if "session.use_strict_mode" not in p_content:
             p_content = p_content.strip() + "\nphp_admin_flag[session.use_strict_mode] = on\n"
             p_changed = True
@@ -1581,9 +1619,6 @@ www-data hard nofile 65535
             if int(m_req.group(1)) < 300:
                 p_content = re.sub(r"request_terminate_timeout\s*=\s*\d+s?", "request_terminate_timeout = 300s", p_content)
                 p_changed = True
-        else:
-            p_content = p_content.strip() + "\nrequest_terminate_timeout = 300s\n"
-            p_changed = True
 
         return p_content, p_changed
 
@@ -1703,17 +1738,14 @@ add_header Alt-Svc 'h3=":443"; ma=86400';
                                 mf.write(f"""# LeanStack Lightweight OS Mail Relay Configuration (msmtp)
 # Strict permissions enforced: chmod 600
 defaults
-auth           on
-tls            on
-tls_trust_file /etc/ssl/certs/ca-certificates.crt
+auth           off
+tls            off
 logfile        /home/{user}/logs/msmtp.log
 
 account        default
 host           127.0.0.1
-port           587
+port           25
 from           noreply@{domain}
-user           none
-password       none
 """)
                             import pwd
                             u_info = pwd.getpwnam(user)
@@ -1723,6 +1755,15 @@ password       none
                             pass
                     else:
                         try:
+                            # Heal stale placeholder pointing to 127.0.0.1:587 with auth on
+                            with open(msmtprc, "r") as mf:
+                                mfc = mf.read()
+                            if "127.0.0.1" in mfc and "587" in mfc and "auth           on" in mfc:
+                                mfc = mfc.replace("auth           on", "auth           off")
+                                mfc = mfc.replace("port           587", "port           25")
+                                mfc = mfc.replace("tls            on", "tls            off")
+                                with open(msmtprc, "w") as mf:
+                                    mf.write(mfc)
                             os.chmod(msmtprc, 0o600)
                         except Exception:
                             pass
@@ -2040,8 +2081,9 @@ password       none
                             qm_snippet = (
                                 "\n// Auto-disable Query Monitor backtrace profiling on benchmark requests\n"
                                 "if ( ! defined( 'QM_DISABLE' ) ) {\n"
-                                "    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp/i', (string) $_REQUEST['action'] ) ) ||\n"
-                                "         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ) {\n"
+                                "    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_REQUEST['action'] ) ) ||\n"
+                                "         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||\n"
+                                "         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {\n"
                                 "        define( 'QM_DISABLE', true );\n"
                                 "    }\n"
                                 "}\n"
@@ -2066,10 +2108,7 @@ password       none
                                 wpc = re.sub(r"<\?php\s*", "<?php\n" + qm_snippet.strip() + "\n", wpc, count=1)
                                 modified = True
 
-                        if modified:
-                            with open(wp_config, "w") as f_wpc:
-                                f_wpc.write(wpc)
-                                                    # 4e. Reconcile WP_REDIS optimization constants & bloat controls
+                        # 4e. Reconcile WP_REDIS optimization constants & bloat controls
                         redis_optimizations = [
                             ("WP_REDIS_DISABLE_METRICS", "define( 'WP_REDIS_DISABLE_METRICS', true );"),
                             ("WP_REDIS_PERSISTENT", "define( 'WP_REDIS_PERSISTENT', true );"),
@@ -2089,6 +2128,10 @@ password       none
                             elif "/* That's all, stop editing!" in wpc:
                                 wpc = re.sub(r"(/\*\s*That's all, stop editing!)", f"{redis_block.strip()}\n\n\\1", wpc, count=1)
                                 modified = True
+
+                        if modified:
+                            with open(wp_config, "w") as f_wpc:
+                                f_wpc.write(wpc)
                             self.log(f"Reconciled WP_REDIS, WP_CACHE, DISALLOW_FILE_EDIT, Bloat Controls & QM_DISABLE in {domain} wp-config.php", Colors.GREEN, prefix="  ✔")
 
                         # Enforce mode 0600 and tenant ownership on wp-config.php across candidate paths
@@ -2104,8 +2147,8 @@ password       none
                                     os.chmod(wpc_target, 0o600)
                                 except Exception:
                                     pass
-                    except Exception as e:
-                                                # Enforce mode 0644 and tenant ownership on .htaccess across candidate paths
+
+                        # Enforce mode 0644 and tenant ownership on .htaccess across candidate paths
                         for hta_target in {os.path.join(site_path, ".htaccess"), os.path.join(os.path.dirname(site_path), ".htaccess")}:
                             if os.path.isfile(hta_target):
                                 try:

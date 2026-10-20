@@ -12,9 +12,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // Auto-disable Query Monitor profiling during performance benchmarks
 if ( ! defined( 'QM_DISABLE' ) ) {
-    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp/i', (string) $_REQUEST['action'] ) ) ||
+    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_REQUEST['action'] ) ) ||
          ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
-         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
         define( 'QM_DISABLE', true );
     }
 }

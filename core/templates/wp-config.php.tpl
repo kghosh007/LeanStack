@@ -65,11 +65,11 @@ define( 'WP_POST_REVISIONS', 5 );
 define( 'MEDIA_TRASH', true );
 define( 'EMPTY_TRASH_DAYS', 7 );
 
-
 // Auto-disable Query Monitor backtrace profiling on benchmark requests
 if ( ! defined( 'QM_DISABLE' ) ) {
-    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp/i', (string) $_REQUEST['action'] ) ) ||
-         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ) {
+    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_REQUEST['action'] ) ) ||
+         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
+         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
         define( 'QM_DISABLE', true );
     }
 }

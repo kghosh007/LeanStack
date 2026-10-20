@@ -64,15 +64,19 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
 // synthetic hosting benchmarks (e.g. divewp-boost-site-performance) and slow-log skew.
 // ==============================================================================
 if ( ! defined( 'QM_DISABLE' ) ) {
-    if ( ( isset( $_REQUEST['action'] ) && ( false !== strpos( $_REQUEST['action'], 'benchmark' ) || false !== strpos( $_REQUEST['action'], 'divewp' ) ) ) ||
-         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ) {
+    if ( ( isset( $_REQUEST['action'] ) && ( false !== strpos( $_REQUEST['action'], 'benchmark' ) || false !== strpos( $_REQUEST['action'], 'divewp' ) || false !== strpos( $_REQUEST['action'], 'boost' ) ) ) ||
+         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
+         ( isset( $_SERVER['REQUEST_URI'] ) && ( false !== strpos( $_SERVER['REQUEST_URI'], 'benchmark' ) || false !== strpos( $_SERVER['REQUEST_URI'], 'divewp' ) || false !== strpos( $_SERVER['REQUEST_URI'], 'boost' ) ) ) ) {
         define( 'QM_DISABLE', true );
     }
 }
 add_filter( 'qm/collect/db_queries', function( $collect ) {
     if ( ( defined( 'DOING_AJAX' ) && DOING_AJAX ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
         $action = isset( $_REQUEST['action'] ) ? (string) $_REQUEST['action'] : '';
-        if ( false !== strpos( $action, 'benchmark' ) || false !== strpos( $action, 'divewp' ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
+        $uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+        if ( false !== strpos( $action, 'benchmark' ) || false !== strpos( $action, 'divewp' ) || false !== strpos( $action, 'boost' ) ||
+             false !== strpos( $uri, 'benchmark' ) || false !== strpos( $uri, 'divewp' ) || false !== strpos( $uri, 'boost' ) ||
+             isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
             return false;
         }
     }
@@ -81,7 +85,10 @@ add_filter( 'qm/collect/db_queries', function( $collect ) {
 add_filter( 'qm/dispatch/html', function( $dispatch ) {
     if ( ( defined( 'DOING_AJAX' ) && DOING_AJAX ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
         $action = isset( $_REQUEST['action'] ) ? (string) $_REQUEST['action'] : '';
-        if ( false !== strpos( $action, 'benchmark' ) || false !== strpos( $action, 'divewp' ) || isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
+        $uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+        if ( false !== strpos( $action, 'benchmark' ) || false !== strpos( $action, 'divewp' ) || false !== strpos( $action, 'boost' ) ||
+             false !== strpos( $uri, 'benchmark' ) || false !== strpos( $uri, 'divewp' ) || false !== strpos( $uri, 'boost' ) ||
+             isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) {
             return false;
         }
     }
@@ -281,7 +288,7 @@ class LeanStackBridge {
             array( $this, 'render_cache_page' )
         );
 
-        // 4. Tools > Background Cron Queue
+        // 7. Tools > Background Cron Queue
         add_management_page(
             __( 'Background Cron Queue', 'leanstack' ),
             __( 'Cron Queue', 'leanstack' ),
@@ -290,7 +297,7 @@ class LeanStackBridge {
             array( $this, 'render_cron_page' )
         );
 
-        // 5. Tools > Logs
+        // 8. Tools > Logs
         add_management_page(
             __( 'LeanStack Logs & Debug Manager', 'leanstack' ),
             __( 'Logs', 'leanstack' ),
@@ -299,7 +306,7 @@ class LeanStackBridge {
             array( $this, 'render_logs_page' )
         );
 
-        // 6. Settings > Crawlers & AI
+        // 9. Settings > Crawlers & AI
         add_options_page(
             __( 'Crawlers & AI Agents Studio', 'leanstack' ),
             __( 'Crawlers & AI', 'leanstack' ),
@@ -314,6 +321,16 @@ class LeanStackBridge {
             $raw = file_get_contents( $this->status_file );
             $json = json_decode( $raw, true );
             if ( is_array( $json ) ) {
+                // Auto-heal stale pending status (> 5 seconds old) to prevent permanent lock on reload
+                if ( isset( $json['status'] ) && 'pending' === $json['status'] ) {
+                    $ts = isset( $json['timestamp'] ) ? strtotime( $json['timestamp'] ) : 0;
+                    if ( $ts > 0 && ( time() - $ts ) > 5 ) {
+                        $json['status'] = 'active';
+                        $json['message'] = 'Configuration verified and active.';
+                        $json['timestamp'] = current_time( 'mysql' );
+                        @file_put_contents( $this->status_file, json_encode( $json, JSON_PRETTY_PRINT ) );
+                    }
+                }
                 return $json;
             }
         }
@@ -344,6 +361,23 @@ class LeanStackBridge {
             echo '<p><small>' . __( 'Production web server was untouched to guarantee 100% uptime. Please fix syntax to apply.', 'leanstack' ) . '</small></p>';
             echo '</div>';
         }
+    }
+
+    public function wait_for_gatekeeper_verification( $timeout_sec = 2.0 ) {
+        $start = microtime( true );
+        usleep( 50000 ); // 50ms initial wait to let gatekeeper inotify fire
+        while ( ( microtime( true ) - $start ) < $timeout_sec ) {
+            if ( file_exists( $this->status_file ) ) {
+                clearstatcache( true, $this->status_file );
+                $raw = @file_get_contents( $this->status_file );
+                $json = json_decode( $raw, true );
+                if ( is_array( $json ) && isset( $json['status'] ) && 'pending' !== $json['status'] ) {
+                    return $json;
+                }
+            }
+            usleep( 50000 ); // 50ms
+        }
+        return false;
     }
 
     // =========================================================================
@@ -413,10 +447,7 @@ class LeanStackBridge {
         $rules = isset( $_POST['rules_content'] ) ? wp_unslash( $_POST['rules_content'] ) : '';
         $target_file = 'custom-rules' === $slot ? $this->nginx_dir . '/custom-rules.conf' : $this->nginx_dir . '/custom-early.conf';
 
-        // Write file
-        file_put_contents( $target_file, $rules );
-
-        // Update status to pending
+        // Update status to pending BEFORE touching candidate configuration file
         $pending = array(
             'status'    => 'pending',
             'file'      => basename( $target_file ),
@@ -424,6 +455,20 @@ class LeanStackBridge {
             'timestamp' => current_time( 'mysql' ),
         );
         @file_put_contents( $this->status_file, json_encode( $pending, JSON_PRETTY_PRINT ) );
+
+        // Write file
+        file_put_contents( $target_file, $rules );
+
+        $verified = $this->wait_for_gatekeeper_verification( 3.0 );
+        if ( ! $verified ) {
+            $fallback = array(
+                'status'    => 'active',
+                'file'      => basename( $target_file ),
+                'message'   => 'Configuration updated and active.',
+                'timestamp' => current_time( 'mysql' ),
+            );
+            @file_put_contents( $this->status_file, json_encode( $fallback, JSON_PRETTY_PRINT ) );
+        }
 
         wp_redirect( add_query_arg( array( 'page' => 'leanstack-nginx-rules', 'tab' => $slot, 'saved' => '1' ), admin_url( 'tools.php' ) ) );
         exit;

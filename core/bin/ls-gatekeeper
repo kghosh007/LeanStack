@@ -140,8 +140,19 @@ EOF
             chown "${tenant_user}:www-data" "$status_file" 2>/dev/null || true
             return 1
         fi
+    else
+        cat > "$status_file" << EOF
+{
+  "status": "active",
+  "file": "php-hardening.json",
+  "message": "PHP hardening profile '${mode}' recorded.",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+        chmod 644 "$status_file" 2>/dev/null || true
+        chown "${tenant_user}:www-data" "$status_file" 2>/dev/null || true
+        return 0
     fi
-    return 0
 }
 
 process_tenant_config() {
@@ -363,7 +374,7 @@ while true; do
             [ -z "$filename" ] && continue
             log "Configuration file event: $events on ${directory}${filename}"
             if [[ "$directory" =~ /home/.*/nginx/ ]]; then
-                sleep 1.5  # Debounce burst writes
+                sleep 0.1  # Fast debouncing for snappy response
                 process_tenant_config "${directory}${filename}"
             else
                 validate_and_reload_angie

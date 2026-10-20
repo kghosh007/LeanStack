@@ -19,7 +19,6 @@ pm.max_children = {{MAX_CHILDREN}}
 pm.process_idle_timeout = 10s
 pm.max_requests = 1000
 
-; Performance & Worker Recycling
 request_terminate_timeout = 300s
 request_slowlog_timeout = 10s
 slowlog = /home/{{USER_NAME}}/logs/php-slow.log

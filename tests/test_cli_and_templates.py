@@ -1243,6 +1243,29 @@ exit 0
         self.assertIn("ideal_tuning", data)
         self.assertEqual(data["ideal_tuning"]["innodb_io_capacity"], 8000)
 
+    def test_redis_constants_wp_config_and_upgrade(self):
+        """Verify all 5 Redis Object Cache constants are configured in wp-config.php.tpl and reconciled in ls-upgrade."""
+        wp_config_tpl = os.path.join(BASE_DIR, "core", "templates", "wp-config.php.tpl")
+        with open(wp_config_tpl, "r") as f:
+            cfg = f.read()
+
+        self.assertIn("define( 'WP_REDIS_DISABLE_METRICS', true );", cfg)
+        self.assertIn("define( 'WP_REDIS_PERSISTENT', true );", cfg)
+        self.assertIn("define( 'WP_REDIS_IGBINARY', true );", cfg)
+        self.assertIn("define( 'WP_REDIS_LOAD_APEXCHARTS', false );", cfg)
+        self.assertIn("define( 'WP_REDIS_DISABLE_BANNERS', true );", cfg)
+
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            up = f.read()
+
+        self.assertIn("WP_REDIS_DISABLE_METRICS", up)
+        self.assertIn("WP_REDIS_PERSISTENT", up)
+        self.assertIn("WP_REDIS_IGBINARY", up)
+        self.assertIn("WP_REDIS_LOAD_APEXCHARTS", up)
+        self.assertIn("WP_REDIS_DISABLE_BANNERS", up)
+
+
 if __name__ == "__main__":
     unittest.main()
 

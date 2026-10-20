@@ -40,6 +40,11 @@ define( 'WP_REDIS_PREFIX', '{{CACHE_KEY_SALT}}' );
 define( 'WP_CACHE_KEY_SALT', '{{CACHE_KEY_SALT}}' );
 define( 'WP_REDIS_TIMEOUT', 1 );
 define( 'WP_REDIS_READ_TIMEOUT', 1 );
+define( 'WP_REDIS_DISABLE_METRICS', true );
+define( 'WP_REDIS_PERSISTENT', true );
+define( 'WP_REDIS_IGBINARY', true );
+define( 'WP_REDIS_LOAD_APEXCHARTS', false );
+define( 'WP_REDIS_DISABLE_BANNERS', true );
 
 // --- Disable Stock WP-Cron (Driven by LeanStack Anti-Thundering Systemd Queue) ---
 define( 'DISABLE_WP_CRON', true );

@@ -1309,6 +1309,33 @@ exit 0
         self.assertIn("robots.txt", up)
         self.assertIn("llms.txt", up)
 
+    def test_php_execution_time_and_session_security(self):
+        """Verify max_execution_time 300, request_terminate_timeout 300s, and session security flags across PHP configs."""
+        pool_tpl = os.path.join(BASE_DIR, "core", "templates", "pool.conf.tpl")
+        with open(pool_tpl, "r") as f:
+            pool = f.read()
+
+        self.assertIn("request_terminate_timeout = 300s", pool)
+        self.assertIn("php_admin_value[max_execution_time] = 300", pool)
+        self.assertIn("php_admin_flag[session.use_strict_mode] = on", pool)
+        self.assertIn("php_admin_flag[session.cookie_httponly] = on", pool)
+
+        shield_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-shield.php.tpl")
+        with open(shield_tpl, "r") as f:
+            shield = f.read()
+
+        self.assertIn("session.use_strict_mode", shield)
+        self.assertIn("session.cookie_httponly", shield)
+        self.assertIn("max_execution_time", shield)
+
+        phase5 = os.path.join(BASE_DIR, "scripts", "phase5_php.sh")
+        with open(phase5, "r") as f:
+            p5 = f.read()
+
+        self.assertIn("session.use_strict_mode = 1", p5)
+        self.assertIn("session.cookie_httponly = 1", p5)
+        self.assertIn("max_execution_time = 300", p5)
+
 if __name__ == "__main__":
     unittest.main()
 

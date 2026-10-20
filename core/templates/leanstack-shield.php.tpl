@@ -22,6 +22,9 @@ if ( ! defined( 'QM_DISABLE' ) ) {
 // Runtime Execution & Session Security Controls
 @ini_set( 'session.use_strict_mode', '1' );
 @ini_set( 'session.cookie_httponly', '1' );
+if ( (int) @ini_get( 'max_execution_time' ) < 300 ) {
+    @ini_set( 'max_execution_time', '300' );
+}
 
 // 0. Angie Rewrite & Pretty Permalinks Support (Enables rewrite rule detection for Site Health)
 $GLOBALS['is_nginx'] = true;

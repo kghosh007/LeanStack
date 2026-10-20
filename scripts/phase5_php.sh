@@ -91,7 +91,7 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
         sed -i 's/^memory_limit = .*/memory_limit = 256M/' "$FPM_INI"
         sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 128M/' "$FPM_INI"
         sed -i 's/^post_max_size = .*/post_max_size = 128M/' "$FPM_INI"
-        sed -i 's/^max_execution_time = .*/max_execution_time = 120/' "$FPM_INI"
+        sed -i 's/^max_execution_time = .*/max_execution_time = 300/' "$FPM_INI"
         sed -i 's/^;*session\.use_strict_mode\s*=.*/session.use_strict_mode = 1/' "$FPM_INI"
         grep -q "^session.use_strict_mode" "$FPM_INI" || echo "session.use_strict_mode = 1" >> "$FPM_INI"
         sed -i 's/^;*session\.cookie_httponly\s*=.*/session.cookie_httponly = 1/' "$FPM_INI"
@@ -102,6 +102,7 @@ for VER in "${AVAILABLE_VERSIONS[@]}"; do
 
         CLI_INI="/etc/php/${VER}/cli/php.ini"
         if [ -f "$CLI_INI" ]; then
+            sed -i 's/^max_execution_time = .*/max_execution_time = 300/' "$CLI_INI"
             sed -i 's/^;*session\.use_strict_mode\s*=.*/session.use_strict_mode = 1/' "$CLI_INI"
             grep -q "^session.use_strict_mode" "$CLI_INI" || echo "session.use_strict_mode = 1" >> "$CLI_INI"
             sed -i 's/^;*session\.cookie_httponly\s*=.*/session.cookie_httponly = 1/' "$CLI_INI"

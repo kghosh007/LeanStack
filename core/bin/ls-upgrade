@@ -1565,6 +1565,26 @@ www-data hard nofile 65535
             p_content = p_content.strip() + "\nphp_admin_flag[session.cookie_httponly] = on\n"
             p_changed = True
 
+        # 7. PHP Execution Time Limit (300s)
+        if "max_execution_time" not in p_content:
+            p_content = p_content.strip() + "\nphp_admin_value[max_execution_time] = 300\n"
+            p_changed = True
+        elif re.search(r"php_admin_value\[max_execution_time\]\s*=\s*(\d+)", p_content):
+            m_time = re.search(r"php_admin_value\[max_execution_time\]\s*=\s*(\d+)", p_content)
+            if int(m_time.group(1)) < 300:
+                p_content = re.sub(r"php_admin_value\[max_execution_time\]\s*=\s*\d+", "php_admin_value[max_execution_time] = 300", p_content)
+                p_changed = True
+
+        # 8. request_terminate_timeout (300s)
+        if re.search(r"request_terminate_timeout\s*=\s*(\d+)s?", p_content):
+            m_req = re.search(r"request_terminate_timeout\s*=\s*(\d+)s?", p_content)
+            if int(m_req.group(1)) < 300:
+                p_content = re.sub(r"request_terminate_timeout\s*=\s*\d+s?", "request_terminate_timeout = 300s", p_content)
+                p_changed = True
+        else:
+            p_content = p_content.strip() + "\nrequest_terminate_timeout = 300s\n"
+            p_changed = True
+
         return p_content, p_changed
 
     def sync_tenants(self) -> int:

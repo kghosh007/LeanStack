@@ -2571,7 +2571,7 @@ class LeanStackBridge {
                             <br><small style="color: #646970;"><?php printf( __( 'Source: %s', 'leanstack' ), esc_html( ucfirst( $smtp_cfg['source'] ) ) ); ?></small>
                         <?php else : ?>
                             <span class="dashicons dashicons-marker" style="color: #dba617; vertical-align: middle;"></span>
-                            <span style="color: #646970;"><?php _e( 'Disabled (Using PHP fallback)', 'leanstack' ); ?></span>
+                            <span style="color: #646970;"><?php _e( 'No external SMTP provider configured: Native PHP mail active', 'leanstack' ); ?></span>
                         <?php endif; ?>
                     </p>
                 </div>
@@ -2817,16 +2817,17 @@ class LeanStackBridge {
             exit;
         }
 
-        // Validate that an external SMTP provider or relay is configured
-        $smtp_opt = get_option( 'leanstack_smtp_settings' );
-        $has_smtp = ( is_array( $smtp_opt ) && ! empty( $smtp_opt['enabled'] ) && ! empty( $smtp_opt['host'] ) ) ||
-                    ( defined( 'LEANSTACK_SMTP_HOST' ) && '' !== LEANSTACK_SMTP_HOST ) ||
-                    ( ! empty( getenv( 'SMTP_HOST' ) ) );
+        // Check if an external SMTP provider or relay is configured
+        $has_smtp = false;
+        if ( class_exists( 'LeanStackSMTP' ) ) {
+            $ls_smtp_cfg = LeanStackSMTP::get_instance()->get_config();
+            $has_smtp = ! empty( $ls_smtp_cfg['enabled'] ) && ! empty( $ls_smtp_cfg['host'] );
+        }
         if ( ! $has_smtp ) {
-            $err_msg = __( 'No external SMTP provider configured. LeanStack uses zero-daemon msmtp architecture and does not run a local Postfix/Exim MTA on localhost (VPS providers also block outbound port 25). Please enter your external SMTP credentials (SendGrid, Postmark, Brevo, AWS SES, or SMTP2GO) above and click Save SMTP Configuration before sending a test email.', 'leanstack' );
-            set_transient( 'leanstack_last_mail_error', $err_msg, 3600 );
-            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_error' => urlencode( $err_msg ) ), admin_url( 'tools.php' ) ) );
-            exit;
+            $smtp_opt = get_option( 'leanstack_smtp_settings' );
+            $has_smtp = ( is_array( $smtp_opt ) && ! empty( $smtp_opt['enabled'] ) && ! empty( $smtp_opt['host'] ) ) ||
+                        ( defined( 'LEANSTACK_SMTP_HOST' ) && '' !== LEANSTACK_SMTP_HOST ) ||
+                        ( ! empty( getenv( 'SMTP_HOST' ) ) );
         }
 
         $mail_error = '';
@@ -2837,11 +2838,16 @@ class LeanStackBridge {
         };
         add_action( 'wp_mail_failed', $error_catcher );
 
+        $delivery_mode = $has_smtp ? 'Authenticated Zero-Daemon SMTP' : 'Native PHP Mail Transport (External SMTP pending configuration)';
+
         $site_name = get_bloginfo( 'name' );
         $subject = sprintf( '[%s] LeanStack Transactional Email Test', $site_name );
         $message  = "Congratulations!\n\n";
-        $message .= "Your transactional email delivery pipeline on LeanStack is functioning flawlessly.\n\n";
-        $message .= "Delivery Mode: Authenticated Zero-Daemon SMTP\n";
+        $message .= "Your transactional email delivery pipeline on LeanStack is functioning.\n\n";
+        $message .= "Delivery Mode: " . $delivery_mode . "\n";
+        if ( ! $has_smtp ) {
+            $message .= "Notice: No external SMTP provider configured yet. Emails are dispatching via native PHP mail until external SMTP credentials are provided.\n";
+        }
         $message .= "Site: " . home_url() . "\n";
         $message .= "Timestamp: " . $this->format_site_time( time() ) . "\n";
 
@@ -2850,9 +2856,16 @@ class LeanStackBridge {
 
         if ( $sent ) {
             delete_transient( 'leanstack_last_mail_error' );
-            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_sent' => urlencode( $to ) ), admin_url( 'tools.php' ) ) );
+            $sent_info = $to;
+            if ( ! $has_smtp ) {
+                $sent_info .= ' (' . __( 'sent via native PHP mail; external SMTP pending', 'leanstack' ) . ')';
+            }
+            wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_sent' => urlencode( $sent_info ) ), admin_url( 'tools.php' ) ) );
         } else {
-            $err_msg = ! empty( $mail_error ) ? $mail_error : 'Unknown delivery failure. Check SMTP host, credentials, or recipient firewall.';
+            $err_msg = ! empty( $mail_error ) ? $mail_error : 'Unknown delivery failure.';
+            if ( ! $has_smtp ) {
+                $err_msg .= ' ' . __( 'No external SMTP provider configured yet. Outbound port 25 may be blocked by your VPS hosting provider. Configure authenticated external SMTP in Tools > LeanStack Cache > SMTP for maximum deliverability.', 'leanstack' );
+            }
             set_transient( 'leanstack_last_mail_error', $err_msg, 3600 );
             wp_safe_redirect( add_query_arg( array( 'page' => 'leanstack-cache', 'tab' => 'smtp', 'test_email_error' => urlencode( $err_msg ) ), admin_url( 'tools.php' ) ) );
         }
@@ -4345,6 +4358,168 @@ class LeanStackBridge {
                 wp_unschedule_event( $timestamp, 'leanstack_periodic_db_optimize' );
             }
         }
+
+        // 10. Asset Loading Exclusion & Dequeue System
+        add_action( 'wp_enqueue_scripts', array( $this, 'filter_enqueued_assets' ), 99999 );
+        add_action( 'wp_print_scripts', array( $this, 'filter_enqueued_assets' ), 99999 );
+        add_action( 'wp_print_footer_scripts', array( $this, 'filter_enqueued_assets' ), 99999 );
+    }
+
+    public function get_asset_exclusions() {
+        $defaults = array(
+            'enabled'        => 1,
+            'global_scripts' => '',
+            'global_styles'  => '',
+            'rules'          => array(),
+        );
+        $saved = get_option( 'leanstack_asset_exclusions', array() );
+        return wp_parse_args( is_array( $saved ) ? $saved : array(), $defaults );
+    }
+
+    public function parse_asset_handles( $input ) {
+        if ( is_array( $input ) ) {
+            $input = implode( ',', $input );
+        }
+        if ( ! is_string( $input ) ) {
+            return array();
+        }
+        $raw = preg_split( '/[\r\n,]+/', $input );
+        $handles = array();
+        foreach ( $raw as $item ) {
+            $item = trim( $item );
+            $item = preg_replace( '/[^a-zA-Z0-9_\-\.]/', '', $item );
+            if ( '' !== $item ) {
+                $handles[] = $item;
+            }
+        }
+        return array_values( array_unique( $handles ) );
+    }
+
+    public function filter_enqueued_assets() {
+        if ( is_admin() || ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+            return;
+        }
+
+        $config = $this->get_asset_exclusions();
+        if ( empty( $config['enabled'] ) ) {
+            return;
+        }
+
+        $scripts_to_remove = array();
+        $styles_to_remove  = array();
+
+        // 1. Global Exclusions
+        if ( ! empty( $config['global_scripts'] ) ) {
+            $scripts_to_remove = array_merge( $scripts_to_remove, $this->parse_asset_handles( $config['global_scripts'] ) );
+        }
+        if ( ! empty( $config['global_styles'] ) ) {
+            $styles_to_remove = array_merge( $styles_to_remove, $this->parse_asset_handles( $config['global_styles'] ) );
+        }
+
+        // 2. Per-Page and Targeted Exclusions
+        if ( ! empty( $config['rules'] ) && is_array( $config['rules'] ) ) {
+            $current_id   = function_exists( 'get_queried_object_id' ) ? get_queried_object_id() : 0;
+            if ( ! $current_id && function_exists( 'get_the_ID' ) ) {
+                $current_id = get_the_ID();
+            }
+            $queried_obj  = function_exists( 'get_queried_object' ) ? get_queried_object() : null;
+            $current_slug = ( $queried_obj && isset( $queried_obj->post_name ) ) ? $queried_obj->post_name : ( ( $queried_obj && isset( $queried_obj->slug ) ) ? $queried_obj->slug : '' );
+            $current_uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+            $current_path = function_exists( 'wp_parse_url' ) ? wp_parse_url( $current_uri, PHP_URL_PATH ) : parse_url( $current_uri, PHP_URL_PATH );
+            if ( null === $current_path || false === $current_path ) {
+                $current_path = $current_uri;
+            }
+
+            foreach ( $config['rules'] as $rule ) {
+                if ( isset( $rule['status'] ) && empty( $rule['status'] ) ) {
+                    continue;
+                }
+
+                $matched     = false;
+                $target_type = isset( $rule['target_type'] ) ? $rule['target_type'] : '';
+                $target_val  = isset( $rule['target_value'] ) ? trim( $rule['target_value'] ) : '';
+
+                switch ( $target_type ) {
+                    case 'front_page':
+                        if ( ( function_exists( 'is_front_page' ) && is_front_page() ) ||
+                             ( function_exists( 'is_home' ) && is_home() ) ) {
+                            $matched = true;
+                        }
+                        break;
+
+                    case 'id':
+                        if ( '' !== $target_val && $current_id ) {
+                            $target_ids = array_map( 'trim', explode( ',', $target_val ) );
+                            if ( in_array( (string) $current_id, $target_ids, true ) ) {
+                                $matched = true;
+                            }
+                        }
+                        break;
+
+                    case 'slug':
+                        if ( '' !== $target_val && '' !== $current_slug ) {
+                            $target_slugs = array_map( 'trim', explode( ',', $target_val ) );
+                            if ( in_array( $current_slug, $target_slugs, true ) ) {
+                                $matched = true;
+                            }
+                        }
+                        break;
+
+                    case 'uri':
+                        if ( '' !== $target_val && '' !== $current_path ) {
+                            $patterns = preg_split( '/[\r\n,]+/', $target_val );
+                            foreach ( $patterns as $pattern ) {
+                                $pattern = trim( $pattern );
+                                if ( '' === $pattern ) {
+                                    continue;
+                                }
+                                if ( false !== strpos( $pattern, '*' ) ) {
+                                    $regex = '#^' . str_replace( '\*', '.*', preg_quote( $pattern, '#' ) ) . '$#i';
+                                    if ( preg_match( $regex, $current_path ) || preg_match( $regex, $current_uri ) ) {
+                                        $matched = true;
+                                        break;
+                                    }
+                                } elseif ( false !== strpos( $current_path, $pattern ) || false !== strpos( $current_uri, $pattern ) ) {
+                                    $matched = true;
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                }
+
+                if ( $matched ) {
+                    if ( ! empty( $rule['scripts'] ) ) {
+                        $scripts_to_remove = array_merge( $scripts_to_remove, $this->parse_asset_handles( $rule['scripts'] ) );
+                    }
+                    if ( ! empty( $rule['styles'] ) ) {
+                        $styles_to_remove = array_merge( $styles_to_remove, $this->parse_asset_handles( $rule['styles'] ) );
+                    }
+                }
+            }
+        }
+
+        // Dequeue and Deregister Scripts
+        $scripts_to_remove = array_unique( array_filter( $scripts_to_remove ) );
+        foreach ( $scripts_to_remove as $handle ) {
+            if ( function_exists( 'wp_dequeue_script' ) ) {
+                wp_dequeue_script( $handle );
+            }
+            if ( function_exists( 'wp_deregister_script' ) ) {
+                wp_deregister_script( $handle );
+            }
+        }
+
+        // Dequeue and Deregister Styles
+        $styles_to_remove = array_unique( array_filter( $styles_to_remove ) );
+        foreach ( $styles_to_remove as $handle ) {
+            if ( function_exists( 'wp_dequeue_style' ) ) {
+                wp_dequeue_style( $handle );
+            }
+            if ( function_exists( 'wp_deregister_style' ) ) {
+                wp_deregister_style( $handle );
+            }
+        }
     }
 
     public function remove_wp_version_string( $src ) {
@@ -4409,6 +4584,7 @@ class LeanStackBridge {
 
         $opts = $this->get_optimizations_options();
         $last_opt = get_option( 'leanstack_last_db_optimize', __( 'Never', 'leanstack' ) );
+        $asset_exclusions = $this->get_asset_exclusions();
 
         ?>
         <div class="wrap">
@@ -4417,6 +4593,9 @@ class LeanStackBridge {
 
             <?php if ( isset( $_GET['saved'] ) ) : ?>
                 <div class="notice notice-success is-dismissible"><p><?php _e( 'Optimization settings updated successfully.', 'leanstack' ); ?></p></div>
+            <?php endif; ?>
+            <?php if ( isset( $_GET['assets_saved'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p><?php _e( 'Asset loading exclusions and per-page tuning rules updated successfully.', 'leanstack' ); ?></p></div>
             <?php endif; ?>
             <?php if ( isset( $_GET['as_cleaned'] ) ) : ?>
                 <div class="notice notice-success is-dismissible"><p><?php _e( 'Action Scheduler expired actions and logs purged successfully.', 'leanstack' ); ?></p></div>
@@ -4533,6 +4712,187 @@ class LeanStackBridge {
                 </div>
             </form>
 
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top: 20px;">
+                <?php wp_nonce_field( 'leanstack_save_asset_exclusions_action', 'leanstack_nonce' ); ?>
+                <input type="hidden" name="action" value="leanstack_save_asset_exclusions">
+
+                <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px;">
+                    <h3><span class="dashicons dashicons-admin-appearance" style="color: #2271b1;"></span> <?php _e( '3. Asset Exclusion & Dequeue Tuning Manager', 'leanstack' ); ?></h3>
+                    <p class="description"><?php _e( 'Fine-tune page weight and eliminate render-blocking bloat by dequeuing and deregistering unnecessary CSS stylesheets and JavaScript handles globally or conditionally per-page.', 'leanstack' ); ?></p>
+
+                    <table class="form-table">
+                        <tr>
+                            <th scope="row"><?php _e( 'Enable Asset Exclusions', 'leanstack' ); ?></th>
+                            <td>
+                                <label>
+                                    <input type="checkbox" name="leanstack_asset_exclusions_enabled" value="1" <?php checked( $asset_exclusions['enabled'], 1 ); ?>>
+                                    <?php _e( 'Enable asset exclusion rules across frontend request execution', 'leanstack' ); ?>
+                                </label>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <?php _e( 'Global Script Exclusions', 'leanstack' ); ?>
+                                <p class="description" style="font-weight: normal; margin-top: 5px;"><?php _e( 'Script handles to dequeue across the entire frontend (comma or newline separated).', 'leanstack' ); ?></p>
+                            </th>
+                            <td>
+                                <textarea name="global_scripts" rows="3" class="large-text code" placeholder="contact-form-7, wc-cart-fragments, wp-embed"><?php echo esc_textarea( is_array( $asset_exclusions['global_scripts'] ) ? implode( ', ', $asset_exclusions['global_scripts'] ) : $asset_exclusions['global_scripts'] ); ?></textarea>
+                                <p class="description"><?php _e( 'Common handles: <code>wc-cart-fragments</code>, <code>contact-form-7</code>, <code>wp-embed</code>, <code>comment-reply</code>', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th scope="row">
+                                <?php _e( 'Global Style Exclusions', 'leanstack' ); ?>
+                                <p class="description" style="font-weight: normal; margin-top: 5px;"><?php _e( 'Stylesheet handles to dequeue across the entire frontend (comma or newline separated).', 'leanstack' ); ?></p>
+                            </th>
+                            <td>
+                                <textarea name="global_styles" rows="3" class="large-text code" placeholder="wp-block-library, wp-block-library-theme, classic-theme-styles, global-styles"><?php echo esc_textarea( is_array( $asset_exclusions['global_styles'] ) ? implode( ', ', $asset_exclusions['global_styles'] ) : $asset_exclusions['global_styles'] ); ?></textarea>
+                                <p class="description"><?php _e( 'Common handles: <code>wp-block-library</code>, <code>wp-block-library-theme</code>, <code>classic-theme-styles</code>, <code>global-styles</code>', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
+                    </table>
+
+                    <h4 style="margin-top: 25px; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;"><?php _e( 'Per-Page & Targeted Exclusion Rules', 'leanstack' ); ?></h4>
+                    <p class="description"><?php _e( 'Conditionally dequeue assets on specific pages, post IDs, slugs, or URL patterns.', 'leanstack' ); ?></p>
+
+                    <table class="widefat striped" style="margin-top: 10px;" id="ls-asset-rules-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px;"><?php _e( 'Active', 'leanstack' ); ?></th>
+                                <th style="width: 160px;"><?php _e( 'Rule Label', 'leanstack' ); ?></th>
+                                <th style="width: 150px;"><?php _e( 'Condition Target', 'leanstack' ); ?></th>
+                                <th style="width: 180px;"><?php _e( 'Target Value', 'leanstack' ); ?></th>
+                                <th><?php _e( 'Exclude Scripts (Handles)', 'leanstack' ); ?></th>
+                                <th><?php _e( 'Exclude Styles (Handles)', 'leanstack' ); ?></th>
+                                <th style="width: 50px; text-align: center;"><?php _e( 'Remove', 'leanstack' ); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody id="ls-asset-rules-body">
+                            <?php
+                            $rules = ! empty( $asset_exclusions['rules'] ) && is_array( $asset_exclusions['rules'] ) ? $asset_exclusions['rules'] : array();
+                            if ( empty( $rules ) ) {
+                                $rules = array(
+                                    array(
+                                        'name'         => '',
+                                        'target_type'  => 'uri',
+                                        'target_value' => '',
+                                        'scripts'      => '',
+                                        'styles'       => '',
+                                        'status'       => 1,
+                                    )
+                                );
+                            }
+                            foreach ( $rules as $i => $rule ) :
+                                $r_status = isset( $rule['status'] ) ? (int) $rule['status'] : 1;
+                                $r_name   = isset( $rule['name'] ) ? $rule['name'] : '';
+                                $r_type   = isset( $rule['target_type'] ) ? $rule['target_type'] : 'uri';
+                                $r_val    = isset( $rule['target_value'] ) ? $rule['target_value'] : '';
+                                $r_js     = isset( $rule['scripts'] ) ? ( is_array( $rule['scripts'] ) ? implode( ', ', $rule['scripts'] ) : $rule['scripts'] ) : '';
+                                $r_css    = isset( $rule['styles'] ) ? ( is_array( $rule['styles'] ) ? implode( ', ', $rule['styles'] ) : $rule['styles'] ) : '';
+                            ?>
+                            <tr>
+                                <td>
+                                    <input type="checkbox" name="rules[<?php echo $i; ?>][status]" value="1" <?php checked( $r_status, 1 ); ?>>
+                                </td>
+                                <td>
+                                    <input type="text" name="rules[<?php echo $i; ?>][name]" value="<?php echo esc_attr( $r_name ); ?>" placeholder="<?php esc_attr_e( 'e.g. Checkout Page', 'leanstack' ); ?>" style="width: 100%;">
+                                </td>
+                                <td>
+                                    <select name="rules[<?php echo $i; ?>][target_type]" style="width: 100%;">
+                                        <option value="front_page" <?php selected( $r_type, 'front_page' ); ?>><?php _e( 'Front Page / Home', 'leanstack' ); ?></option>
+                                        <option value="id" <?php selected( $r_type, 'id' ); ?>><?php _e( 'Page / Post ID', 'leanstack' ); ?></option>
+                                        <option value="slug" <?php selected( $r_type, 'slug' ); ?>><?php _e( 'Page / Post Slug', 'leanstack' ); ?></option>
+                                        <option value="uri" <?php selected( $r_type, 'uri' ); ?>><?php _e( 'URL Path / Wildcard', 'leanstack' ); ?></option>
+                                    </select>
+                                </td>
+                                <td>
+                                    <input type="text" name="rules[<?php echo $i; ?>][target_value]" value="<?php echo esc_attr( $r_val ); ?>" placeholder="<?php esc_attr_e( 'e.g. /checkout/* or 42', 'leanstack' ); ?>" style="width: 100%;">
+                                </td>
+                                <td>
+                                    <input type="text" name="rules[<?php echo $i; ?>][scripts]" value="<?php echo esc_attr( $r_js ); ?>" placeholder="<?php esc_attr_e( 'e.g. contact-form-7', 'leanstack' ); ?>" style="width: 100%;">
+                                </td>
+                                <td>
+                                    <input type="text" name="rules[<?php echo $i; ?>][styles]" value="<?php echo esc_attr( $r_css ); ?>" placeholder="<?php esc_attr_e( 'e.g. wp-block-library', 'leanstack' ); ?>" style="width: 100%;">
+                                </td>
+                                <td style="text-align: center;">
+                                    <button type="button" class="button button-link-delete ls-remove-rule" title="<?php esc_attr_e( 'Remove rule', 'leanstack' ); ?>" style="color: #d63638; text-decoration: none; font-size: 16px; font-weight: bold;">&times;</button>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+
+                    <p style="margin-top: 10px;">
+                        <button type="button" class="button button-secondary" id="ls-add-asset-rule-btn">
+                            <span class="dashicons dashicons-plus-alt" style="vertical-align: text-bottom;"></span> <?php _e( 'Add Exclusion Rule', 'leanstack' ); ?>
+                        </button>
+                    </p>
+
+                    <p class="submit" style="display: flex; gap: 10px; align-items: center; margin-top: 20px;">
+                        <button type="submit" class="button button-primary button-large"><?php _e( 'Save Asset Exclusion Rules', 'leanstack' ); ?></button>
+                    </p>
+                </div>
+            </form>
+
+            <template id="ls-asset-rule-template">
+                <tr>
+                    <td>
+                        <input type="checkbox" name="rules[__INDEX__][status]" value="1" checked>
+                    </td>
+                    <td>
+                        <input type="text" name="rules[__INDEX__][name]" placeholder="<?php esc_attr_e( 'e.g. Checkout Page', 'leanstack' ); ?>" style="width: 100%;">
+                    </td>
+                    <td>
+                        <select name="rules[__INDEX__][target_type]" style="width: 100%;">
+                            <option value="front_page"><?php _e( 'Front Page / Home', 'leanstack' ); ?></option>
+                            <option value="id"><?php _e( 'Page / Post ID', 'leanstack' ); ?></option>
+                            <option value="slug"><?php _e( 'Page / Post Slug', 'leanstack' ); ?></option>
+                            <option value="uri" selected><?php _e( 'URL Path / Wildcard', 'leanstack' ); ?></option>
+                        </select>
+                    </td>
+                    <td>
+                        <input type="text" name="rules[__INDEX__][target_value]" placeholder="<?php esc_attr_e( 'e.g. /checkout/* or 42', 'leanstack' ); ?>" style="width: 100%;">
+                    </td>
+                    <td>
+                        <input type="text" name="rules[__INDEX__][scripts]" placeholder="<?php esc_attr_e( 'e.g. contact-form-7', 'leanstack' ); ?>" style="width: 100%;">
+                    </td>
+                    <td>
+                        <input type="text" name="rules[__INDEX__][styles]" placeholder="<?php esc_attr_e( 'e.g. wp-block-library', 'leanstack' ); ?>" style="width: 100%;">
+                    </td>
+                    <td style="text-align: center;">
+                        <button type="button" class="button button-link-delete ls-remove-rule" title="<?php esc_attr_e( 'Remove rule', 'leanstack' ); ?>" style="color: #d63638; text-decoration: none; font-size: 16px; font-weight: bold;">&times;</button>
+                    </td>
+                </tr>
+            </template>
+
+            <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                var addBtn = document.getElementById('ls-add-asset-rule-btn');
+                var rulesTable = document.getElementById('ls-asset-rules-body');
+                var tpl = document.getElementById('ls-asset-rule-template');
+                if (!addBtn || !rulesTable || !tpl) return;
+
+                addBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    var idx = rulesTable.querySelectorAll('tr').length;
+                    var html = tpl.innerHTML.replace(/__INDEX__/g, idx);
+                    var tr = document.createElement('tr');
+                    tr.innerHTML = html;
+                    rulesTable.appendChild(tr);
+                });
+
+                rulesTable.addEventListener('click', function(e) {
+                    if (e.target && e.target.classList.contains('ls-remove-rule')) {
+                        e.preventDefault();
+                        var row = e.target.closest('tr');
+                        if (row) {
+                            row.remove();
+                        }
+                    }
+                });
+            });
+            </script>
+
             <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; border-radius: 4px; margin-top: 20px;">
                 <h3><span class="dashicons dashicons-admin-tools" style="color: #2271b1;"></span> <?php _e( 'Instant Maintenance Actions', 'leanstack' ); ?></h3>
                 <p class="description"><?php _e( 'Execute immediate database cleanup tasks without waiting for cron intervals.', 'leanstack' ); ?></p>
@@ -4591,6 +4951,55 @@ class LeanStackBridge {
         }
 
         wp_redirect( add_query_arg( array( 'page' => 'leanstack-optimizations', 'saved' => '1' ), admin_url( 'options-general.php' ) ) );
+        exit;
+    }
+
+    public function handle_save_asset_exclusions() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( __( 'Unauthorized.', 'leanstack' ) );
+        }
+        check_admin_referer( 'leanstack_save_asset_exclusions_action', 'leanstack_nonce' );
+
+        $enabled        = ! empty( $_POST['leanstack_asset_exclusions_enabled'] ) ? 1 : 0;
+        $global_scripts = isset( $_POST['global_scripts'] ) ? sanitize_textarea_field( wp_unslash( $_POST['global_scripts'] ) ) : '';
+        $global_styles  = isset( $_POST['global_styles'] ) ? sanitize_textarea_field( wp_unslash( $_POST['global_styles'] ) ) : '';
+
+        $rules = array();
+        if ( isset( $_POST['rules'] ) && is_array( $_POST['rules'] ) ) {
+            foreach ( $_POST['rules'] as $rule_data ) {
+                if ( ! is_array( $rule_data ) ) {
+                    continue;
+                }
+                $name        = isset( $rule_data['name'] ) ? sanitize_text_field( wp_unslash( $rule_data['name'] ) ) : '';
+                $target_type = isset( $rule_data['target_type'] ) && in_array( $rule_data['target_type'], array( 'front_page', 'id', 'slug', 'uri' ), true ) ? $rule_data['target_type'] : 'uri';
+                $target_val  = isset( $rule_data['target_value'] ) ? sanitize_text_field( wp_unslash( $rule_data['target_value'] ) ) : '';
+                $scripts     = isset( $rule_data['scripts'] ) ? sanitize_text_field( wp_unslash( $rule_data['scripts'] ) ) : '';
+                $styles      = isset( $rule_data['styles'] ) ? sanitize_text_field( wp_unslash( $rule_data['styles'] ) ) : '';
+                $status      = ! empty( $rule_data['status'] ) ? 1 : 0;
+
+                if ( '' !== trim( $scripts ) || '' !== trim( $styles ) || '' !== trim( $name ) ) {
+                    $rules[] = array(
+                        'name'         => $name,
+                        'target_type'  => $target_type,
+                        'target_value' => $target_val,
+                        'scripts'      => $scripts,
+                        'styles'       => $styles,
+                        'status'       => $status,
+                    );
+                }
+            }
+        }
+
+        $exclusions = array(
+            'enabled'        => $enabled,
+            'global_scripts' => $global_scripts,
+            'global_styles'  => $global_styles,
+            'rules'          => $rules,
+        );
+
+        update_option( 'leanstack_asset_exclusions', $exclusions );
+
+        wp_redirect( add_query_arg( array( 'page' => 'leanstack-optimizations', 'assets_saved' => '1' ), admin_url( 'options-general.php' ) ) );
         exit;
     }
 

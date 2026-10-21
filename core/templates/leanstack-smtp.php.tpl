@@ -142,6 +142,13 @@ class LeanStackSMTP {
     public function configure_phpmailer( $phpmailer ) {
         $cfg = $this->get_config();
         if ( empty( $cfg['enabled'] ) || empty( $cfg['host'] ) ) {
+            // Native PHP mail fallback (zero external SMTP dependency)
+            $phpmailer->isMail();
+            $from_email = ! empty( $cfg['from_email'] ) ? $cfg['from_email'] : get_option( 'admin_email' );
+            if ( ! empty( $from_email ) && is_email( $from_email ) ) {
+                $from_name = ! empty( $cfg['from_name'] ) ? $cfg['from_name'] : get_bloginfo( 'name' );
+                $phpmailer->setFrom( $from_email, $from_name );
+            }
             return;
         }
 
@@ -200,7 +207,9 @@ class LeanStackSMTP {
         if ( is_dir( $home_dir . '/logs' ) ) {
             $to = isset( $mail_data['to'] ) ? ( is_array( $mail_data['to'] ) ? implode( ', ', $mail_data['to'] ) : $mail_data['to'] ) : 'unknown';
             $subj = isset( $mail_data['subject'] ) ? $mail_data['subject'] : '';
-            $entry = sprintf( "[%s] SENT: To: %s | Subject: %s\n", current_time( 'mysql' ), $to, $subj );
+            $cfg = $this->get_config();
+            $mode = ( ! empty( $cfg['enabled'] ) && ! empty( $cfg['host'] ) ) ? 'SMTP' : 'PHP-MAIL';
+            $entry = sprintf( "[%s] SENT [%s]: To: %s | Subject: %s\n", current_time( 'mysql' ), $mode, $to, $subj );
             @file_put_contents( $mail_log, $entry, FILE_APPEND );
         }
     }

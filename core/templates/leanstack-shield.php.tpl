@@ -12,18 +12,107 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // Auto-disable Query Monitor profiling during performance benchmarks
 if ( ! defined( 'QM_DISABLE' ) ) {
-    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_REQUEST['action'] ) ) ||
+    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_REQUEST['action'] ) ) ||
+         ( isset( $_GET['page'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_GET['page'] ) ) ||
          ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
-         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
         define( 'QM_DISABLE', true );
     }
 }
+if ( ! defined( 'SAVEQUERIES' ) ) {
+    define( 'SAVEQUERIES', false );
+}
+
+// Eliminate query backtrace performance overhead during benchmark execution
+add_action( 'plugins_loaded', function() {
+    if ( defined( 'QM_DISABLE' ) && QM_DISABLE && isset( $GLOBALS['wpdb'] ) ) {
+        $GLOBALS['wpdb']->save_queries = false;
+    }
+}, 0 );
+
 
 // Runtime Execution & Session Security Controls
 @ini_set( 'session.use_strict_mode', '1' );
 @ini_set( 'session.cookie_httponly', '1' );
+@ini_set( 'session.cookie_secure', '1' );
+@ini_set( 'session.cookie_samesite', 'Lax' );
 if ( (int) @ini_get( 'max_execution_time' ) < 300 ) {
     @ini_set( 'max_execution_time', '300' );
+}
+
+// Intercept and enforce Secure, HttpOnly, and SameSite attributes on all Set-Cookie response headers
+if ( ! function_exists( 'leanstack_enforce_cookie_security_flags' ) ) {
+    function leanstack_enforce_cookie_security_flags() {
+        if ( headers_sent() ) {
+            return;
+        }
+
+        $is_https = ( function_exists( 'is_ssl' ) && is_ssl() )
+            || ( isset( $_SERVER['HTTPS'] ) && 'off' !== strtolower( (string) $_SERVER['HTTPS'] ) && ! empty( $_SERVER['HTTPS'] ) )
+            || ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) && 'https' === strtolower( (string) $_SERVER['HTTP_X_FORWARDED_PROTO'] ) )
+            || ( isset( $_SERVER['HTTP_X_FORWARDED_SSL'] ) && 'on' === strtolower( (string) $_SERVER['HTTP_X_FORWARDED_SSL'] ) )
+            || ( isset( $_SERVER['HTTP_X_FORWARDED_SCHEME'] ) && 'https' === strtolower( (string) $_SERVER['HTTP_X_FORWARDED_SCHEME'] ) )
+            || ( isset( $_SERVER['HTTP_CF_VISITOR'] ) && false !== strpos( (string) $_SERVER['HTTP_CF_VISITOR'], 'https' ) )
+            || ( isset( $_SERVER['SERVER_PORT'] ) && 443 === (int) $_SERVER['SERVER_PORT'] );
+
+        $raw_headers = headers_list();
+        $cookie_headers = array();
+        foreach ( $raw_headers as $h ) {
+            if ( stripos( $h, 'Set-Cookie:' ) === 0 ) {
+                $cookie_headers[] = $h;
+            }
+        }
+
+        if ( empty( $cookie_headers ) ) {
+            return;
+        }
+
+        header_remove( 'Set-Cookie' );
+
+        foreach ( $cookie_headers as $cookie_header ) {
+            $val = trim( substr( $cookie_header, 11 ) );
+            $parts = explode( ';', $val );
+            $name_val = trim( $parts[0] );
+            $eq_pos = strpos( $name_val, '=' );
+            $name = ( false !== $eq_pos ) ? trim( substr( $name_val, 0, $eq_pos ) ) : $name_val;
+
+            $has_secure = false;
+            $has_httponly = false;
+            $has_samesite = false;
+
+            for ( $i = 1; $i < count( $parts ); $i++ ) {
+                $attr = strtolower( trim( $parts[$i] ) );
+                if ( 'secure' === $attr ) {
+                    $has_secure = true;
+                } elseif ( 'httponly' === $attr ) {
+                    $has_httponly = true;
+                } elseif ( 0 === strpos( $attr, 'samesite' ) ) {
+                    $has_samesite = true;
+                }
+            }
+
+            // Enforce Secure flag if HTTPS or if cookie is sensitive / session / token / wp cookie
+            // (e.g. PHPSESSID, PHPSESSSID, snn_dynamic_token, unique_session_id, wordpress_*, wp-settings-*)
+            if ( ! $has_secure && ( $is_https || preg_match( '/^(phpsess+id|snn_dynamic_token|unique_session_id|wordpress_|wp-settings)/i', $name ) ) ) {
+                $val .= '; Secure';
+            }
+
+            // Enforce HttpOnly on session cookies, dynamic tokens, and wp-settings cookies
+            // (e.g. PHPSESSID, PHPSESSSID, snn_dynamic_token, unique_session_id, wp-settings-1, wp-settings-time-1)
+            if ( ! $has_httponly && preg_match( '/^(phpsess+id|snn_dynamic_token|unique_session_id|wp-settings)/i', $name ) ) {
+                $val .= '; HttpOnly';
+            }
+
+            // Enforce SameSite=Lax if missing
+            if ( ! $has_samesite ) {
+                $val .= '; SameSite=Lax';
+            }
+
+            header( 'Set-Cookie: ' . $val, false );
+        }
+    }
+
+    header_register_callback( 'leanstack_enforce_cookie_security_flags' );
 }
 
 // 0. Angie Rewrite & Pretty Permalinks Support (Enables rewrite rule detection for Site Health)

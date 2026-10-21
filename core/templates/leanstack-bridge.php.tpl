@@ -754,6 +754,14 @@ class LeanStackBridge {
                                 <p class="description"><?php _e( 'When time elapses, LeanStack Watcher automatically restores Strict Production Lockdown.', 'leanstack' ); ?></p>
                             </td>
                         </tr>
+                        <tr>
+                            <th scope="row"><?php _e( 'Cookie Security Hardening', 'leanstack' ); ?></th>
+                            <td>
+                                <span class="dashicons dashicons-yes-alt" style="color: #00a32a; vertical-align: middle;"></span>
+                                <strong style="color: #00a32a;"><?php _e( 'Enforced (Secure, HttpOnly & SameSite=Lax)', 'leanstack' ); ?></strong>
+                                <p class="description"><?php _e( 'All session cookies (PHPSESSID, snn_dynamic_token, unique_session_id) and WordPress settings cookies (wp-settings-*) are automatically hardened with Secure, HttpOnly, and SameSite attributes.', 'leanstack' ); ?></p>
+                            </td>
+                        </tr>
                     </table>
 
                     <p class="submit">

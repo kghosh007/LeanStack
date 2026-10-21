@@ -1290,6 +1290,22 @@ opcache.jit_hot_loop = 1
                                 ini_data += "\nsession.cookie_httponly = 1\n"
                             ini_modified = True
 
+                        # Reconcile session.cookie_secure = 1
+                        if not re.search(r"^session\.cookie_secure\s*=\s*1", ini_data, re.M):
+                            if re.search(r"^;*session\.cookie_secure\s*=.*", ini_data, re.M):
+                                ini_data = re.sub(r"^;*session\.cookie_secure\s*=.*", "session.cookie_secure = 1", ini_data, flags=re.M)
+                            else:
+                                ini_data += "\nsession.cookie_secure = 1\n"
+                            ini_modified = True
+
+                        # Reconcile session.cookie_samesite = Lax
+                        if not re.search(r"^session\.cookie_samesite\s*=\s*Lax", ini_data, re.M):
+                            if re.search(r"^;*session\.cookie_samesite\s*=.*", ini_data, re.M):
+                                ini_data = re.sub(r"^;*session\.cookie_samesite\s*=.*", "session.cookie_samesite = Lax", ini_data, flags=re.M)
+                            else:
+                                ini_data += "\nsession.cookie_samesite = Lax\n"
+                            ini_modified = True
+
                         # Reconcile post_max_size = 128M
                         if "fpm" in ini_path and not re.search(r"^post_max_size\s*=\s*128M", ini_data, re.M):
                             if re.search(r"^;*post_max_size\s*=.*", ini_data, re.M):
@@ -1595,12 +1611,18 @@ www-data hard nofile 65535
             p_content = p_content.strip() + f'\nphp_admin_value[sendmail_path] = "/usr/bin/msmtp -C /home/{user}/.msmtprc -t -i"\n'
             p_changed = True
 
-        # 6. Session Strict Mode & HttpOnly
+        # 6. Session Strict Mode, HttpOnly & Secure Flags
         if "session.use_strict_mode" not in p_content:
             p_content = p_content.strip() + "\nphp_admin_flag[session.use_strict_mode] = on\n"
             p_changed = True
         if "session.cookie_httponly" not in p_content:
             p_content = p_content.strip() + "\nphp_admin_flag[session.cookie_httponly] = on\n"
+            p_changed = True
+        if "session.cookie_secure" not in p_content:
+            p_content = p_content.strip() + "\nphp_admin_flag[session.cookie_secure] = on\n"
+            p_changed = True
+        if "session.cookie_samesite" not in p_content:
+            p_content = p_content.strip() + "\nphp_admin_value[session.cookie_samesite] = Lax\n"
             p_changed = True
 
         # 7. PHP Execution Time Limit (300s)

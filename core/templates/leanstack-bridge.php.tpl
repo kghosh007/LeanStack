@@ -163,6 +163,7 @@ class LeanStackBridge {
         add_action( 'admin_post_leanstack_save_optimizations', array( $this, 'handle_save_optimizations' ) );
         add_action( 'admin_post_leanstack_clean_action_scheduler', array( $this, 'handle_clean_action_scheduler' ) );
         add_action( 'admin_post_leanstack_run_db_optimize', array( $this, 'handle_run_db_optimize' ) );
+        add_action( 'admin_post_leanstack_save_asset_exclusions', array( $this, 'handle_save_asset_exclusions' ) );
 
         // Default Theme Handlers
         add_action( 'admin_post_leanstack_save_default_theme', array( $this, 'handle_save_default_theme' ) );

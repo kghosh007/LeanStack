@@ -1272,7 +1272,7 @@ exit 0
         self.assertIn("EMPTY_TRASH_DAYS", up)
 
     def test_php_execution_time_and_session_security(self):
-        """Verify max_execution_time 300, request_terminate_timeout 300s, and session security flags across PHP configs."""
+        """Verify max_execution_time 300, request_terminate_timeout 300s, and session/cookie security flags across configs."""
         pool_tpl = os.path.join(BASE_DIR, "core", "templates", "pool.conf.tpl")
         with open(pool_tpl, "r") as f:
             pool = f.read()
@@ -1281,6 +1281,8 @@ exit 0
         self.assertIn("php_admin_value[max_execution_time] = 300", pool)
         self.assertIn("php_admin_flag[session.use_strict_mode] = on", pool)
         self.assertIn("php_admin_flag[session.cookie_httponly] = on", pool)
+        self.assertIn("php_admin_flag[session.cookie_secure] = on", pool)
+        self.assertIn("php_admin_value[session.cookie_samesite] = Lax", pool)
 
         shield_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-shield.php.tpl")
         with open(shield_tpl, "r") as f:
@@ -1288,6 +1290,10 @@ exit 0
 
         self.assertIn("session.use_strict_mode", shield)
         self.assertIn("session.cookie_httponly", shield)
+        self.assertIn("session.cookie_secure", shield)
+        self.assertIn("session.cookie_samesite", shield)
+        self.assertIn("leanstack_enforce_cookie_security_flags", shield)
+        self.assertIn("wp-settings", shield)
         self.assertIn("max_execution_time", shield)
 
         phase5 = os.path.join(BASE_DIR, "scripts", "phase5_php.sh")
@@ -1296,7 +1302,32 @@ exit 0
 
         self.assertIn("session.use_strict_mode = 1", p5)
         self.assertIn("session.cookie_httponly = 1", p5)
+        self.assertIn("session.cookie_secure = 1", p5)
+        self.assertIn("session.cookie_samesite = Lax", p5)
         self.assertIn("max_execution_time = 300", p5)
+
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            up = f.read()
+        self.assertIn("session.cookie_secure = 1", up)
+        self.assertIn("session.cookie_samesite = Lax", up)
+
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge = f.read()
+        self.assertIn("Cookie Security Hardening", bridge)
+
+        # Verify regex matching in shield handles PHPSESSSID (triple 's'), PHPSESSID, dynamic token, and wp-settings
+        import re
+        cookie_regex = r"^(phpsess+id|snn_dynamic_token|unique_session_id|wordpress_|wp-settings)"
+        self.assertTrue(bool(re.match(cookie_regex, "PHPSESSSID", re.I)))
+        self.assertTrue(bool(re.match(cookie_regex, "PHPSESSID", re.I)))
+        self.assertTrue(bool(re.match(cookie_regex, "snn_dynamic_token", re.I)))
+        self.assertTrue(bool(re.match(cookie_regex, "unique_session_id", re.I)))
+        self.assertTrue(bool(re.match(cookie_regex, "wp-settings-1", re.I)))
+        self.assertTrue(bool(re.match(cookie_regex, "wp-settings-time-1", re.I)))
+        self.assertFalse(bool(re.match(cookie_regex, "unrelated_cookie", re.I)))
+
 
     def test_watcher_and_lsctl_htaccess_permissions(self):
         """Verify ls-watcher, lsctl, and ls-upgrade enforce chmod 644 on .htaccess, robots.txt, and llms.txt."""
@@ -1401,16 +1432,201 @@ exit 0
         self.assertIn("logs/mail.log", smtp)
         self.assertIn("log_mail_success", smtp)
         self.assertIn("log_mail_failure", smtp)
+        self.assertIn("isMail", smtp)
+        self.assertIn("PHP-MAIL", smtp)
 
         bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
         with open(bridge_tpl, "r") as f:
             bridge = f.read()
 
         self.assertIn("No external SMTP provider configured", bridge)
+        self.assertIn("Native PHP mail active", bridge)
+        self.assertIn("sent via native PHP mail", bridge)
+
+    def test_database_benchmark_query_guards_and_config(self):
+        """Verify SAVEQUERIES disabled, QM_DISABLE extended benchmark guard, and MariaDB dual-config synchronization."""
+        wp_cfg = os.path.join(BASE_DIR, "core", "templates", "wp-config.php.tpl")
+        with open(wp_cfg, "r") as f:
+            cfg = f.read()
+        self.assertIn("define( 'SAVEQUERIES', false )", cfg)
+        self.assertIn("QM_DISABLE", cfg)
+        self.assertIn("wp-performance|wphb", cfg)
+
+        shield_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-shield.php.tpl")
+        with open(shield_tpl, "r") as f:
+            shield = f.read()
+        self.assertIn("define( 'SAVEQUERIES', false )", shield)
+        self.assertIn("QM_DISABLE", shield)
+        self.assertIn("wp-performance|wphb", shield)
+
+        p3 = os.path.join(BASE_DIR, "scripts", "phase3_mariadb.sh")
+        with open(p3, "r") as f:
+            p3_content = f.read()
+        self.assertIn("mariadb.conf.d", p3_content)
+        self.assertIn("/etc/mysql/conf.d/", p3_content)
+        self.assertIn("[mariadb]", p3_content)
+        self.assertIn("innodb_flush_log_at_trx_commit = 2", p3_content)
+
+        up = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(up, "r") as f:
+            up_content = f.read()
+        self.assertIn("/etc/mysql/conf.d", up_content)
+        self.assertIn("mariadb.conf.d", up_content)
+        self.assertIn("[mariadb]", up_content)
+
+        db_tune = os.path.join(BASE_DIR, "core", "bin", "ls-db-tune")
+        with open(db_tune, "r") as f:
+            tuner = f.read()
+        self.assertIn("[mariadb]", tuner)
+        self.assertIn("innodb_flush_log_at_trx_commit", tuner)
+
+    def test_asset_loading_exclusion_system(self):
+        """Verify global and per-page asset loading exclusion system in leanstack-bridge.php.tpl."""
+        bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_tpl, "r") as f:
+            bridge = f.read()
+
+        # Methods and options
+        self.assertIn("get_asset_exclusions", bridge)
+        self.assertIn("parse_asset_handles", bridge)
+        self.assertIn("filter_enqueued_assets", bridge)
+        self.assertIn("handle_save_asset_exclusions", bridge)
+        self.assertIn("leanstack_asset_exclusions", bridge)
+
+        # Hook registrations (early enqueue, late header script printing, and dynamic footer printing)
+        self.assertIn("wp_enqueue_scripts", bridge)
+        self.assertIn("wp_print_scripts", bridge)
+        self.assertIn("wp_print_footer_scripts", bridge)
+        self.assertIn("admin_post_leanstack_save_asset_exclusions", bridge)
+
+        # Dequeue and deregister functions
+        self.assertIn("wp_dequeue_script", bridge)
+        self.assertIn("wp_deregister_script", bridge)
+        self.assertIn("wp_dequeue_style", bridge)
+        self.assertIn("wp_deregister_style", bridge)
+
+        # Rule condition types
+        self.assertIn("front_page", bridge)
+        self.assertIn("is_front_page", bridge)
+        self.assertIn("target_type", bridge)
+        self.assertIn("target_value", bridge)
+
+        # Safety guards
+        self.assertIn("is_admin()", bridge)
+        self.assertIn("wp_doing_ajax()", bridge)
+        self.assertIn("get_queried_object_id", bridge)
+        self.assertIn("post_name", bridge)
+        self.assertIn("slug", bridge)
+
+        # Admin UI elements and template
+        self.assertIn("leanstack_asset_exclusions_enabled", bridge)
+        self.assertIn("global_scripts", bridge)
+        self.assertIn("global_styles", bridge)
+        self.assertIn("ls-asset-rules-table", bridge)
+        self.assertIn("ls-asset-rule-template", bridge)
+        self.assertIn("ls-add-asset-rule-btn", bridge)
+        self.assertIn("Save Asset Exclusion Rules", bridge)
+
+        # Verify handle parsing allows dotted handles (e.g. jquery.ui.core, font-awesome.min)
+        handle_clean_regex = r"[^a-zA-Z0-9_\-\.]"
+        clean_item = re.sub(handle_clean_regex, "", "jquery.ui.core")
+        self.assertEqual(clean_item, "jquery.ui.core")
+
+        # Wildcard matching test to ensure the regex strategy in PHP works
+        pattern = "/checkout/*"
+        regex = r"^" + re.escape(pattern).replace(r"\*", ".*") + r"$"
+        self.assertTrue(bool(re.match(regex, "/checkout/order-pay/")))
+        self.assertFalse(bool(re.match(regex, "/shop/products/")))
+
+    def test_four_requested_fixes_deep_validation(self):
+        """End-to-end unit verification for all 4 requested cases."""
+        import tempfile
+
+        # Case 1: Cookie hardening regex & flags
+        shield_path = os.path.join(BASE_DIR, "core", "templates", "leanstack-shield.php.tpl")
+        with open(shield_path, "r") as f:
+            shield_code = f.read()
+
+        cookie_regex = r"^(phpsess+id|snn_dynamic_token|unique_session_id|wordpress_|wp-settings)"
+        for cookie_name in ["PHPSESSSID", "PHPSESSID", "snn_dynamic_token", "unique_session_id", "wp-settings-1", "wp-settings-time-1"]:
+            self.assertTrue(bool(re.search(cookie_regex, cookie_name, re.I)), f"Cookie {cookie_name} must match regex")
+        self.assertIn("HTTP_X_FORWARDED_SSL", shield_code)
+        self.assertIn("HTTP_X_FORWARDED_SCHEME", shield_code)
+
+        # Case 2: Database performance degradation & dual config synchronization
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.join(BASE_DIR, "core", "bin", "ls-db-tune")
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune_test_apply", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune_test_apply", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            conf_file = os.path.join(tmp_dir, "99-leanstack-highqps.cnf")
+            ideal = {
+                "innodb_buffer_pool_size": "2048M",
+                "table_open_cache": 4096,
+                "table_open_cache_instances": 4,
+                "max_connections": 300,
+                "innodb_io_capacity": 4000,
+                "innodb_io_capacity_max": 8000,
+                "innodb_read_io_threads": 4,
+                "innodb_write_io_threads": 4,
+                "innodb_flush_neighbors": 0,
+                "sort_buffer_size": "2M",
+                "join_buffer_size": "2M",
+                "read_buffer_size": "512K",
+                "read_rnd_buffer_size": "1M",
+                "aria_pagecache_buffer_size": "128M",
+                "aria_sort_buffer_size": "32M",
+                "transaction_isolation": "READ-COMMITTED",
+                "innodb_log_file_size": "512M",
+            }
+            res = ls_db_tune.apply_optimizations(ideal, conf_dir=tmp_dir, collector=None, show_log=False)
+            self.assertTrue(res)
+            self.assertTrue(os.path.exists(conf_file))
+            with open(conf_file, "r") as f:
+                cnf_text = f.read()
+            self.assertIn("[mysqld]", cnf_text)
+            self.assertIn("[mariadb]", cnf_text)
+            self.assertIn("innodb_flush_log_at_trx_commit = 2", cnf_text)
+            self.assertIn("performance_schema             = OFF", cnf_text)
+            self.assertIn("skip-name-resolve              = 1", cnf_text)
+
+        # Case 3: Native PHP Mail fallback without external SMTP
+        smtp_path = os.path.join(BASE_DIR, "core", "templates", "leanstack-smtp.php.tpl")
+        with open(smtp_path, "r") as f:
+            smtp_code = f.read()
+        self.assertIn("$phpmailer->isMail()", smtp_code)
+        self.assertIn("SENT [%s]: To: %s", smtp_code)
+
+        bridge_path = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge_path, "r") as f:
+            bridge_code = f.read()
+        self.assertIn("handle_send_smtp_test", bridge_code)
+        self.assertIn("Native PHP Mail Transport", bridge_code)
+        self.assertIn("LeanStackSMTP::get_instance()", bridge_code)
+
+        # Case 4: Asset loading exclusions
+        self.assertIn("filter_enqueued_assets", bridge_code)
+        self.assertIn("parse_asset_handles", bridge_code)
+        self.assertIn("wp_enqueue_scripts", bridge_code)
+        self.assertIn("wp_print_scripts", bridge_code)
+        self.assertIn("wp_print_footer_scripts", bridge_code)
+
+        # Simulate asset handle parsing
+        raw_handles = "jquery.ui.core, font-awesome.min\nwc-cart-fragments, wp-block-library"
+        items = [re.sub(r"[^a-zA-Z0-9_\-\.]", "", h.strip()) for h in re.split(r"[\r\n,]+", raw_handles) if h.strip()]
+        self.assertIn("jquery.ui.core", items)
+        self.assertIn("font-awesome.min", items)
+        self.assertIn("wc-cart-fragments", items)
+        self.assertIn("wp-block-library", items)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

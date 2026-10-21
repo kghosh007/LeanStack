@@ -944,7 +944,13 @@ class LeanStackUpgrader:
         - Adaptive hash index and secondary index change buffering.
         """
         if not os.path.isdir(conf_dir):
-            return False
+            if os.path.isdir("/etc/mysql") or "/etc/mysql" in conf_dir:
+                try:
+                    os.makedirs(conf_dir, exist_ok=True)
+                except Exception:
+                    return False
+            else:
+                return False
 
         try:
             ram_mb = 2048
@@ -1134,6 +1140,15 @@ innodb_buffer_pool_size        = {bp_mb}M
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 transaction_isolation          = READ-COMMITTED
+innodb_flush_log_at_trx_commit = 2
+performance_schema             = OFF
+skip-log-bin
+skip-name-resolve              = 1
+query_cache_type               = 0
+query_cache_size               = 0
+optimizer_switch               = mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on
+tmp_table_size                 = 64M
+max_heap_table_size            = 64M
 aria_pagecache_buffer_size     = {aria_page}
 aria_sort_buffer_size          = 32M
 sort_buffer_size               = {sort_buf}
@@ -1167,6 +1182,28 @@ innodb_flush_neighbors         = {flush_neighbors}
                 with open(conf_path, "w", encoding="utf-8") as f:
                     f.write(conf_content)
                 self.log(f"Reconciled MariaDB High-QPS configuration at {conf_path}", Colors.GREEN, prefix="  ✔")
+
+                # Ensure /etc/mysql/conf.d and /etc/mysql/my.cnf are aligned
+                if os.path.isdir("/etc/mysql"):
+                    alt_dir = "/etc/mysql/conf.d" if conf_dir == "/etc/mysql/mariadb.conf.d" else "/etc/mysql/mariadb.conf.d"
+                    if alt_dir != conf_dir:
+                        try:
+                            os.makedirs(alt_dir, exist_ok=True)
+                            with open(os.path.join(alt_dir, "99-leanstack-highqps.cnf"), "w", encoding="utf-8") as f_alt:
+                                f_alt.write(conf_content)
+                        except Exception:
+                            pass
+                    my_cnf = "/etc/mysql/my.cnf"
+                    if os.path.isfile(my_cnf):
+                        try:
+                            with open(my_cnf, "r", encoding="utf-8") as f_my:
+                                my_txt = f_my.read()
+                            if "mariadb.conf.d" not in my_txt:
+                                with open(my_cnf, "a", encoding="utf-8") as f_my:
+                                    f_my.write("\n!includedir /etc/mysql/mariadb.conf.d/\n")
+                        except Exception:
+                            pass
+
                 if shutil.which("systemctl") and hasattr(os, "geteuid") and os.geteuid() == 0:
                     for svc in ["mariadb", "mysql"]:
                         if subprocess.run(["systemctl", "--no-ask-password", "is-active", "--quiet", svc], check=False).returncode == 0:

@@ -241,6 +241,15 @@ innodb_buffer_pool_size        = ${BP_MB}M
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 transaction_isolation          = READ-COMMITTED
+innodb_flush_log_at_trx_commit = 2
+performance_schema             = OFF
+skip-log-bin
+skip-name-resolve              = 1
+query_cache_type               = 0
+query_cache_size               = 0
+optimizer_switch               = mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on
+tmp_table_size                 = 64M
+max_heap_table_size            = 64M
 aria_pagecache_buffer_size     = ${ARIA_PAGE}
 aria_sort_buffer_size          = 32M
 sort_buffer_size               = ${SORT_BUF}
@@ -257,6 +266,13 @@ innodb_read_io_threads         = ${IO_THREADS}
 innodb_write_io_threads        = ${IO_THREADS}
 innodb_flush_neighbors         = ${FLUSH_NEIGHBORS}
 EOF
+
+# Ensure /etc/mysql/conf.d and /etc/mysql/my.cnf are aligned to guarantee inclusion
+mkdir -p /etc/mysql/conf.d/
+cp -f /etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf /etc/mysql/conf.d/99-leanstack-highqps.cnf
+if [ -f /etc/mysql/my.cnf ]; then
+    grep -q "mariadb.conf.d" /etc/mysql/my.cnf || echo "!includedir /etc/mysql/mariadb.conf.d/" >> /etc/mysql/my.cnf
+fi
 
 systemctl restart mariadb
 

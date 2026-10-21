@@ -376,7 +376,8 @@ class DatabaseTuningAnalyzer:
             "innodb_io_capacity_max": ideal_io_cap_max,
             "innodb_read_io_threads": ideal_io_threads,
             "innodb_write_io_threads": ideal_io_threads,
-            "innodb_flush_neighbors": ideal_flush_neigh
+            "innodb_flush_neighbors": ideal_flush_neigh,
+            "innodb_flush_log_at_trx_commit": 2
         }
 
         # 1. Server Uptime & Engine Version
@@ -529,7 +530,26 @@ class DatabaseTuningAnalyzer:
             self.recommendations.append("Set transaction_isolation = READ-COMMITTED to eliminate InnoDB next-key gap locks.")
             self.score -= 15
 
-        # 4. In-Memory Sorting & Sort Merge Passes
+        # 4. Transaction Commit Flushing (innodb_flush_log_at_trx_commit)
+        flush_log = self.get_var_int("innodb_flush_log_at_trx_commit", 2)
+        if self.is_live and flush_log == 1:
+            self.checks.append({
+                "name": "Transaction Commit Flushing",
+                "status": "WARN",
+                "value": "flush_log_at_trx_commit = 1 (synchronous disk fsync)",
+                "desc": "CRITICAL BOTTLENECK: Synchronous disk fsync on every commit drops UPDATE and inventory check speed by 90-95%."
+            })
+            self.recommendations.append("Set innodb_flush_log_at_trx_commit = 2 to buffer transaction writes to RAM and accelerate UPDATEs.")
+            self.score -= 15
+        else:
+            self.checks.append({
+                "name": "Transaction Commit Flushing",
+                "status": "PASS",
+                "value": f"flush_log_at_trx_commit = {flush_log}",
+                "desc": "Transaction logs buffered to OS cache; high-throughput in-memory UPDATE execution active."
+            })
+
+        # 5. In-Memory Sorting & Sort Merge Passes
         sort_merges = self.get_status_int("Sort_merge_passes", 0)
         sort_buf_str = self.vars.get("sort_buffer_size", ideal_sort_buf)
         sort_buf_bytes = parse_size_to_bytes(sort_buf_str)
@@ -957,7 +977,8 @@ def apply_optimizations(
             ("table_definition_cache", ideal.get("table_definition_cache", 2048), str(ideal.get("table_definition_cache", 2048))),
             ("thread_cache_size", 128, "128"),
             ("tmp_table_size", parse_size_to_bytes(ideal.get("tmp_table_size", "64M")), f"64M ({parse_size_to_bytes('64M')} bytes)"),
-            ("max_heap_table_size", parse_size_to_bytes(ideal.get("max_heap_table_size", "64M")), f"64M ({parse_size_to_bytes('64M')} bytes)")
+            ("max_heap_table_size", parse_size_to_bytes(ideal.get("max_heap_table_size", "64M")), f"64M ({parse_size_to_bytes('64M')} bytes)"),
+            ("innodb_flush_log_at_trx_commit", 2, "2 (write once per sec to OS buffer, high-speed UPDATEs)")
         ]
 
         tx_iso = ideal.get("transaction_isolation", "READ-COMMITTED")
@@ -1053,6 +1074,15 @@ innodb_buffer_pool_size        = {ideal['innodb_buffer_pool_size']}
 innodb_buffer_pool_dump_at_shutdown = ON
 innodb_buffer_pool_load_at_startup  = ON
 transaction_isolation          = {ideal['transaction_isolation']}
+innodb_flush_log_at_trx_commit = 2
+performance_schema             = OFF
+skip-log-bin
+skip-name-resolve              = 1
+query_cache_type               = 0
+query_cache_size               = 0
+optimizer_switch               = mrr=on,mrr_cost_based=on,subquery_cache=on,semijoin=on,extended_keys=on,index_condition_pushdown=on
+tmp_table_size                 = 64M
+max_heap_table_size            = 64M
 aria_pagecache_buffer_size     = {ideal['aria_pagecache_buffer_size']}
 aria_sort_buffer_size          = 32M
 sort_buffer_size               = {ideal['sort_buffer_size']}
@@ -1073,6 +1103,28 @@ innodb_flush_neighbors         = {ideal['innodb_flush_neighbors']}
         with open(conf_path, "w", encoding="utf-8") as f:
             f.write(cnf_content)
         cfg_written = True
+
+        # Ensure both /etc/mysql/mariadb.conf.d and /etc/mysql/conf.d are synchronized
+        if os.path.isdir("/etc/mysql"):
+            alt_dir = "/etc/mysql/conf.d" if conf_dir == "/etc/mysql/mariadb.conf.d" else "/etc/mysql/mariadb.conf.d"
+            if alt_dir != conf_dir:
+                try:
+                    os.makedirs(alt_dir, exist_ok=True)
+                    with open(os.path.join(alt_dir, "99-leanstack-highqps.cnf"), "w", encoding="utf-8") as f_alt:
+                        f_alt.write(cnf_content)
+                except Exception:
+                    pass
+            # Ensure /etc/mysql/my.cnf includes mariadb.conf.d if present
+            my_cnf = "/etc/mysql/my.cnf"
+            if os.path.isfile(my_cnf):
+                try:
+                    with open(my_cnf, "r", encoding="utf-8") as f_my:
+                        my_txt = f_my.read()
+                    if "mariadb.conf.d" not in my_txt:
+                        with open(my_cnf, "a", encoding="utf-8") as f_my:
+                            f_my.write("\n!includedir /etc/mysql/mariadb.conf.d/\n")
+                except Exception:
+                    pass
     except Exception as e:
         print(f"{Colors.RED}❌ Failed to write configuration to {conf_path}: {e}{Colors.RESET}")
         return False

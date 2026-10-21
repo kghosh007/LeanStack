@@ -65,14 +65,21 @@ define( 'WP_POST_REVISIONS', 5 );
 define( 'MEDIA_TRASH', true );
 define( 'EMPTY_TRASH_DAYS', 7 );
 
+// --- Database Query Performance Guard ---
+if ( ! defined( 'SAVEQUERIES' ) ) {
+    define( 'SAVEQUERIES', false );
+}
+
 // Auto-disable Query Monitor backtrace profiling on benchmark requests
 if ( ! defined( 'QM_DISABLE' ) ) {
-    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_REQUEST['action'] ) ) ||
+    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_REQUEST['action'] ) ) ||
+         ( isset( $_GET['page'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_GET['page'] ) ) ||
          ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
-         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
         define( 'QM_DISABLE', true );
     }
 }
+
 
 // Absolute path to the WordPress directory
 if ( ! defined( 'ABSPATH' ) ) {

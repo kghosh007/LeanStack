@@ -330,17 +330,18 @@ class TuningCalculator:
 
         # Table cache instances matching vCPUs (up to 16)
         table_cache_inst = min(self.cores, 16)
-        conf_path = "/etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf"
-        if os.path.exists(conf_path):
-            try:
-                with open(conf_path, "r", encoding="utf-8") as f_c:
-                    m_inst = re.search(r'^\s*table_open_cache_instances\s*=\s*(\d+)', f_c.read(), re.MULTILINE)
-                    if m_inst:
-                        existing_inst = int(m_inst.group(1))
-                        if existing_inst >= 1:
-                            table_cache_inst = existing_inst
-            except Exception:
-                pass
+        for c_path in ["/etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf", "/etc/mysql/conf.d/99-leanstack-highqps.cnf"]:
+            if os.path.exists(c_path):
+                try:
+                    with open(c_path, "r", encoding="utf-8") as f_c:
+                        m_inst = re.search(r'^\s*table_open_cache_instances\s*=\s*(\d+)', f_c.read(), re.MULTILINE)
+                        if m_inst:
+                            existing_inst = int(m_inst.group(1))
+                            if existing_inst >= 1:
+                                table_cache_inst = existing_inst
+                                break
+                except Exception:
+                    pass
         # Log file size: 25% of buffer pool, capped at 1024M
         log_file_size_mb = min(bp_mb // 4, 1024)
 

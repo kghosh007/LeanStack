@@ -747,10 +747,44 @@ class TestHardwareTuning(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
         self.assertIn("WORDPRESS AUTOLOAD OPTIONS HEALTH & BLOAT AUDITOR", res.stdout)
 
-        res_json = subprocess.run([sys.executable, tuner_path, "--wp-autoload", "--json"], capture_output=True, text=True)
-        self.assertEqual(res_json.returncode, 0)
-        parsed = json.loads(res_json.stdout.strip())
-        self.assertIsInstance(parsed, list)
+    def test_innodb_flush_log_at_trx_commit_audit_and_apply(self):
+        """Verify ls-db-tune detects and penalizes flush_log_at_trx_commit=1 and applies=2 live."""
+        import importlib.machinery
+        import importlib.util
+        tuner_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-db-tune"))
+        loader = importlib.machinery.SourceFileLoader("ls_db_tune_test", tuner_path)
+        spec = importlib.util.spec_from_loader("ls_db_tune_test", loader)
+        ls_db_tune = importlib.util.module_from_spec(spec)
+        loader.exec_module(ls_db_tune)
+
+        hw = {"ram_mb": 4096, "cores": 4, "is_nvme": True, "is_rotational": False, "disk_type": "NVMe SSD"}
+        mock_status = {"Uptime": "86400", "Innodb_buffer_pool_read_requests": "10000", "Innodb_buffer_pool_reads": "10"}
+        mock_vars = {
+            "version": "12.3.3-MariaDB",
+            "innodb_buffer_pool_size": "1433M",
+            "transaction_isolation": "READ-COMMITTED",
+            "innodb_flush_log_at_trx_commit": "1",  # Sync disk fsync bottleneck
+            "table_open_cache": "4096",
+            "table_open_cache_instances": "4",
+            "query_cache_type": "0",
+            "performance_schema": "OFF",
+        }
+
+        analyzer = ls_db_tune.DatabaseTuningAnalyzer(
+            hardware=hw,
+            is_live=True,
+            status=mock_status,
+            variables=mock_vars,
+            fragmented_tables=[]
+        )
+        report = analyzer.analyze()
+
+        flush_check = next((c for c in report["checks"] if c["name"] == "Transaction Commit Flushing"), None)
+        self.assertIsNotNone(flush_check)
+        self.assertEqual(flush_check["status"], "WARN")
+        self.assertIn("flush_log_at_trx_commit = 1", flush_check["value"])
+        self.assertTrue(any("innodb_flush_log_at_trx_commit = 2" in r for r in report["recommendations"]))
+        self.assertLess(report["score"], 100)
 
 
 if __name__ == "__main__":

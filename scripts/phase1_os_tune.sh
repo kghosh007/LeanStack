@@ -59,6 +59,16 @@ EOF
 systemctl daemon-reload
 systemctl enable --now disable-thp.service || true
 
+# Self-heal missing grubenv on cloud VPS images to prevent systemd boot degraded state
+if [ -f /usr/lib/systemd/system/grub2-common.service ] || [ -f /lib/systemd/system/grub2-common.service ]; then
+    mkdir -p /boot/grub
+    if command -v grub-editenv &>/dev/null && [ ! -f /boot/grub/grubenv ]; then
+        grub-editenv /boot/grub/grubenv create 2>/dev/null || true
+        grub-editenv /boot/grub/grubenv unset recordfail 2>/dev/null || true
+    fi
+    systemctl reset-failed grub2-common.service 2>/dev/null || true
+fi
+
 # Dynamic Hardware Probing
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RAM_TOTAL_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)

@@ -424,6 +424,18 @@ class LeanStackUpgrader:
                                 shutil.copy2(os.path.join(s_dropin, f), os.path.join(d_dropin, f))
 
             if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl"):
+                # Self-heal missing grubenv on cloud VPS images to eliminate failed grub2-common.service
+                if os.path.isfile("/usr/lib/systemd/system/grub2-common.service") or os.path.isfile("/lib/systemd/system/grub2-common.service"):
+                    if not os.path.exists("/boot/grub/grubenv"):
+                        try:
+                            os.makedirs("/boot/grub", exist_ok=True)
+                            if shutil.which("grub-editenv"):
+                                subprocess.run(["grub-editenv", "/boot/grub/grubenv", "create"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                                subprocess.run(["grub-editenv", "/boot/grub/grubenv", "unset", "recordfail"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        except Exception:
+                            pass
+                    subprocess.run(["systemctl", "--no-ask-password", "reset-failed", "grub2-common.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
                 subprocess.run(["systemctl", "--no-ask-password", "stop", "ls-watcher.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 subprocess.run(["systemctl", "--no-ask-password", "reset-failed", "ls-watcher.service"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 subprocess.run(["systemctl", "--no-ask-password", "daemon-reload"], check=False)

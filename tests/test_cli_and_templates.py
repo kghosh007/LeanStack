@@ -1623,6 +1623,22 @@ exit 0
         self.assertIn("wc-cart-fragments", items)
         self.assertIn("wp-block-library", items)
 
+    def test_grubenv_and_systemd_boot_self_healing(self):
+        """Verify ls-upgrade and phase1_os_tune.sh self-heal missing /boot/grub/grubenv to resolve degraded system state."""
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_bin, "r") as f:
+            up = f.read()
+        self.assertIn("grub2-common.service", up)
+        self.assertIn("grubenv", up)
+        self.assertIn("recordfail", up)
+
+        phase1_script = os.path.join(BASE_DIR, "scripts", "phase1_os_tune.sh")
+        with open(phase1_script, "r") as f:
+            p1 = f.read()
+        self.assertIn("grub2-common.service", p1)
+        self.assertIn("grub-editenv", p1)
+        self.assertIn("recordfail", p1)
+
 
 if __name__ == "__main__":
     unittest.main()

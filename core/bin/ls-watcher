@@ -43,6 +43,27 @@ else
     DB_FILE="/var/lib/lsctl/sites.db"
 fi
 
+db_query() {
+    local sql="$1"
+    if [ ! -f "$DB_FILE" ]; then
+        return 0
+    fi
+    if command -v sqlite3 &>/dev/null; then
+        sqlite3 -separator '|' "$DB_FILE" "$sql" 2>/dev/null || true
+    elif command -v python3 &>/dev/null; then
+        python3 -c "
+import sqlite3, sys
+conn = sqlite3.connect('$DB_FILE')
+cur = conn.cursor()
+try:
+    for row in cur.execute(sys.argv[1]):
+        print('|'.join(str(v) if v is not None else '' for v in row))
+finally:
+    conn.close()
+" "$sql" 2>/dev/null || true
+    fi
+}
+
 # 4. Angie Health & Syntax Check with Quarantine Self-Healing
 check_angie() {
     if ! command -v angie &>/dev/null; then
@@ -203,10 +224,9 @@ check_valkey() {
 # 7. Multi-Version PHP-FPM Pool Sockets Check Against sites.db
 check_php_fpm_pools() {
     [ ! -f "$DB_FILE" ] && return 0
-    command -v sqlite3 &>/dev/null || return 0
 
     local pools
-    pools=$(sqlite3 "$DB_FILE" "SELECT domain, user, php_version FROM sites;" 2>/dev/null || true)
+    pools=$(db_query "SELECT domain, user, php_version FROM sites;")
     [ -z "$pools" ] && return 0
 
     local reloaded_services=()
@@ -387,7 +407,9 @@ heal_tenant_permissions() {
 # 8b. FastCGI Cache Permissions & Multi-Tenant Access Self-Healing
 heal_cache_permissions() {
     [ ! -d "/var/cache/angie/sites" ] && return 0
-    chmod 755 /var/cache/angie /var/cache/angie/sites 2>/dev/null || true
+    chmod 755 /var/cache/angie 2>/dev/null || true
+    chown root:www-data /var/cache/angie/sites 2>/dev/null || true
+    chmod 0711 /var/cache/angie/sites 2>/dev/null || true
 
     # Stale cache file garbage collection (older than 60 minutes)
     find /var/cache/angie/sites -type f -mmin +60 -delete 2>/dev/null || true
@@ -398,8 +420,8 @@ heal_cache_permissions() {
         domain=$(basename "$site_cache")
 
         local tenant_user=""
-        if [ -f "$DB_FILE" ] && command -v sqlite3 &>/dev/null; then
-            tenant_user=$(sqlite3 "$DB_FILE" "SELECT user FROM sites WHERE domain='$domain' LIMIT 1;" 2>/dev/null || true)
+        if [ -f "$DB_FILE" ]; then
+            tenant_user=$(db_query "SELECT user FROM sites WHERE domain='$domain' LIMIT 1;")
         fi
         if [ -z "$tenant_user" ]; then
             for h in /home/*; do
@@ -411,21 +433,6 @@ heal_cache_permissions() {
         fi
 
         if [ -n "$tenant_user" ] && id "$tenant_user" &>/dev/null; then
-            # Ensure tenant is member of www-data group
-            if ! id -nG "$tenant_user" 2>/dev/null | grep -qw "www-data"; then
-                usermod -a -G www-data "$tenant_user" 2>/dev/null || true
-                for v in 8.5 8.4 8.3 8.2 8.1; do
-                    if systemctl is-active --quiet "php${v}-fpm" 2>/dev/null; then
-                        systemctl reload "php${v}-fpm" 2>/dev/null || true
-                    fi
-                done
-            fi
-
-            # Pre-scaffold full 2-level hex hierarchy if missing
-            for h1 in 0 1 2 3 4 5 6 7 8 9 a b c d e f; do
-                mkdir -p "${site_cache}/${h1}"/{0,1,2,3,4,5,6,7,8,9,a,b,c,d,e,f}{0,1,2,3,4,5,6,7,8,9,a,b,c,d,e,f} 2>/dev/null || true
-            done
-
             # Self-heal permissions across cache hierarchy
             chown -R "${tenant_user}:www-data" "$site_cache" 2>/dev/null || true
             chmod 2770 "$site_cache" 2>/dev/null || true

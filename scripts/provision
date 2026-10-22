@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Apply the tuning document. This is the only shell entry for host provisioning.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+exec python3 -m installer.provision "$@"

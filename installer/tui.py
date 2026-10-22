@@ -211,7 +211,7 @@ class LeanStackInstaller:
         self.render_audit_card(audit)
         print("")
 
-        if audit["has_conflicts"]:
+        if audit["has_conflicts"] and not self.dry_run:
             if self.non_interactive:
                 self.sanitize_environment(audit)
             else:
@@ -251,11 +251,7 @@ class LeanStackInstaller:
 
     def execute_pipeline(self, tuning_data: Dict[str, Any]):
         phases = [
-            ("Phase 1: Base OS Cleanup, THP Lockout & Sysctl Tuning", self._run_phase1),
-            ("Phase 2: In-Memory Cache Tier (Valkey on Unix Domain Socket)", self._run_phase2),
-            ("Phase 3: Database Tier (MariaDB High-QPS Tuning)", self._run_phase3),
-            ("Phase 4: Web Tier & WAF (Angie HTTP/3, PQC TLS, 8G WAF, CrowdSec)", self._run_phase4),
-            ("Phase 5: Application Tier (PHP Multi-Version Engine & WP-CLI)", self._run_phase5),
+            ("Provision Valkey, MariaDB, Angie, and PHP from the tuning profile", self._run_provision),
             ("Phase 6: Master Control Plane (Deploying /usr/local/bin/cpctl)", self._run_phase6),
             ("Phase 7: Centralized Anti-Thundering Cron & Background Watchers", self._run_phase7)
         ]
@@ -282,40 +278,26 @@ class LeanStackInstaller:
 
         self.render_completion_card()
 
-    def _run_phase1(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
-        script = os.path.join(self.base_dir, "scripts", "phase1_os_tune.sh")
+    def _run_provision(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
+        cmd = [
+            sys.executable, "-m", "installer.provision",
+            "--php", self.selected_php,
+            "--profile", "-",
+        ]
         if self.dry_run:
-            time.sleep(0.4)
-            return
-        self._run_bash_script(script, spinner)
-
-    def _run_phase2(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
-        script = os.path.join(self.base_dir, "scripts", "phase2_valkey.sh")
-        if self.dry_run:
-            time.sleep(0.4)
-            return
-        self._run_bash_script(script, spinner)
-
-    def _run_phase3(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
-        script = os.path.join(self.base_dir, "scripts", "phase3_mariadb.sh")
-        if self.dry_run:
-            time.sleep(0.4)
-            return
-        self._run_bash_script(script, spinner)
-
-    def _run_phase4(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
-        script = os.path.join(self.base_dir, "scripts", "phase4_angie_waf.sh")
-        if self.dry_run:
-            time.sleep(0.4)
-            return
-        self._run_bash_script(script, spinner)
-
-    def _run_phase5(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
-        script = os.path.join(self.base_dir, "scripts", "phase5_php.sh")
-        if self.dry_run:
-            time.sleep(0.4)
-            return
-        self._run_bash_script(script, spinner)
+            cmd.append("--dry-run")
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps(tuning),
+            text=True,
+            cwd=self.base_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "provision failed")
+        if self.dry_run and f"php{self.selected_php}" not in proc.stdout:
+            raise RuntimeError(f"provision dry-run did not list php{self.selected_php}")
 
     def _run_phase6(self, tuning: Dict[str, Any], spinner: ProgressSpinner):
         if self.dry_run:
@@ -435,67 +417,6 @@ class LeanStackInstaller:
                         shutil.copy2(os.path.join(s_dropin, of), os.path.join(d_dropin, of))
         subprocess.run(["systemctl", "daemon-reload"], check=True)
         subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "cp-cf-sync.timer", "cp-gatekeeper.service", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
-
-    def _run_bash_script(self, script_path: str, spinner: ProgressSpinner):
-        if not os.path.exists(script_path):
-            raise FileNotFoundError(f"Missing script: {script_path}")
-
-        log_path = "/var/log/leanstack-install.log"
-        try:
-            log_file = open(log_path, "a", encoding="utf-8")
-        except Exception:
-            log_path = "/tmp/leanstack-install.log"
-            log_file = open(log_path, "a", encoding="utf-8")
-
-        script_name = os.path.basename(script_path)
-        log_file.write(f"\n======================================================\n")
-        log_file.write(f"[LeanStack] Starting {script_name} at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        log_file.write(f"======================================================\n")
-        log_file.flush()
-
-        env = os.environ.copy()
-        env["DEBIAN_FRONTEND"] = "noninteractive"
-
-        proc = subprocess.Popen(
-            ["bash", script_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=env
-        )
-
-        recent_lines = []
-        if proc.stdout:
-            for line in proc.stdout:
-                log_file.write(line)
-                log_file.flush()
-                clean = line.strip()
-                if not clean:
-                    continue
-                recent_lines.append(clean)
-                if len(recent_lines) > 25:
-                    recent_lines.pop(0)
-
-                # Show sub-step in the spinner if it's an informative line
-                if clean.startswith(">>>"):
-                    sub_msg = clean.lstrip(">").strip()
-                    if sub_msg.startswith("[Phase"):
-                        sub_msg = sub_msg.split("]", 1)[-1].strip()
-                    spinner.step(extra=f"↳ {sub_msg}")
-                elif any(clean.startswith(p) for p in ("📦", "⚙️", "✔", "Building", "Compiling", "Installing", "Configuring")):
-                    spinner.step(extra=f"↳ {clean}")
-
-        proc.wait()
-        log_file.close()
-
-        if proc.returncode != 0:
-            tail = "\n".join(recent_lines[-12:]) if recent_lines else "No output captured."
-            raise RuntimeError(
-                f"{script_name} failed with exit code {proc.returncode}.\n"
-                f"  Log file: {log_path}\n"
-                f"  Last output:\n{tail}"
-            )
 
     def render_completion_card(self):
         title = "LEANSTACK DEPLOYMENT COMPLETE"

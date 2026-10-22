@@ -111,22 +111,25 @@ elif ls /sys/block/*/queue/rotational &>/dev/null; then
     done
 fi
 
-# Resource Calculations
-if [ "$TOTAL_RAM_MB" -le 2048 ]; then
-    CALC_BP="512M"
-    CALC_VALKEY="128MB"
-elif [ "$TOTAL_RAM_MB" -le 4096 ]; then
-    CALC_BP="$(( TOTAL_RAM_MB * 35 / 100 ))M"
-    CALC_VALKEY="$(( TOTAL_RAM_MB * 10 / 100 ))MB"
-elif [ "$TOTAL_RAM_MB" -le 8192 ]; then
-    CALC_BP="2800M"
-    CALC_VALKEY="$(( TOTAL_RAM_MB * 10 / 100 ))MB"
-else
-    CALC_BP="$(( TOTAL_RAM_MB * 55 / 100 ))M"
-    CALC_VALKEY="2048MB"
-fi
 echo -e "${GREEN}✔ Probed Resources:${NC} ${TOTAL_CORES} vCPUs, ${TOTAL_RAM_MB} MB RAM (~$(( (TOTAL_RAM_MB + 512) / 1024 )) GB), Storage: ${DISK_TYPE}"
-echo -e "${CYAN}  Auto-calculated Baseline:${NC} MariaDB Buffer Pool: ${CALC_BP} | Valkey Cache: ${CALC_VALKEY}"
+if [ -f "${INSTALL_DIR}/installer/probe.py" ] && command -v python3 >/dev/null 2>&1; then
+    (cd "$INSTALL_DIR" && python3 -m installer.probe --simulate-ram="$TOTAL_RAM_MB" --simulate-cores="$TOTAL_CORES") || true
+else
+    if [ "$TOTAL_RAM_MB" -le 2048 ]; then
+        CALC_BP="512M"
+        CALC_VALKEY="128MB"
+    elif [ "$TOTAL_RAM_MB" -le 4096 ]; then
+        CALC_BP="$(( TOTAL_RAM_MB * 35 / 100 ))M"
+        CALC_VALKEY="$(( TOTAL_RAM_MB * 10 / 100 ))MB"
+    elif [ "$TOTAL_RAM_MB" -le 8192 ]; then
+        CALC_BP="2800M"
+        CALC_VALKEY="$(( TOTAL_RAM_MB * 10 / 100 ))MB"
+    else
+        CALC_BP="$(( TOTAL_RAM_MB * 55 / 100 ))M"
+        CALC_VALKEY="2048MB"
+    fi
+    echo -e "${CYAN}  Auto-calculated Baseline:${NC} MariaDB Buffer Pool: ${CALC_BP} | Valkey Cache: ${CALC_VALKEY}"
+fi
 
 # 3. Prerequisites Installation & Pre-Flight APT Sanitization
 if [ "$DRY_RUN" -eq 0 ] && [ "$EUID" -eq 0 ]; then

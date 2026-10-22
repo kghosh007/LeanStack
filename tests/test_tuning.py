@@ -185,6 +185,95 @@ class TestHardwareTuning(unittest.TestCase):
         self.assertIn(f"{doc['php']['pm_max_children']} max workers", card)
         self.assertEqual(doc["php"]["host_budget_children"], doc["php"]["pm_max_children"])
 
+    def test_provision_dry_run_lists_one_php(self):
+        """A 2048 MB dry-run requests one PHP version and writes nothing."""
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        proc = subprocess.run(
+            [sys.executable, "-m", "installer.provision", "--dry-run", "--php=8.3",
+             "--simulate-ram=2048", "--simulate-cores=2"],
+            cwd=root, capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("php8.3", proc.stdout)
+        self.assertNotIn("php8.2", proc.stdout)
+        self.assertNotIn("php8.4", proc.stdout)
+        again = subprocess.run(
+            [sys.executable, "-m", "installer.provision", "--dry-run", "--php=8.3", "--php=8.4",
+             "--simulate-ram=2048", "--simulate-cores=2"],
+            cwd=root, capture_output=True, text=True,
+        )
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(again.stdout.count("php8.3"), 1)
+        self.assertEqual(again.stdout.count("php8.4"), 1)
+        self.assertNotIn("php8.2", again.stdout)
+        self.assertEqual(proc.stdout, subprocess.run(
+            [sys.executable, "-m", "installer.provision", "--dry-run", "--php=8.3",
+             "--simulate-ram=2048", "--simulate-cores=2"],
+            cwd=root, capture_output=True, text=True,
+        ).stdout)
+
+    def test_provision_writes_profile_jit_under_root(self):
+        import tempfile
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [sys.executable, "-m", "installer.provision", "--php=8.3",
+                 "--simulate-ram=2048", "--simulate-cores=2", "--simulate-avx2=0",
+                 "--root", tmp],
+                cwd=root, capture_output=True, text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            ini = os.path.join(tmp, "etc/php/8.3/fpm/conf.d/99-leanstack-opcache.ini")
+            self.assertTrue(os.path.isfile(ini))
+            with open(ini, encoding="utf-8") as handle:
+                body = handle.read()
+            self.assertIn("opcache.jit = disable", body)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "etc/php/8.2")))
+
+    def test_rendered_stack_contains_platform_directives(self):
+        from provision import render_files
+        doc = self.get_profile_for(2048, 2)
+        files = render_files(doc, ["8.3"])
+        blob = "\n".join(files.values())
+        names = "\n".join(files)
+        for needle in (
+            "http2 on;",
+            "quic default_server reuseport",
+            "unixsocket /run/valkey/valkey.sock",
+            "\nport 0\n",
+            "transaction_isolation          = READ-COMMITTED",
+            "mrr_cost_based=on",
+            "table_open_cache_instances",
+            "prime256v1",
+            "ECDHE-ECDSA-AES128-GCM-SHA256",
+            "session.use_strict_mode = 1",
+            "session.cookie_httponly = 1",
+            "session.cookie_secure = 1",
+            "session.cookie_samesite = Lax",
+            "max_execution_time = 300",
+            "[mariadb]",
+            "innodb_flush_log_at_trx_commit = 2",
+        ):
+            self.assertIn(needle, blob)
+        self.assertIn("whitelists.yaml", names)
+        self.assertIn("etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf", names)
+        self.assertIn("etc/mysql/conf.d/99-leanstack-highqps.cnf", names)
+        self.assertIn(str(doc["angie"]["worker_connections"]), files["etc/angie/angie.conf"])
+        self.assertIn(doc["valkey"]["maxmemory"], files["etc/valkey/valkey.conf"])
+        self.assertIn(f"opcache.jit = {doc['php']['opcache_jit']}", files["etc/php/8.3/fpm/conf.d/99-leanstack-opcache.ini"])
+        with open(os.path.join(os.path.dirname(__file__), "..", "installer", "provision.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        for needle in (
+            "angie-module-cache-purge",
+            "ngx_http_cache_purge_module.so",
+            "os.remove(purge_conf)",
+            "grub-editenv",
+            "recordfail",
+            "grub2-common.service",
+            "ssl_ecdh_curve x25519:prime256v1:secp384r1;",
+        ):
+            self.assertIn(needle, source)
+
     def test_cpu_flags_are_stable_across_probes(self):
         a = HardwareProbe(sim_ram_mb=4096, sim_cores=4).probe_all()["cpu"]["flags"]
         b = HardwareProbe(sim_ram_mb=4096, sim_cores=4).probe_all()["cpu"]["flags"]

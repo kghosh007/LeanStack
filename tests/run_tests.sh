@@ -57,21 +57,16 @@ run_pillar 3 "Hardware-Aware Auto-Tuning" "
 run_pillar 4 "Web & Caching Tier" "
     grep -q 'listen 443 quic;' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
     grep -q 'http2 on;' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
-    grep -q 'http2 on;' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
-    grep -q 'quic default_server reuseport' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
-    grep -q 'angie-module-cache-purge' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
+    python3 '${BASE_DIR}/tests/test_tuning.py' TestHardwareTuning.test_rendered_stack_contains_platform_directives && \
     grep -q '{{PURGE_DIRECTIVE}}' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
-    grep -q 'unixsocket /run/valkey/valkey.sock' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
-    grep -q 'port 0' '${BASE_DIR}/scripts/phase2_valkey.sh' && \
+    python3 '${BASE_DIR}/tests/test_tuning.py' TestHardwareTuning.test_provision_dry_run_lists_one_php && \
     python3 '${BASE_DIR}/tests/test_cache_invalidation.py' && \
     python3 '${BASE_DIR}/tests/test_redis_acl.py'
 "
 
 # Pillar 5: Database Tier (High-QPS, Gap-Lock Elimination)
 run_pillar 5 "Database Tier High-QPS Tuning" "
-    grep -q 'transaction_isolation.*READ-COMMITTED' '${BASE_DIR}/scripts/phase3_mariadb.sh' && \
-    grep -q 'mrr_cost_based=on' '${BASE_DIR}/scripts/phase3_mariadb.sh' && \
-    grep -q 'table_open_cache_instances' '${BASE_DIR}/scripts/phase3_mariadb.sh'
+    python3 '${BASE_DIR}/tests/test_tuning.py' TestHardwareTuning.test_rendered_stack_contains_platform_directives
 "
 
 # Pillar 6: PHP Multi-Tenant Isolation
@@ -88,8 +83,7 @@ run_pillar 7 "Multi-Layer Security & Hardening" "
     grep -q 'PURGE' '${BASE_DIR}/core/snippets/8g-firewall.conf' && \
     [ -f '${BASE_DIR}/core/snippets/ssl-headers.conf' ] && \
     grep -q 'wp-content/uploads' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
-    grep -q 'prime256v1' '${BASE_DIR}/scripts/phase4_angie_waf.sh' && \
-    grep -q 'ECDHE-ECDSA-AES128-GCM-SHA256' '${BASE_DIR}/scripts/phase4_angie_waf.sh'
+    python3 '${BASE_DIR}/tests/test_tuning.py' TestHardwareTuning.test_rendered_stack_contains_platform_directives
 "
 
 # Pillar 8: CLI Engine & Profiles
@@ -124,7 +118,7 @@ run_pillar 9 "Resilience & Automation" "
 run_pillar 10 "Edge Case Guardrails & Verifications" "
     grep -q 'cf_proto_https' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
     grep -q 'security-headers.conf' '${BASE_DIR}/core/templates/vhost.conf.tpl' && \
-    grep -q 'whitelists.yaml' '${BASE_DIR}/scripts/phase4_angie_waf.sh'
+    python3 '${BASE_DIR}/tests/test_tuning.py' TestHardwareTuning.test_rendered_stack_contains_platform_directives
 "
 
 echo -e "${BOLD}${CYAN}==============================================================================${RESET}"

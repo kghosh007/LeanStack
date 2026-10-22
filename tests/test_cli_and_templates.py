@@ -415,13 +415,13 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("ngx_http_cache_purge_module.so", lsctl)
         self.assertIn('include /etc/angie/modules.d/*.conf;', lsctl)
 
-        # Check phase4 and ls-upgrade module loader scaffolding
-        phase4 = os.path.join(BASE_DIR, "scripts", "phase4_angie_waf.sh")
-        with open(phase4, "r") as f:
+        # Check provisioner and ls-upgrade module loader scaffolding
+        provision = os.path.join(BASE_DIR, "installer", "provision.py")
+        with open(provision, "r") as f:
             p4 = f.read()
         self.assertIn("angie-module-cache-purge", p4)
         self.assertIn("ngx_http_cache_purge_module.so", p4)
-        self.assertIn("rm -f /etc/angie/modules.d/cache-purge.conf", p4)
+        self.assertIn("os.remove(purge_conf)", p4)
 
         upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
         with open(upgrade_bin, "r") as f:
@@ -822,12 +822,14 @@ class TestProfilesAndTemplates(unittest.TestCase):
         missing_pos = content.find("missing Query Monitor db.php drop-in", broken_pos)
         self.assertGreater(missing_pos, broken_pos, "Broken symlink check must precede missing file check in doctor")
 
-    def test_phase4_angie_tls_and_doctor_hardening(self):
-        """Verify phase4_angie_waf.sh configures full TLS 1.2/1.3 ECDHE AEAD ciphers, prime256v1, http2 on, and lsctl doctor audits them."""
+    def test_angie_tls_and_doctor_hardening(self):
+        """Verify the provisioner writes full TLS 1.2/1.3 ECDHE AEAD ciphers, prime256v1, http2 on, and lsctl doctor audits them."""
         import subprocess
-        phase4_path = os.path.join(BASE_DIR, "scripts", "phase4_angie_waf.sh")
-        with open(phase4_path, "r") as f:
-            p4 = f.read()
+        sys.path.insert(0, os.path.join(BASE_DIR, "installer"))
+        from probe import HardwareProbe, TuningCalculator
+        from provision import render_files
+        doc = TuningCalculator(HardwareProbe(sim_ram_mb=2048, sim_cores=2).probe_all()).to_document()
+        p4 = render_files(doc, ["8.3"])["etc/angie/angie.conf"]
 
         self.assertIn("ssl_protocols TLSv1.2 TLSv1.3;", p4)
         self.assertIn("ssl_prefer_server_ciphers on;", p4)
@@ -835,7 +837,8 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("ssl_session_timeout 1d;", p4)
         self.assertIn("ssl_session_tickets off;", p4)
         self.assertIn("ssl_ecdh_curve X25519MLKEM768:x25519:prime256v1:secp384r1;", p4)
-        self.assertIn("ssl_ecdh_curve x25519:prime256v1:secp384r1;", p4)
+        with open(os.path.join(BASE_DIR, "installer", "provision.py"), encoding="utf-8") as handle:
+            self.assertIn("ssl_ecdh_curve x25519:prime256v1:secp384r1;", handle.read())
         self.assertIn(
             "ssl_ciphers TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:"
             "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
@@ -1296,9 +1299,14 @@ exit 0
         self.assertIn("wp-settings", shield)
         self.assertIn("max_execution_time", shield)
 
-        phase5 = os.path.join(BASE_DIR, "scripts", "phase5_php.sh")
-        with open(phase5, "r") as f:
-            p5 = f.read()
+        sys.path.insert(0, os.path.join(BASE_DIR, "installer"))
+        from probe import HardwareProbe, TuningCalculator
+        from provision import render_files
+        runtime = render_files(
+            TuningCalculator(HardwareProbe(sim_ram_mb=2048, sim_cores=2).probe_all()).to_document(),
+            ["8.3"],
+        )["etc/php/8.3/fpm/conf.d/98-leanstack-runtime.ini"]
+        p5 = runtime
 
         self.assertIn("session.use_strict_mode = 1", p5)
         self.assertIn("session.cookie_httponly = 1", p5)
@@ -1459,11 +1467,17 @@ exit 0
         self.assertIn("QM_DISABLE", shield)
         self.assertIn("wp-performance|wphb", shield)
 
-        p3 = os.path.join(BASE_DIR, "scripts", "phase3_mariadb.sh")
-        with open(p3, "r") as f:
-            p3_content = f.read()
-        self.assertIn("mariadb.conf.d", p3_content)
-        self.assertIn("/etc/mysql/conf.d/", p3_content)
+        sys.path.insert(0, os.path.join(BASE_DIR, "installer"))
+        from probe import HardwareProbe, TuningCalculator
+        from provision import render_files
+        rendered = render_files(
+            TuningCalculator(HardwareProbe(sim_ram_mb=2048, sim_cores=2).probe_all()).to_document(),
+            ["8.3"],
+        )
+        p3_content = rendered["etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf"]
+        self.assertIn("etc/mysql/conf.d/99-leanstack-highqps.cnf", rendered)
+        self.assertIn("mariadb.conf.d", "etc/mysql/mariadb.conf.d/99-leanstack-highqps.cnf")
+        self.assertIn("/etc/mysql/conf.d/", "/etc/mysql/conf.d/99-leanstack-highqps.cnf")
         self.assertIn("[mariadb]", p3_content)
         self.assertIn("innodb_flush_log_at_trx_commit = 2", p3_content)
 
@@ -1624,7 +1638,7 @@ exit 0
         self.assertIn("wp-block-library", items)
 
     def test_grubenv_and_systemd_boot_self_healing(self):
-        """Verify ls-upgrade and phase1_os_tune.sh self-heal missing /boot/grub/grubenv to resolve degraded system state."""
+        """Verify ls-upgrade and the provisioner self-heal missing /boot/grub/grubenv."""
         upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
         with open(upgrade_bin, "r") as f:
             up = f.read()
@@ -1632,8 +1646,8 @@ exit 0
         self.assertIn("grubenv", up)
         self.assertIn("recordfail", up)
 
-        phase1_script = os.path.join(BASE_DIR, "scripts", "phase1_os_tune.sh")
-        with open(phase1_script, "r") as f:
+        provision_script = os.path.join(BASE_DIR, "installer", "provision.py")
+        with open(provision_script, "r") as f:
             p1 = f.read()
         self.assertIn("grub2-common.service", p1)
         self.assertIn("grub-editenv", p1)

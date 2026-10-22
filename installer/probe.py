@@ -56,7 +56,7 @@ class HardwareProbe:
                         info["model"] = line.split(":", 1)[1].strip()
                     elif line.startswith("flags") or line.startswith("Features"):
                         raw_flags = line.split(":", 1)[1].strip().split()
-                        info["flags"] = list(set(raw_flags))
+                        info["flags"] = sorted(set(raw_flags))
                         break
             except Exception:
                 pass
@@ -444,8 +444,11 @@ class TuningCalculator:
         # OS and Angie reserve: ~600MB
         php_headroom_mb = max(512, self.ram_mb - mb_pool - mb_valkey - 600)
 
-        # Dynamic max children calculation based on ~45MB average WP worker
-        max_children = max(5, php_headroom_mb // 45)
+        # One host budget. 128 MB RSS per worker, floor of 2.
+        max_children = max(2, php_headroom_mb // 128)
+        start_servers = min(max_children, max(2, max_children // 4))
+        min_spare = min(start_servers, max(2, max_children // 8))
+        max_spare = min(max_children, max(start_servers, max_children // 2))
 
         # OPcache memory: 5% of RAM, clamped between 128M and 512M
         opcache_mb = max(128, min(512, int(self.ram_mb * 0.05)))
@@ -458,9 +461,11 @@ class TuningCalculator:
         return {
             "php_available_ram_mb": php_headroom_mb,
             "pm_max_children": max_children,
-            "pm_start_servers": max(2, max_children // 4),
-            "pm_min_spare_servers": max(2, max_children // 8),
-            "pm_max_spare_servers": max(4, max_children // 2),
+            "host_budget_children": max_children,
+            "worker_rss_mb": 128,
+            "pm_start_servers": start_servers,
+            "pm_min_spare_servers": min_spare,
+            "pm_max_spare_servers": max_spare,
             "opcache_memory_consumption": opcache_mb,
             "opcache_interned_strings_buffer": 32,
             "opcache_max_accelerated_files": 30000,
@@ -512,7 +517,7 @@ class TuningCalculator:
             "zram_comp_algo": "zstd"
         }
 
-    def generate_full_profile(self) -> Dict[str, Any]:
+    def to_document(self) -> Dict[str, Any]:
         return {
             "hardware": self.hw,
             "mariadb": self.calculate_mariadb(),
@@ -521,6 +526,9 @@ class TuningCalculator:
             "angie": self.calculate_angie(),
             "kernel": self.calculate_kernel()
         }
+
+    def generate_full_profile(self) -> Dict[str, Any]:
+        return self.to_document()
 
 
 def format_summary_card(profile: Dict[str, Any]) -> str:
@@ -566,10 +574,17 @@ if __name__ == "__main__":
     parser.add_argument("--json", action="store_true", help="Output profile in JSON format")
     parser.add_argument("--simulate-ram", type=int, default=None, help="Simulate RAM in MB")
     parser.add_argument("--simulate-cores", type=int, default=None, help="Simulate CPU core count")
+    parser.add_argument("--simulate-avx2", type=int, choices=(0, 1), default=None,
+                        help="1 forces AVX2. 0 clears AVX2, SSE4.2, and NEON so JIT is disable")
     args = parser.parse_args()
 
     probe = HardwareProbe(sim_ram_mb=args.simulate_ram, sim_cores=args.simulate_cores)
     hw = probe.probe_all()
+    if args.simulate_avx2 is not None:
+        hw["cpu"]["features"]["avx2"] = bool(args.simulate_avx2)
+        if args.simulate_avx2 == 0:
+            hw["cpu"]["features"]["sse4_2"] = False
+            hw["cpu"]["features"]["neon"] = False
     calculator = TuningCalculator(hw)
     profile = calculator.generate_full_profile()
 

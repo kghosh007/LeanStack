@@ -13,7 +13,7 @@ import subprocess
 # Add installer directory to module path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "installer")))
 
-from probe import HardwareProbe, TuningCalculator
+from probe import HardwareProbe, TuningCalculator, format_summary_card
 
 class TestHardwareTuning(unittest.TestCase):
 
@@ -44,8 +44,10 @@ class TestHardwareTuning(unittest.TestCase):
         self.assertEqual(v["maxmemory"], "128mb")
         self.assertEqual(v["port"], 0)
 
-        # PHP min workers
-        self.assertGreaterEqual(php["pm_max_children"], 5)
+        # Host budget uses 128 MB per worker and never drops below 2.
+        self.assertGreaterEqual(php["pm_max_children"], 2)
+        self.assertEqual(php["host_budget_children"], php["pm_max_children"])
+        self.assertEqual(php["pm_max_children"], max(2, php["php_available_ram_mb"] // 128))
 
     def test_tier_6gb_vps(self):
         """6GB RAM, 4 vCPU tier - The perfectionist test from conversation-tuning.md."""
@@ -66,8 +68,8 @@ class TestHardwareTuning(unittest.TestCase):
         # Valkey ~614MB
         self.assertEqual(v["maxmemory"], "614mb")
 
-        # PHP workers ~47
-        self.assertGreaterEqual(php["pm_max_children"], 30)
+        self.assertEqual(php["pm_max_children"], max(2, php["php_available_ram_mb"] // 128))
+        self.assertEqual(php["host_budget_children"], php["pm_max_children"])
         self.assertEqual(php["opcache_jit"], "tracing")
 
     def test_tier_16gb_vps(self):
@@ -172,6 +174,32 @@ class TestHardwareTuning(unittest.TestCase):
         p_large = self.get_profile_for(ram_mb=16384, cores=8)
         self.assertEqual(p_large["angie"]["worker_connections"], 16384)
         self.assertEqual(p_large["angie"]["fastcgi_cache_max_size"], "1024m")
+
+    def test_card_and_document_share_worker_count(self):
+        """The printed card and to_document() name the same pm_max_children."""
+        probe = HardwareProbe(sim_ram_mb=2048, sim_cores=2)
+        calc = TuningCalculator(probe.probe_all())
+        doc = calc.to_document()
+        card = format_summary_card(doc)
+        self.assertEqual(doc, calc.generate_full_profile())
+        self.assertIn(f"{doc['php']['pm_max_children']} max workers", card)
+        self.assertEqual(doc["php"]["host_budget_children"], doc["php"]["pm_max_children"])
+
+    def test_cpu_flags_are_stable_across_probes(self):
+        a = HardwareProbe(sim_ram_mb=4096, sim_cores=4).probe_all()["cpu"]["flags"]
+        b = HardwareProbe(sim_ram_mb=4096, sim_cores=4).probe_all()["cpu"]["flags"]
+        self.assertEqual(a, b)
+        self.assertEqual(a, sorted(a))
+
+    def test_jit_disable_when_avx2_sse_and_neon_are_off(self):
+        probe = HardwareProbe(sim_ram_mb=4096, sim_cores=4)
+        hw = probe.probe_all()
+        hw["cpu"]["features"]["avx2"] = False
+        hw["cpu"]["features"]["sse4_2"] = False
+        hw["cpu"]["features"]["neon"] = False
+        php = TuningCalculator(hw).to_document()["php"]
+        self.assertEqual(php["opcache_jit"], "disable")
+        self.assertEqual(php["opcache_jit_buffer_size"], "0M")
 
     def test_autonomous_db_tuner_analyzer(self):
         """Verify ls-db-tune performance analyzer scoring and recommendations."""

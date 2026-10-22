@@ -38,10 +38,11 @@ class Colors:
 
 class LeanStackUpgrader:
 
-    def __init__(self, repo_dir: str = None, db_file: str = None, dry_run: bool = False, force: bool = False, quiet: bool = False):
+    def __init__(self, repo_dir: str = None, db_file: str = None, dry_run: bool = False, force: bool = False, quiet: bool = False, no_git_pull: bool = False):
         self.dry_run = dry_run
         self.force = force
         self.quiet = quiet
+        self.no_git_pull = no_git_pull
 
         # Auto-detect repository / base directory
         if repo_dir:
@@ -124,7 +125,15 @@ class LeanStackUpgrader:
 
         if not self.dry_run:
             os.makedirs(self.backup_dir, exist_ok=True)
+            try:
+                os.chmod(self.backup_dir, 0o700)
+            except Exception:
+                pass
             shutil.copy2(self.db_file, backup_path)
+            try:
+                os.chmod(backup_path, 0o600)
+            except Exception:
+                pass
             self.log(f"Database snapshot backed up to: {backup_path}", Colors.GREEN, prefix="  ✔")
         else:
             self.log(f"[Dry-Run] Would back up {self.db_file} to {backup_path}", Colors.YELLOW, prefix="  [DRY-RUN]")
@@ -139,7 +148,17 @@ class LeanStackUpgrader:
             return False
 
         self.log(f"Checking for updates from remote repository at {self.base_dir}...", Colors.CYAN)
-        git_cmd = ["git", "-c", "safe.directory=*"]
+
+        # Verify repository directory ownership matches effective UID to avoid running arbitrary untrusted repo code as root
+        try:
+            stat_info = os.stat(self.base_dir)
+            if hasattr(os, "geteuid") and stat_info.st_uid != os.geteuid() and os.geteuid() == 0:
+                self.log(f"Security Warning: {self.base_dir} is not owned by root (UID {stat_info.st_uid} != 0). Skipping git pull.", Colors.YELLOW, prefix="  ⚠️")
+                return False
+        except Exception:
+            pass
+
+        git_cmd = ["git"]
         try:
             # Check for unstaged changes
             res_status = subprocess.run(git_cmd + ["status", "--porcelain"], cwd=self.base_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -339,6 +358,23 @@ class LeanStackUpgrader:
                     os.symlink(target_name, leg_path)
                 except Exception:
                     pass
+
+        # Synchronize core/lib helpers
+        lib_src = os.path.join(self.core_dir, "lib")
+        if os.path.isdir(lib_src):
+            for lib_target in ["/opt/leanstack/core/lib", "/etc/lsctl/lib"]:
+                if not self.dry_run:
+                    try:
+                        os.makedirs(lib_target, exist_ok=True)
+                        for item in os.listdir(lib_src):
+                            if not item.startswith("."):
+                                s_file = os.path.join(lib_src, item)
+                                d_file = os.path.join(lib_target, item)
+                                if os.path.isfile(s_file):
+                                    shutil.copy2(s_file, d_file)
+                                    os.chmod(d_file, 0o755)
+                    except Exception:
+                        pass
 
     def sync_templates_and_profiles(self):
         """Updates templates in /etc/lsctl/templates and merges profiles.yaml."""
@@ -1600,9 +1636,9 @@ www-data hard nofile 65535
         safe_domain = ""
         if domain and re.fullmatch(r"[A-Za-z0-9.-]+", domain):
             safe_domain = domain
-        ob_parts = [f"/home/{user}"]
+        ob_parts = [f"/home/{user}/"]
         if safe_domain:
-            ob_parts.append(f"/var/cache/angie/sites/{safe_domain}")
+            ob_parts.append(f"/var/cache/angie/sites/{safe_domain}/")
         ob_parts.extend(["/run/mysqld/mysqld.sock", "/run/valkey/valkey.sock"])
         new_ob_line = f"php_admin_value[open_basedir] = {':'.join(ob_parts)}"
         ob_match = re.search(r"php_admin_value\[open_basedir\]\s*=\s*([^\n]+)", p_content)
@@ -1714,6 +1750,8 @@ www-data hard nofile 65535
         try:
             cols = [c[1] for c in cur.execute("PRAGMA table_info(sites);").fetchall()]
             extra_cols = ", db_name, db_user, db_pass" if all(k in cols for k in ["db_name", "db_user", "db_pass"]) else ""
+            if "cache_prefix" in cols:
+                extra_cols += ", cache_prefix"
             cur.execute(f"SELECT domain, user, site_path, php_version{extra_cols} FROM sites;")
             sites = cur.fetchall()
         except sqlite3.OperationalError:
@@ -1862,46 +1900,43 @@ from           noreply@{domain}
                 site_cache_dir = f"/var/cache/angie/sites/{domain}"
                 if os.path.isdir("/var/cache/angie"):
                     try:
+                        import grp
                         os.chmod("/var/cache/angie", 0o755)
                         os.makedirs("/var/cache/angie/sites", exist_ok=True)
-                        os.chmod("/var/cache/angie/sites", 0o755)
+                        w_info = grp.getgrnam("www-data")
+                        os.chown("/var/cache/angie/sites", 0, w_info.gr_gid)
+                        os.chmod("/var/cache/angie/sites", 0o711)
                         subprocess.run(["find", "/var/cache/angie/sites", "-type", "f", "-mmin", "+60", "-delete"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
                         pass
                     os.makedirs(site_cache_dir, exist_ok=True)
-                    hex_chars = "0123456789abcdef"
-                    for h1 in hex_chars:
-                        h1_path = os.path.join(site_cache_dir, h1)
-                        os.makedirs(h1_path, exist_ok=True)
-                        for c1 in hex_chars:
-                            for c2 in hex_chars:
-                                os.makedirs(os.path.join(h1_path, c1 + c2), exist_ok=True)
                     try:
                         import pwd, grp
                         u_info = pwd.getpwnam(user)
                         w_info = grp.getgrnam("www-data")
-                        for root, dirs, files in os.walk(site_cache_dir):
+                        for walk_root, dirs, files in os.walk(site_cache_dir):
                             for d in dirs:
-                                dp = os.path.join(root, d)
+                                dp = os.path.join(walk_root, d)
                                 os.chown(dp, u_info.pw_uid, w_info.gr_gid)
                                 os.chmod(dp, 0o2770)
                             for f in files:
-                                fp = os.path.join(root, f)
+                                fp = os.path.join(walk_root, f)
                                 os.chown(fp, u_info.pw_uid, w_info.gr_gid)
                                 os.chmod(fp, 0o660)
                         os.chown(site_cache_dir, u_info.pw_uid, w_info.gr_gid)
                         os.chmod(site_cache_dir, 0o2770)
                     except Exception:
                         pass
-                    try:
-                        subprocess.run([
-                            "setfacl", "-R", "-m", f"u:{user}:rwx,g:www-data:rwx,m::rwx", site_cache_dir
-                        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.run([
-                            "setfacl", "-R", "-d", "-m", f"u:{user}:rwx,g:www-data:rwx,m::rwx", site_cache_dir
-                        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
+                    if shutil.which("setfacl"):
+                        try:
+                            subprocess.run([
+                                "setfacl", "-R", "-m", f"u:{user}:rwx,g:www-data:rwx,m::rwx", site_cache_dir
+                            ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.run([
+                                "setfacl", "-R", "-d", "-m", f"u:{user}:rwx,g:www-data:rwx,m::rwx", site_cache_dir
+                            ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        except Exception:
+                            pass
 
                 zone_key = "".join(c if c.isalnum() else "_" for c in domain.lower())
                 zone_conf = f"/etc/angie/cache-zones/{domain}.conf"
@@ -2299,14 +2334,30 @@ from           noreply@{domain}
                             acl_content = acl_content_new
                             acl_changed = True
 
-                        prefix = f"ls_{user}_"
-                        if os.path.isfile(wp_config):
+                        prefix = ""
+                        try:
+                            if "cache_prefix" in s.keys() and s["cache_prefix"]:
+                                prefix = s["cache_prefix"]
+                        except Exception:
+                            pass
+
+                        if not prefix and os.path.isfile(wp_config):
                             try:
                                 with open(wp_config, "r", encoding="utf-8", errors="ignore") as f_pref:
                                     pref_text = f_pref.read()
-                                m_prefix = re.search(r"define\s*\(\s*['\"]WP_REDIS_PREFIX['\"]\s*,\s*['\"]([^'\"]+)['\"]", pref_text)
-                                if m_prefix and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", m_prefix.group(1)):
+                                m_prefix = re.search(r"define\s*\(\s*['\"](?:WP_REDIS_PREFIX|WP_CACHE_KEY_SALT)['\"]\s*,\s*['\"]([^'\"]+)['\"]", pref_text)
+                                if m_prefix and re.fullmatch(r"[A-Za-z0-9_.:-]{3,64}", m_prefix.group(1)):
                                     prefix = m_prefix.group(1)
+                            except Exception:
+                                pass
+
+                        if not prefix or not re.fullmatch(r"[A-Za-z0-9_.:-]{3,64}", prefix):
+                            prefix = f"ls_{user}_"
+
+                        if "cache_prefix" in cols and ("cache_prefix" not in s.keys() or not s["cache_prefix"]):
+                            try:
+                                cur.execute("UPDATE sites SET cache_prefix = ? WHERE domain = ?", (prefix, domain))
+                                conn.commit()
                             except Exception:
                                 pass
 
@@ -2314,9 +2365,9 @@ from           noreply@{domain}
                             user_rule = (
                                 f"user {user} on >{valkey_pass} resetkeys ~{prefix}* -@all "
                                 "+@read +@write +@set +@sortedset +@list +@hash +@string "
-                                "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting "
+                                "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction "
                                 "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
-                                "+scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
+                                "+scan +type +exists +del +persist +touch +select -flushdb -flushall"
                             )
                             user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
                             if re.search(user_pattern, acl_content, re.MULTILINE):
@@ -2596,7 +2647,7 @@ from           noreply@{domain}
         return synced_count
 
     def sanitize_cron_logs(self):
-        """Sanitizes cron log files by stripping legacy benign open_basedir warnings and obsolete sudo '--chdir' errors."""
+        """Sanitizes cron log files by stripping obsolete sudo '--chdir' errors while preserving real open_basedir errors."""
         self.sanitize_cron_log_paths(["/var/log/lsctl/cron.log", "/var/log/cpctl/cron.log"])
 
         # Resolve Ubuntu duplicate cloud-init logrotate configuration bug
@@ -2626,8 +2677,7 @@ from           noreply@{domain}
                         lines = f.readlines()
                     cleaned = [
                         l for l in lines
-                        if "open_basedir restriction in effect" not in l
-                        and not ("not allowed to use" in l and "--chdir" in l)
+                        if not ("not allowed to use" in l and "--chdir" in l)
                     ]
                     if len(cleaned) != len(lines):
                         with open(real_path, "w", encoding="utf-8") as f:
@@ -3048,17 +3098,19 @@ from           noreply@{domain}
             return False
 
         # 2. Git pull
-        pulled = self.git_pull_latest()
-        if pulled and not self.dry_run and "--post-pull" not in sys.argv:
-            new_script = os.path.join(self.core_dir, "bin", "ls-upgrade")
-            if os.path.isfile(new_script):
-                self.sync_binaries()
-                self.sync_templates_and_profiles()
-                self.log("Re-executing upgrade with updated code...", Colors.CYAN, prefix="  🔄")
-                try:
-                    os.execv(sys.executable, [sys.executable, new_script, "--post-pull"] + [a for a in sys.argv[1:] if a != "--post-pull"])
-                except Exception:
-                    pass
+        pulled = False
+        if not self.no_git_pull:
+            pulled = self.git_pull_latest()
+            if pulled and not self.dry_run and "--post-pull" not in sys.argv:
+                new_script = os.path.join(self.core_dir, "bin", "ls-upgrade")
+                if os.path.isfile(new_script):
+                    self.sync_binaries()
+                    self.sync_templates_and_profiles()
+                    self.log("Re-executing upgrade with updated code...", Colors.CYAN, prefix="  🔄")
+                    try:
+                        os.execv(sys.executable, [sys.executable, new_script, "--post-pull"] + [a for a in sys.argv[1:] if a != "--post-pull"])
+                    except Exception:
+                        pass
 
         # 3. Database backup
         self.backup_database()
@@ -3122,6 +3174,7 @@ def main():
     parser.add_argument("--component", default=None, help="Component to upgrade")
     parser.add_argument("--component-version", default=None, help="Target component version")
     parser.add_argument("--json", action="store_true", help="Output summary as JSON")
+    parser.add_argument("--no-git-pull", action="store_true", help="Skip remote git fetch and pull")
 
     args = parser.parse_args()
 
@@ -3130,7 +3183,8 @@ def main():
         db_file=args.db_file,
         dry_run=args.dry_run,
         force=args.force,
-        quiet=args.json
+        quiet=args.json,
+        no_git_pull=args.no_git_pull
     )
 
     if args.reconcile_tuning:

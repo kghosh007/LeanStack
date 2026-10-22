@@ -65,6 +65,7 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         versions = [r[0] for r in rows]
         self.assertIn(1, versions)
         self.assertIn(2, versions)
+        self.assertIn(3, versions)
 
         # Check sites table columns
         cur.execute("PRAGMA table_info(sites);")
@@ -75,6 +76,7 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         self.assertIn("cache_enabled", cols)
         self.assertIn("cache_ttl", cols)
         self.assertIn("cf_zone_id", cols)
+        self.assertIn("cache_prefix", cols)
 
         conn.close()
 
@@ -409,7 +411,7 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         # Test actual upgrader.reconcile_pool_content method
         reconciled, changed = self.upgrader.reconcile_pool_content(sample_pool, user)
         self.assertTrue(changed)
-        self.assertIn("php_admin_value[open_basedir] = /home/staging_mfeasy_4809", reconciled)
+        self.assertIn("php_admin_value[open_basedir] = /home/staging_mfeasy_4809/", reconciled)
         self.assertNotIn("/home/staging_mfeasy_4809/htdocs", reconciled)
         self.assertNotIn("symlink", reconciled)
         self.assertNotIn("link,", reconciled)
@@ -783,9 +785,9 @@ server {
         basedir = reconciled.split("open_basedir] = ", 1)[1].split("\n", 1)[0]
         self.assertNotIn("/usr/bin/msmtp", basedir)
         self.assertNotIn("/proc", basedir)
-        self.assertIn("/var/cache/angie/sites/shop.example", reconciled)
+        self.assertIn("/var/cache/angie/sites/shop.example/", reconciled)
         self.assertNotIn("/var/cache/angie/sites:", reconciled)
-        self.assertIn("/home/tenant_abc", reconciled)
+        self.assertIn("/home/tenant_abc/", reconciled)
 
         # Idempotency check: running again makes no changes
         reconciled2, changed2 = self.upgrader.reconcile_pool_content(reconciled, "tenant_abc", "shop.example")

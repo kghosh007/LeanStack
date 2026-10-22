@@ -1192,11 +1192,36 @@ else:
         done
         [ $READY -ne 1 ] && { echo "ERROR: PHP-FPM socket failed to initialize."; rm -f "$NEW_POOL"; exit 1; }
 
-        # Update Angie Vhost
-        VHOST_FILE="/etc/angie/http.d/${DOMAIN}.conf"
+        # Update Angie Vhost (Atomically Staged) (LS-01)
+        ANGIE_CONF_DIR="${LEANSTACK_ANGIE_DIR:-/etc/angie}"
+        ANGIE_CACHE_DIR="${LEANSTACK_CACHE_DIR:-/var/cache/angie}"
+        VHOST_FILE="${ANGIE_CONF_DIR}/http.d/${DOMAIN}.conf"
         if [ -f "$VHOST_FILE" ]; then
-            sed -i "s|fastcgi_pass unix:/run/php/php[0-9.]*-${USER_NAME}.sock;|fastcgi_pass unix:${NEW_SOCKET};|g" "$VHOST_FILE"
-            angie -t &>/dev/null && systemctl reload angie
+            VHOST_STAGED="${VHOST_FILE}.staged"
+            VHOST_BACKUP="${VHOST_FILE}.bak"
+            cp "$VHOST_FILE" "$VHOST_STAGED"
+            sed -i "s|fastcgi_pass unix:/run/php/php[0-9.]*-${USER_NAME}.sock;|fastcgi_pass unix:${NEW_SOCKET};|g" "$VHOST_STAGED"
+            cp "$VHOST_FILE" "$VHOST_BACKUP"
+            mv "$VHOST_STAGED" "$VHOST_FILE"
+
+            if ! angie -t 2>/dev/null; then
+                echo "ERROR: Angie configuration syntax check failed with PHP ${NEW_PHP}. Rolling back..." >&2
+                mv "$VHOST_BACKUP" "$VHOST_FILE"
+                rm -f "$NEW_POOL"
+                systemctl reload "php${NEW_PHP}-fpm" 2>/dev/null || true
+                rm -f "$NEW_SOCKET"
+                exit 1
+            fi
+            if ! (systemctl reload angie 2>/dev/null || angie -s reload 2>/dev/null); then
+                echo "ERROR: Angie reload failed. Rolling back..." >&2
+                mv "$VHOST_BACKUP" "$VHOST_FILE"
+                rm -f "$NEW_POOL"
+                systemctl reload "php${NEW_PHP}-fpm" 2>/dev/null || true
+                rm -f "$NEW_SOCKET"
+                angie -s reload 2>/dev/null || systemctl reload angie 2>/dev/null || true
+                exit 1
+            fi
+            rm -f "$VHOST_BACKUP"
         fi
 
         # Purge Old Pool

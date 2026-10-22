@@ -7,13 +7,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# 1. Concurrency Protection via Flocking Lock
+# 1. Concurrency Protection via Flocking Lock (Root-only mode 0600 in /run)
 LOCK_FILE="/run/ls-maintenance.lock"
-if ! touch "$LOCK_FILE" 2>/dev/null; then
-    LOCK_FILE="/tmp/ls-maintenance.lock"
-    touch "$LOCK_FILE" 2>/dev/null || true
-fi
-chmod 666 "$LOCK_FILE" 2>/dev/null || true
+touch "$LOCK_FILE" 2>/dev/null || true
+chmod 600 "$LOCK_FILE" 2>/dev/null || true
 exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack maintenance process is currently running. Skipping."
@@ -64,12 +61,16 @@ preflight_syntax_check() {
 create_snapshot() {
     log "[SNAPSHOT] Creating pre-upgrade atomic configuration and database snapshot..."
     mkdir -p "$BACKUP_DIR"
+    chmod 700 "/var/backups/lsctl" "$BACKUP_DIR" 2>/dev/null || true
     [ -f "/var/lib/lsctl/sites.db" ] && cp -f "/var/lib/lsctl/sites.db" "$BACKUP_DIR/sites.db" 2>/dev/null || true
     [ -f "/var/lib/cpctl/sites.db" ] && cp -f "/var/lib/cpctl/sites.db" "$BACKUP_DIR/sites_cpctl.db" 2>/dev/null || true
+    [ -f "$BACKUP_DIR/sites.db" ] && chmod 600 "$BACKUP_DIR/sites.db" 2>/dev/null || true
+    [ -f "$BACKUP_DIR/sites_cpctl.db" ] && chmod 600 "$BACKUP_DIR/sites_cpctl.db" 2>/dev/null || true
     [ -d "/etc/angie" ] && cp -a "/etc/angie" "$BACKUP_DIR/angie" 2>/dev/null || true
     [ -d "/etc/valkey" ] && cp -a "/etc/valkey" "$BACKUP_DIR/valkey" 2>/dev/null || true
     [ -d "/etc/mysql" ] && cp -a "/etc/mysql" "$BACKUP_DIR/mysql" 2>/dev/null || true
     [ -d "/etc/php" ] && cp -a "/etc/php" "$BACKUP_DIR/php" 2>/dev/null || true
+    chmod -R go-rwx "$BACKUP_DIR" 2>/dev/null || true
     log "[SNAPSHOT] Snapshot saved at ${BACKUP_DIR}."
 }
 
@@ -147,43 +148,66 @@ update_wp_cli() {
 update_leanstack_core() {
     log "[CORE] Updating LeanStack core control plane and database schema..."
     local upgrader_bin="/usr/local/bin/lsctl"
+    local code=0
     if [ -x "$upgrader_bin" ]; then
-        "$upgrader_bin" update --quiet 2>/dev/null || true
+        "$upgrader_bin" update --quiet --no-git-pull || code=$?
     elif [ -x "${SCRIPT_DIR}/ls-upgrade" ]; then
-        python3 "${SCRIPT_DIR}/ls-upgrade" --quiet 2>/dev/null || true
+        python3 "${SCRIPT_DIR}/ls-upgrade" --quiet --no-git-pull || code=$?
     elif [ -x "${SCRIPT_DIR}/lsctl" ]; then
-        "${SCRIPT_DIR}/lsctl" update --quiet 2>/dev/null || true
+        "${SCRIPT_DIR}/lsctl" update --quiet --no-git-pull || code=$?
     elif [ -x "/usr/local/bin/cp-upgrade" ]; then
-        /usr/local/bin/cp-upgrade --quiet 2>/dev/null || true
+        /usr/local/bin/cp-upgrade --quiet --no-git-pull || code=$?
+    fi
+    if [ "$code" -ne 0 ]; then
+        log "[FATAL] Core update and schema migration failed (exit code $code). Initiating rollback..."
+        rollback_system
     fi
 }
 
-# 9. Post-Upgrade Verification & Automatic Rollback on Failure
+# 9. Atomic In-Place Rollback Engine
+rollback_system() {
+    log "[ROLLBACK] Initiating atomic in-place rollback from snapshot ${BACKUP_DIR}..."
+    if [ -d "$BACKUP_DIR/angie" ]; then
+        mkdir -p /etc/angie
+        cp -a "$BACKUP_DIR/angie/." /etc/angie/
+        log "[ROLLBACK] Restored /etc/angie in-place from ${BACKUP_DIR}/angie"
+    fi
+    if [ -d "$BACKUP_DIR/php" ]; then
+        mkdir -p /etc/php
+        cp -a "$BACKUP_DIR/php/." /etc/php/
+        log "[ROLLBACK] Restored /etc/php in-place from ${BACKUP_DIR}/php"
+    fi
+    if [ -d "$BACKUP_DIR/valkey" ]; then
+        mkdir -p /etc/valkey
+        cp -a "$BACKUP_DIR/valkey/." /etc/valkey/
+        log "[ROLLBACK] Restored /etc/valkey in-place from ${BACKUP_DIR}/valkey"
+    fi
+    if [ -d "$BACKUP_DIR/mysql" ]; then
+        mkdir -p /etc/mysql
+        cp -a "$BACKUP_DIR/mysql/." /etc/mysql/
+        log "[ROLLBACK] Restored /etc/mysql in-place from ${BACKUP_DIR}/mysql"
+    fi
+    if [ -f "$BACKUP_DIR/sites.db" ]; then
+        cp -f "$BACKUP_DIR/sites.db" /var/lib/lsctl/sites.db 2>/dev/null || true
+    fi
+    if [ -f "$BACKUP_DIR/sites_cpctl.db" ]; then
+        cp -f "$BACKUP_DIR/sites_cpctl.db" /var/lib/cpctl/sites.db 2>/dev/null || true
+    fi
+    if command -v angie &>/dev/null; then
+        angie -t 2>/dev/null || true
+        systemctl reload angie 2>/dev/null || systemctl restart angie 2>/dev/null || true
+    fi
+    log "[ROLLBACK] System restored to previous operational state."
+    exit 1
+}
+
+# 10. Post-Upgrade Verification & Automatic Rollback on Failure
 post_upgrade_verification() {
     log "[VERIFY] Running post-upgrade configuration syntax test..."
     if command -v angie &>/dev/null; then
         if ! angie -t 2>/dev/null; then
             log "[FATAL] Post-upgrade Angie syntax test failed! Initiating rollback from snapshot..."
-            if [ -d "$BACKUP_DIR/angie" ]; then
-                rm -rf /etc/angie
-                cp -a "$BACKUP_DIR/angie" /etc/angie
-                log "[ROLLBACK] Restored /etc/angie from ${BACKUP_DIR}/angie"
-            fi
-            if [ -d "$BACKUP_DIR/php" ]; then
-                rm -rf /etc/php
-                cp -a "$BACKUP_DIR/php" /etc/php
-                log "[ROLLBACK] Restored /etc/php from ${BACKUP_DIR}/php"
-            fi
-            if [ -f "$BACKUP_DIR/sites.db" ]; then
-                cp -f "$BACKUP_DIR/sites.db" /var/lib/lsctl/sites.db 2>/dev/null || true
-            fi
-            if [ -f "$BACKUP_DIR/sites_cpctl.db" ]; then
-                cp -f "$BACKUP_DIR/sites_cpctl.db" /var/lib/cpctl/sites.db 2>/dev/null || true
-            fi
-            angie -t 2>/dev/null || true
-            systemctl restart angie 2>/dev/null || true
-            log "[ROLLBACK] System restored to previous operational state."
-            exit 1
+            rollback_system
         fi
     fi
 

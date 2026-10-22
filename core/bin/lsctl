@@ -1600,21 +1600,29 @@ PY
         RAND_SALT=$(openssl rand -hex 3)
         CACHE_KEY_SALT="${RAND_SALT}_"
 
-        # Rollback Trap
+        # Rollback Trap (LS-10)
         cleanup_on_error() {
             echo "❌ Provisioning failed. Executing automatic rollback..."
-            mariadb -e "DROP DATABASE IF EXISTS \`${USER_NAME}_db\`; DROP USER IF EXISTS '${USER_NAME}_u'@'localhost';" 2>/dev/null || true
-            rm -f "/etc/angie/http.d/${DOMAIN}.conf" "/etc/php/${PHP_VER}/fpm/pool.d/${USER_NAME}.conf"
+            local rm_user="${USER_NAME:-}"
+            local rm_db="${DB_NAME:-${USER_NAME}_db}"
+            local rm_db_user="${DB_USER:-${USER_NAME}_u}"
+            if [ -n "$rm_db" ] && [ -n "$rm_db_user" ]; then
+                mariadb -e "DROP DATABASE IF EXISTS \`${rm_db}\`; DROP USER IF EXISTS '${rm_db_user}'@'localhost';" 2>/dev/null || true
+            fi
+            rm -f "/etc/angie/http.d/${DOMAIN}.conf" "/etc/php/${PHP_VER}/fpm/pool.d/${rm_user}.conf"
             rm -f "/etc/angie/cache-zones/${DOMAIN}.conf" 2>/dev/null || true
             rm -rf "/var/cache/angie/sites/${DOMAIN}" 2>/dev/null || true
             rm -rf "/etc/angie/tenant-custom/${DOMAIN}" 2>/dev/null || true
-            if [ -f /etc/valkey/users.acl ]; then
-                sed -i "/user ${USER_NAME} /d" /etc/valkey/users.acl 2>/dev/null || true
+            if [ -f /etc/valkey/users.acl ] && [ -n "$rm_user" ]; then
+                sed -i "/user ${rm_user} /d" /etc/valkey/users.acl 2>/dev/null || true
                 valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
             fi
-            userdel -r "$USER_NAME" 2>/dev/null || rm -rf "/home/${USER_NAME}"
+            if [ -n "$rm_user" ] && ! is_system_user "$rm_user"; then
+                userdel -r "$rm_user" 2>/dev/null || rm -rf "/home/${rm_user}"
+            fi
             sed -i "/ ${DOMAIN}$/d" /etc/hosts 2>/dev/null || true
             angie -t &>/dev/null && systemctl reload angie 2>/dev/null || true
+            db_exec "DELETE FROM sites WHERE domain='$DOMAIN';" 2>/dev/null || true
             exit 1
         }
         trap cleanup_on_error ERR
@@ -1938,13 +1946,12 @@ EOF
             echo "ℹ Let's Encrypt SSL certificate is finalizing in the background (self-signed fallback active)."
         fi
 
-        trap - ERR
-
         # Register in SQLite
         db_exec "
 INSERT INTO sites (domain, user, php_version, pool_type, pool_mode, memory_limit, table_prefix, is_cf, profile_used, site_path, db_name, db_user, db_pass, admin_user, admin_pass, admin_email, wp_version)
 VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY_LIMIT', '$TABLE_PREFIX', $IS_CF, '$PROFILE', '$WEB_ROOT', '$DB_NAME', '$DB_USER', '$DB_PASS', '$ADMIN_USER', '$ADMIN_PASS', '$ADMIN_EMAIL', 'latest');
 "
+        trap - ERR  # Disarmed after insert succeeds (LS-10)
 
         echo ""
         echo "=========================================================="

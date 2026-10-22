@@ -311,6 +311,91 @@ class TestNginxLinter(unittest.TestCase):
         self.assertEqual(second, first)
         self.assertEqual(hashlib.sha256(second).hexdigest(), hashlib.sha256(first).hexdigest())
 
+    def test_multiline_split_directives(self):
+        """Directives split across lines are tokenized and inspected correctly."""
+        code, data = self.run_linter("proxy_pass\n    http://127.0.0.1;\n", mode="rules")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("internal or metadata host", data.get("error", ""))
+
+        code, data = self.run_linter("include\n    /etc/passwd;\n", mode="rules")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("strictly prohibited", data.get("error", ""))
+
+    def test_multiple_statements_per_line(self):
+        """Multiple statements on a single line are individually validated."""
+        code, data = self.run_linter("try_files $uri =404; proxy_pass http://127.0.0.1;", mode="rules")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("internal or metadata host", data.get("error", ""))
+
+    def test_comments_within_directives(self):
+        """Comments interspersed in statements do not hide prohibited directives or targets."""
+        code, data = self.run_linter("proxy_pass # inline comment\n    http://127.0.0.1;\n", mode="rules")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("internal or metadata host", data.get("error", ""))
+
+    def test_prohibited_pass_family_directives(self):
+        """uwsgi_pass, scgi_pass, grpc_pass, memcached_pass, resolver and any unknown *_pass are blocked."""
+        prohibited_samples = [
+            ("uwsgi_pass 127.0.0.1:8000;", "uwsgi_pass"),
+            ("scgi_pass 127.0.0.1:9000;", "scgi_pass"),
+            ("grpc_pass grpc://127.0.0.1:50051;", "grpc_pass"),
+            ("memcached_pass 127.0.0.1:11211;", "memcached_pass"),
+            ("resolver 1.1.1.1 8.8.8.8;", "resolver"),
+            ("custom_pass 1.1.1.1:80;", "custom_pass"),
+        ]
+        for snippet, d_name in prohibited_samples:
+            code, data = self.run_linter(snippet, mode="rules")
+            self.assertNotEqual(code, 0, f"Snippet '{snippet}' should be rejected")
+            self.assertFalse(data.get("valid"))
+            self.assertIn("strictly prohibited", data.get("error", ""))
+
+    def test_dns_rebinding_rejection_for_hostnames(self):
+        """Hostnames requiring runtime resolution in proxy_pass are rejected to eliminate DNS rebinding."""
+        code, data = self.run_linter("proxy_pass http://dynamic-rebind.org/api;", mode="rules")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("public address", data.get("error", ""))
+
+    def test_root_prefix_boundary_strictness(self):
+        """Root directive must strictly match directory boundary (/htdocs or /htdocs/)."""
+        code, data = self.run_linter("root /home/alice/htdocs_evil;", mode="rules", user="alice")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("must stay within", data.get("error", ""))
+
+        code, data = self.run_linter("root /home/alice/htdocs;", mode="rules", user="alice")
+        self.assertEqual(code, 0)
+        self.assertTrue(data.get("valid"))
+
+        code, data = self.run_linter("root /home/alice/htdocs/subfolder;", mode="rules", user="alice")
+        self.assertEqual(code, 0)
+        self.assertTrue(data.get("valid"))
+
+        code, data = self.run_linter("root /home/alice/htdocs/../htdocs_evil;", mode="rules", user="alice")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("traversal", data.get("error", "").lower())
+
+    def test_fastcgi_pass_socket_isolation(self):
+        """fastcgi_pass must use Unix socket in /run/php/ matching the tenant user."""
+        code, data = self.run_linter("fastcgi_pass unix:/run/php/php8.3-fpm-alice.sock;", mode="rules", user="alice")
+        self.assertEqual(code, 0)
+        self.assertTrue(data.get("valid"))
+
+        code, data = self.run_linter("fastcgi_pass unix:/run/php/php8.3-fpm-bob.sock;", mode="rules", user="alice")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("can only reference Unix socket for tenant 'alice'", data.get("error", ""))
+
+        code, data = self.run_linter("fastcgi_pass unix:/run/angie.sock;", mode="rules", user="alice")
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("must reside in /run/php/", data.get("error", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

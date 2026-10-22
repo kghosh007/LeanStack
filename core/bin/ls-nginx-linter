@@ -22,7 +22,8 @@ PROHIBITED_DIRECTIVES = {
     "uwsgi_temp_path", "scgi_temp_path", "perl", "perl_modules",
     "perl_require", "load_module", "daemon", "master_process",
     "worker_processes", "worker_cpu_affinity", "worker_rlimit_nofile",
-    "events", "http", "stream", "mail"
+    "events", "http", "stream", "mail",
+    "uwsgi_pass", "scgi_pass", "grpc_pass", "memcached_pass", "resolver"
 }
 
 def _forbidden_ip(value):
@@ -77,8 +78,8 @@ def _proxy_host(target):
     return raw
 
 
-def _reject_upstream(idx, directive, target, allow_unix=False):
-    """Reject variable targets and any host that is not a public literal."""
+def _reject_upstream(idx, directive, target, allow_unix=False, tenant_user=None):
+    """Reject variable targets, non-unix fastcgi, and any proxy host that is not a pinned public literal."""
     if "$" in target:
         return {
             "valid": False,
@@ -88,12 +89,39 @@ def _reject_upstream(idx, directive, target, allow_unix=False):
     raw = target.strip().strip("\"'").split()[0]
     if raw.startswith("unix:"):
         if allow_unix:
+            socket_path = raw[5:]
+            if not socket_path.startswith(("/run/php/", "/var/run/php/")):
+                return {
+                    "valid": False,
+                    "error": f"Line {idx}: fastcgi_pass Unix socket must reside in /run/php/.",
+                    "line": idx,
+                }
+            if not socket_path.endswith(".sock"):
+                return {
+                    "valid": False,
+                    "error": f"Line {idx}: fastcgi_pass Unix socket must end in .sock.",
+                    "line": idx,
+                }
+            if tenant_user and not (socket_path.endswith(f"-{tenant_user}.sock") or socket_path.endswith(f"/{tenant_user}.sock")):
+                return {
+                    "valid": False,
+                    "error": f"Line {idx}: fastcgi_pass can only reference Unix socket for tenant '{tenant_user}'.",
+                    "line": idx,
+                }
             return None
         return {
             "valid": False,
             "error": f"Line {idx}: {directive} host is not a public address.",
             "line": idx,
         }
+
+    if directive == "fastcgi_pass" and not raw.startswith("unix:"):
+        return {
+            "valid": False,
+            "error": f"Line {idx}: fastcgi_pass host is not a public address.",
+            "line": idx,
+        }
+
     host = _proxy_host(target)
     if not host:
         return {
@@ -107,11 +135,27 @@ def _reject_upstream(idx, directive, target, allow_unix=False):
             "error": f"Line {idx}: {directive} cannot target internal or metadata host '{host}'.",
             "line": idx,
         }
-    try:
-        ipaddress.ip_address(host)
-        addresses = [host]
-    except ValueError:
-        addresses = _resolve_host(host)
+
+    forced = _mapped_addresses(host)
+    if forced is not None:
+        if not forced or any(_forbidden_ip(addr) for addr in forced):
+            return {
+                "valid": False,
+                "error": f"Line {idx}: {directive} host '{host}' does not resolve to a public address.",
+                "line": idx,
+            }
+        addresses = forced
+    else:
+        try:
+            ipaddress.ip_address(host)
+            addresses = [host]
+        except ValueError:
+            return {
+                "valid": False,
+                "error": f"Line {idx}: {directive} host '{host}' does not resolve to a pinned public address. Hostnames requiring runtime DNS resolution are prohibited; use a literal public IP address.",
+                "line": idx,
+            }
+
     if not addresses or any(_forbidden_ip(addr) for addr in addresses):
         return {
             "valid": False,
@@ -186,88 +230,193 @@ def lint_headers(filepath, strict_csp=False):
     return {"valid": True, "message": "Security headers verified successfully."}
 
 
+def tokenize_nginx(text):
+    """
+    Tokenizes Nginx configuration text into (token_type, token_value, line_no).
+    Handles single/double quoted strings with escapes, and ignores comments (#).
+    """
+    tokens = []
+    i = 0
+    n = len(text)
+    line_no = 1
+
+    while i < n:
+        ch = text[i]
+
+        if ch == '\n':
+            line_no += 1
+            i += 1
+            continue
+
+        if ch in ' \t\r':
+            i += 1
+            continue
+
+        if ch == '#':
+            while i < n and text[i] != '\n':
+                i += 1
+            continue
+
+        if ch in ';{}':
+            tokens.append((ch, ch, line_no))
+            i += 1
+            continue
+
+        start_line = line_no
+        token_chars = []
+        unmatched_quote = False
+        while i < n and text[i] not in ' \t\r\n;{}#':
+            if text[i] in ('"', "'"):
+                quote_char = text[i]
+                token_chars.append(quote_char)
+                i += 1
+                closed = False
+                while i < n:
+                    qch = text[i]
+                    if qch == '\n':
+                        line_no += 1
+                    token_chars.append(qch)
+                    if qch == '\\' and i + 1 < n:
+                        i += 1
+                        token_chars.append(text[i])
+                        if text[i] == '\n':
+                            line_no += 1
+                    elif qch == quote_char:
+                        closed = True
+                        i += 1
+                        break
+                    i += 1
+                if not closed:
+                    unmatched_quote = True
+                    break
+            else:
+                token_chars.append(text[i])
+                i += 1
+
+        if unmatched_quote:
+            return None, f"Line {start_line}: Unmatched quote in directive."
+        tokens.append(('WORD', ''.join(token_chars), start_line))
+
+    return tokens, None
+
+
+def parse_statements(tokens):
+    """
+    Groups tokens into statement and block events.
+    Yields ('STMT', name, args, line_no) or ('BLOCK_START', name, args, line_no) or ('BLOCK_END', None, [], line_no).
+    """
+    current_words = []
+    stmt_line = None
+
+    for t_type, t_val, t_line in tokens:
+        if t_type == 'WORD':
+            if not current_words:
+                stmt_line = t_line
+            current_words.append(t_val)
+        elif t_type == ';':
+            if current_words:
+                yield ('STMT', current_words[0], current_words[1:], stmt_line)
+                current_words = []
+                stmt_line = None
+        elif t_type == '{':
+            if current_words:
+                yield ('BLOCK_START', current_words[0], current_words[1:], stmt_line)
+                current_words = []
+                stmt_line = None
+            else:
+                yield ('BLOCK_START', '', [], t_line)
+        elif t_type == '}':
+            if current_words:
+                yield ('STMT', current_words[0], current_words[1:], stmt_line)
+                current_words = []
+                stmt_line = None
+            yield ('BLOCK_END', None, [], t_line)
+
+    if current_words:
+        yield ('STMT', current_words[0], current_words[1:], stmt_line)
+
+
 def lint_rules(filepath, tenant_user=None):
     """Lints custom-early.conf and custom-rules.conf for multi-tenant safety."""
     if not os.path.exists(filepath):
         return {"valid": False, "error": f"File not found: {filepath}", "line": 0}
 
     with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        lines = f.readlines()
+        content = f.read()
+
+    tokens, err = tokenize_nginx(content)
+    if err:
+        return {"valid": False, "error": err, "line": 0}
 
     brace_depth = 0
+    lines_count = content.count("\n") + 1
 
-    for idx, raw_line in enumerate(lines, 1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+    for stmt_type, name, args, idx in parse_statements(tokens):
+        if stmt_type == 'BLOCK_START':
+            brace_depth += 1
+        elif stmt_type == 'BLOCK_END':
+            brace_depth -= 1
+            if brace_depth < 0:
+                return {"valid": False, "error": f"Line {idx}: Unexpected closing brace '}}'.", "line": idx}
             continue
 
-        # Track brace balance
-        brace_depth += line.count("{") - line.count("}")
-        if brace_depth < 0:
-            return {"valid": False, "error": f"Line {idx}: Unexpected closing brace '}}'.", "line": idx}
+        if not name:
+            continue
 
-        # Match a directive at the start of a statement. A URL scheme such as
-        # http:// must not count as the http block directive.
-        for prohibited in PROHIBITED_DIRECTIVES:
-            if re.search(r"(?:^|[{;])\s*" + re.escape(prohibited) + r"\b", line):
+        directive = name.lower()
+
+        # Reject prohibited directives and unknown/unauthorized *_pass directives
+        if directive in PROHIBITED_DIRECTIVES or (directive.endswith("_pass") and directive not in ("proxy_pass", "fastcgi_pass")):
+            return {
+                "valid": False,
+                "error": f"Line {idx}: Directive '{name}' is strictly prohibited for tenant security.",
+                "line": idx
+            }
+
+        # Check path traversal and boundaries in root
+        if directive == "root":
+            if not args:
+                return {"valid": False, "error": f"Line {idx}: Directive root missing path.", "line": idx}
+            target_path = os.path.normpath(args[0].strip("\"'"))
+            if ".." in target_path or ".." in args[0]:
                 return {
                     "valid": False,
-                    "error": f"Line {idx}: Directive '{prohibited}' is strictly prohibited for tenant security.",
+                    "error": f"Line {idx}: Directory traversal '..' is prohibited in root.",
                     "line": idx
                 }
-
-        # Check path traversal in root. alias is prohibited above.
-        for d in ("root",):
-            m_path = re.search(r"\b" + d + r"\s+([^;]+);", line)
-            if m_path:
-                target_path = m_path.group(1).strip("\"'")
-                if ".." in target_path:
+            if tenant_user:
+                expected_prefix = f"/home/{tenant_user}/htdocs"
+                if target_path != expected_prefix and not target_path.startswith(expected_prefix + "/"):
                     return {
                         "valid": False,
-                        "error": f"Line {idx}: Directory traversal '..' is prohibited in {d}.",
+                        "error": f"Line {idx}: Directive root path must stay within {expected_prefix}.",
                         "line": idx
                     }
-                if tenant_user:
-                    expected_prefix = f"/home/{tenant_user}/htdocs"
-                    if not target_path.startswith(expected_prefix):
+            else:
+                for sys_dir in ("/etc", "/var", "/proc", "/sys", "/bin", "/usr", "/root", "/tmp"):
+                    if target_path == sys_dir or target_path.startswith(sys_dir + "/"):
                         return {
                             "valid": False,
-                            "error": f"Line {idx}: Directive {d} path must stay within {expected_prefix}.",
+                            "error": f"Line {idx}: Directive root cannot target system path '{sys_dir}'.",
                             "line": idx
                         }
-                else:
-                    for sys_dir in ("/etc", "/var", "/proc", "/sys", "/bin", "/usr", "/root", "/tmp"):
-                        if target_path == sys_dir or target_path.startswith(sys_dir + "/"):
-                            return {
-                                "valid": False,
-                                "error": f"Line {idx}: Directive {d} cannot target system path '{sys_dir}'.",
-                                "line": idx
-                            }
 
         # Check fastcgi_pass socket binding
-        m_fcgi = re.search(r"\bfastcgi_pass\s+([^;]+);", line)
-        if m_fcgi:
-            target = m_fcgi.group(1).strip("\"'")
-            rejected = _reject_upstream(idx, "fastcgi_pass", target, allow_unix=True)
+        elif directive == "fastcgi_pass":
+            target = " ".join(args).strip("\"'")
+            rejected = _reject_upstream(idx, "fastcgi_pass", target, allow_unix=True, tenant_user=tenant_user)
             if rejected:
                 return rejected
-            if tenant_user and not target.endswith(f"-{tenant_user}.sock"):
-                return {
-                    "valid": False,
-                    "error": f"Line {idx}: fastcgi_pass can only reference Unix socket for tenant '{tenant_user}'.",
-                    "line": idx
-                }
 
-        # Check proxy_pass. Resolve the host before accept.
-        m_proxy = re.search(r"\bproxy_pass\s+([^;]+);", line)
-        if m_proxy:
-            target = m_proxy.group(1).strip("\"'")
+        # Check proxy_pass host pinning
+        elif directive == "proxy_pass":
+            target = " ".join(args).strip("\"'")
             rejected = _reject_upstream(idx, "proxy_pass", target)
             if rejected:
                 return rejected
 
     if brace_depth != 0:
-        return {"valid": False, "error": f"Unbalanced braces detected (depth: {brace_depth}).", "line": len(lines)}
+        return {"valid": False, "error": f"Unbalanced braces detected (depth: {brace_depth}).", "line": lines_count}
 
     return {"valid": True, "message": "Tenant custom rules verified successfully."}
 

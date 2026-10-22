@@ -79,13 +79,23 @@ class TestPoolBudgetFixture(unittest.TestCase):
     def test_third_site_warns_and_keeps_requested_workers(self):
         domains = ["one.example", "two.example", "three.example"]
         outputs = []
-        for domain in domains:
+        for domain in domains[:2]:
             res = self.create(domain)
             self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
             outputs.append(res.stdout)
         self.assertNotIn("host PHP budget exceeded", outputs[0])
         self.assertNotIn("host PHP budget exceeded", outputs[1])
-        self.assertIn("host PHP budget exceeded", outputs[2])
+
+        # Third site exceeds host PHP worker budget and must be blocked without --force (LS-12)
+        unforced = self.create(domains[2])
+        self.assertNotEqual(unforced.returncode, 0)
+        self.assertIn("host PHP budget exceeded", unforced.stdout + unforced.stderr)
+
+        # Overriding with --force allows creating the site and keeps requested workers
+        res = self.create(domains[2], "--force")
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        self.assertIn("host PHP budget exceeded", res.stdout)
+
         files = self.pools()
         self.assertEqual(len(files), 3)
         total = 0
@@ -162,11 +172,15 @@ class TestPoolBudgetFixture(unittest.TestCase):
         text = pathlib.Path(self.pools()[0]).read_text(encoding="utf-8")
         self.assertIn("listen.group = ", text)
         self.assertNotIn("listen.group = www-data", text)
-        self.assertIn("/var/cache/angie/sites/shop.example", text)
+        self.assertIn("/var/cache/angie/sites/shop.example/", text)
         self.assertNotIn("/var/cache/angie/sites:", text)
         self.assertNotIn("/proc", text)
         basedir = text.split("open_basedir] = ", 1)[1].split("\n", 1)[0]
         self.assertNotIn("/usr/bin/msmtp", basedir)
+        # Ensure all directory entries in open_basedir end with trailing slash to prevent prefix collision (LS-05)
+        for entry in basedir.split(":"):
+            if not entry.endswith(".sock"):
+                self.assertTrue(entry.endswith("/"), f"Directory entry in open_basedir must end with '/': {entry}")
         disabled = text.split("disable_functions] = ", 1)[1].split("\n", 1)[0]
         self.assertIn("proc_open", disabled)
 

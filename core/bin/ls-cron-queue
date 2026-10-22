@@ -70,7 +70,7 @@ run_site_cron() {
 
         # WP-CLI relies on proc_open / proc_close for process management.
         # Restrict dangerous functions while allowing proc_open for WP-CLI execution.
-        local disabled_funcs="exec,passthru,shell_exec,system,dl,show_source"
+        local disabled_funcs="exec,passthru,shell_exec,system,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"
 
         local status_dir="/home/${user}/nginx"
         local alt_status_dir="${site_path}/wp-content/nginx-custom"

@@ -1634,8 +1634,15 @@ www-data hard nofile 65535
             df_val = df_match.group(1).strip()
             funcs = [f.strip() for f in df_val.split(",") if f.strip()]
             to_remove = {"symlink", "link", "curl_multi_exec", "parse_ini_file"}
-            if any(f in funcs for f in to_remove):
-                funcs = [f for f in funcs if f not in to_remove]
+            required = ["opcache_reset", "opcache_flush", "apcu_clear_cache", "apc_clear_cache"]
+            removed = any(f in funcs for f in to_remove)
+            funcs = [f for f in funcs if f not in to_remove]
+            added = False
+            for name in required:
+                if name not in funcs:
+                    funcs.append(name)
+                    added = True
+            if removed or added:
                 new_df_line = f"php_admin_value[disable_functions] = {','.join(funcs)}"
                 p_content = p_content.replace(df_match.group(0), new_df_line)
                 p_changed = True

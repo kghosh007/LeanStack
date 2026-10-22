@@ -31,6 +31,10 @@ else
     DB_DIR="/var/lib/lsctl"
     DB_FILE="${DB_DIR}/sites.db"
 fi
+if [ -n "${LEANSTACK_ROOT:-}" ]; then
+    DB_DIR="${LEANSTACK_ROOT}/var/lib/lsctl"
+    DB_FILE="${DB_DIR}/sites.db"
+fi
 
 if [ -n "${LEANSTACK_PROFILES:-}" ]; then
     PROFILES_FILE="$LEANSTACK_PROFILES"
@@ -42,13 +46,115 @@ else
     PROFILES_FILE="${SCRIPT_DIR}/../config/profiles.yaml"
 fi
 
-if [ -d "/etc/lsctl/templates" ]; then
+if [ -n "${LEANSTACK_ROOT:-}" ]; then
+    PROFILES_FILE="${SCRIPT_DIR}/../config/profiles.yaml"
+    TEMPLATE_DIR="${SCRIPT_DIR}/../templates"
+elif [ -d "/etc/lsctl/templates" ]; then
     TEMPLATE_DIR="/etc/lsctl/templates"
 elif [ -d "/etc/cpctl/templates" ]; then
     TEMPLATE_DIR="/etc/cpctl/templates"
 else
     TEMPLATE_DIR="${SCRIPT_DIR}/../templates"
 fi
+
+php_pool_root() {
+    if [ -n "${LEANSTACK_ROOT:-}" ]; then
+        echo "${LEANSTACK_ROOT}/etc/php"
+    else
+        echo "/etc/php"
+    fi
+}
+
+host_budget_children() {
+    local repo="${SCRIPT_DIR}/../.."
+    python3 - "$repo" "${LEANSTACK_SIMULATE_RAM:-}" "${LEANSTACK_SIMULATE_CORES:-}" << 'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from installer.probe import HardwareProbe, TuningCalculator
+ram = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
+cores = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+hw = HardwareProbe(sim_ram_mb=ram, sim_cores=cores).probe_all()
+print(TuningCalculator(hw).to_document()["php"]["host_budget_children"])
+PY
+}
+
+site_max_children() {
+    local mem="$1"
+    local budget="$2"
+    local mb="${mem%[MmGg]}"
+    case "$mem" in
+        *G|*g) mb=$((mb * 1024)) ;;
+    esac
+    [ -z "$mb" ] && mb=256
+    [ "$mb" -lt 1 ] && mb=256
+    local n=$(( budget * 128 / mb ))
+    [ "$n" -lt 2 ] && n=2
+    echo "$n"
+}
+
+fill_spare_servers() {
+    local n="$1"
+    SITE_START=$(( n / 4 ))
+    [ "$SITE_START" -lt 1 ] && SITE_START=1
+    [ "$SITE_START" -gt "$n" ] && SITE_START=$n
+    SITE_MIN_SPARE=$(( n / 8 ))
+    [ "$SITE_MIN_SPARE" -lt 1 ] && SITE_MIN_SPARE=1
+    [ "$SITE_MIN_SPARE" -gt "$SITE_START" ] && SITE_MIN_SPARE=$SITE_START
+    SITE_MAX_SPARE=$(( n / 2 ))
+    [ "$SITE_MAX_SPARE" -lt "$SITE_START" ] && SITE_MAX_SPARE=$SITE_START
+    [ "$SITE_MAX_SPARE" -gt "$n" ] && SITE_MAX_SPARE=$n
+    return 0
+}
+
+sum_pool_children() {
+    local root="$1"
+    local exclude="$2"
+    local sum=0
+    local f line
+    [ -d "$root" ] || { echo 0; return; }
+    while IFS= read -r f; do
+        [ "$f" = "$exclude" ] && continue
+        line=$(awk '/^pm.max_children/ {print $3; exit}' "$f")
+        [ -n "$line" ] && sum=$((sum + line))
+    done < <(find "$root" -path '*/fpm/pool.d/*.conf' -type f 2>/dev/null)
+    echo "$sum"
+}
+
+warn_php_budget() {
+    local have="$1"
+    local add="$2"
+    local budget="$3"
+    local remain=$((budget - have))
+    if [ $((have + add)) -gt "$budget" ] || [ "$remain" -lt 2 ]; then
+        echo "host PHP budget exceeded"
+    fi
+}
+
+write_pool_file() {
+    local dest="$1"
+    local user="$2"
+    local socket="$3"
+    local mode="$4"
+    local maxc="$5"
+    local web="$6"
+    local mem="$7"
+    local staged="${dest}.staged"
+    mkdir -p "$(dirname "$dest")"
+    cp "${TEMPLATE_DIR}/pool.conf.tpl" "$staged"
+    sed -i "s|{{USER_NAME}}|${user}|g" "$staged"
+    sed -i "s|{{SOCKET_PATH}}|${socket}|g" "$staged"
+    sed -i "s|{{POOL_MODE}}|${mode}|g" "$staged"
+    sed -i "s|{{MAX_CHILDREN}}|${maxc}|g" "$staged"
+    sed -i "s|{{WEB_ROOT}}|${web}|g" "$staged"
+    sed -i "s|{{MEMORY_LIMIT}}|${mem}|g" "$staged"
+    local spare=""
+    if [ "$mode" = "dynamic" ]; then
+        fill_spare_servers "$maxc"
+        spare="pm.start_servers = ${SITE_START}"$'\n'"pm.min_spare_servers = ${SITE_MIN_SPARE}"$'\n'"pm.max_spare_servers = ${SITE_MAX_SPARE}"
+    fi
+    python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("{{PM_DYNAMIC_SETTINGS}}", sys.argv[2]))' "$staged" "$spare"
+    mv "$staged" "$dest"
+}
 
 BACKUP_DIR="/var/backups/lsctl/trash"
 WP_MASTER_TEMPLATE="/opt/templates/wordpress"
@@ -183,6 +289,7 @@ LeanStack Engine (lsctl) - Ultra-Lightweight WordPress Control Plane
 Commands:
   wp:create       Provision a site using an agency profile (or site:create)
   site:php        Atomic zero-downtime PHP migration (8.1 - 8.5)
+  site:pool       Change one site PHP pool mode or worker cap
   site:delete     Deep multi-tier site, database & certificate teardown
   site:list       List all registered sites (--json supported)
   site:info       Display full credentials & configuration (--json supported)
@@ -211,12 +318,16 @@ Options for wp:create:
   sudo lsctl wp:create --domain=example.com [options]
     --profile=agency_woocommerce (Default: default)
     --php=8.5                    (Default: 8.5)
+    --pool-mode=ondemand         (ondemand, dynamic, or static)
     --admin-user=user            (Overrides profile default)
     --admin-email=me@site.com    (Overrides profile default)
     --admin-pass=secret          (Auto-generates if omitted)
     --memory-limit=512M          (Overrides profile default)
     --cf                         (Enables Cloudflare Proxy & SSL headers)
     --site-title="My Store"      (Default: Domain name)
+
+Options for site:pool:
+  sudo lsctl site:pool example.com [--mode=ondemand|dynamic|static] [--max-children=N]
 ==============================================================================
 EOF
     exit 0
@@ -739,7 +850,7 @@ try:
             desc = p.get("description", "")
             php = p.get("php", "8.5")
             mem = p.get("memory_limit", "256M")
-            pool = p.get("pool_mode", "dynamic")
+            pool = p.get("pool_mode", "ondemand")
             cf = "yes" if p.get("cf", False) else "no"
             theme = p.get("theme", "none") or "none"
             print(f"{name:<22} {php:<6} {mem:<7} {pool:<9} {cf:<6} {theme[:15]:<16} {desc}")
@@ -818,7 +929,7 @@ try:
         print(f"Description:     {p.get('description', '')}")
         print(f"PHP Version:     {p.get('php', '8.5')}")
         print(f"Memory Limit:    {p.get('memory_limit', '256M')}")
-        print(f"Pool Mode:       {p.get('pool_mode', 'dynamic')}")
+        print(f"Pool Mode:       {p.get('pool_mode', 'ondemand')}")
         print(f"Cloudflare Edge: {'Enabled' if p.get('cf', False) else 'Disabled'}")
         print(f"Cache Engine:    {p.get('cache', 'on')}")
         print(f"Plugins:         {', '.join(p.get('plugins', []))}")
@@ -842,7 +953,7 @@ PY
         DESC="Custom agency profile"
         PHP="8.5"
         MEM="256M"
-        POOL="dynamic"
+        POOL="ondemand"
         CF="false"
         THEME="twentytwentyfour"
 
@@ -1036,40 +1147,16 @@ else:
         echo ">>> Switching ${DOMAIN} atomically from PHP ${OLD_PHP} to ${NEW_PHP}..."
 
         NEW_POOL="/etc/php/${NEW_PHP}/fpm/pool.d/${USER_NAME}.conf"
-        NEW_STAGED="${NEW_POOL}.staged"
         OLD_POOL="/etc/php/${OLD_PHP}/fpm/pool.d/${USER_NAME}.conf"
         NEW_SOCKET="/run/php/php${NEW_PHP}-${USER_NAME}.sock"
 
-        # Hardware-aware PHP-FPM worker bounds calculation
-        CALC_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
-        if [ "$CALC_RAM_MB" -le 1024 ]; then
-            SITE_MAX_CHILDREN=8; SITE_START=2; SITE_MIN_SPARE=1; SITE_MAX_SPARE=4
-        elif [ "$CALC_RAM_MB" -le 2048 ]; then
-            SITE_MAX_CHILDREN=15; SITE_START=3; SITE_MIN_SPARE=2; SITE_MAX_SPARE=6
-        elif [ "$CALC_RAM_MB" -le 4096 ]; then
-            SITE_MAX_CHILDREN=25; SITE_START=5; SITE_MIN_SPARE=3; SITE_MAX_SPARE=10
-        elif [ "$CALC_RAM_MB" -le 8192 ]; then
-            SITE_MAX_CHILDREN=40; SITE_START=8; SITE_MIN_SPARE=4; SITE_MAX_SPARE=16
-        else
-            SITE_MAX_CHILDREN=60; SITE_START=12; SITE_MIN_SPARE=6; SITE_MAX_SPARE=24
+        if [ -f "$OLD_POOL" ]; then
+            SITE_MAX_CHILDREN=$(awk '/^pm.max_children/ {print $3; exit}' "$OLD_POOL")
         fi
-
-        cp "${TEMPLATE_DIR}/pool.conf.tpl" "$NEW_STAGED"
-        sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$NEW_STAGED"
-        sed -i "s|{{SOCKET_PATH}}|${NEW_SOCKET}|g" "$NEW_STAGED"
-        sed -i "s|{{POOL_MODE}}|${POOL_MODE}|g" "$NEW_STAGED"
-        sed -i "s|{{MAX_CHILDREN}}|${SITE_MAX_CHILDREN}|g" "$NEW_STAGED"
-        sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|g" "$NEW_STAGED"
-        sed -i "s|{{MEMORY_LIMIT}}|${MEMORY_LIMIT}|g" "$NEW_STAGED"
-
-        if [ "$POOL_MODE" == "dynamic" ]; then
-            DYNAMIC_SETTINGS="pm.start_servers = ${SITE_START}\npm.min_spare_servers = ${SITE_MIN_SPARE}\npm.max_spare_servers = ${SITE_MAX_SPARE}"
-            sed -i "s|{{PM_DYNAMIC_SETTINGS}}|${DYNAMIC_SETTINGS}|g" "$NEW_STAGED"
-        else
-            sed -i "s|{{PM_DYNAMIC_SETTINGS}}||g" "$NEW_STAGED"
+        if [ -z "${SITE_MAX_CHILDREN:-}" ]; then
+            SITE_MAX_CHILDREN=$(site_max_children "$MEMORY_LIMIT" "$(host_budget_children)")
         fi
-
-        mv "$NEW_STAGED" "$NEW_POOL"
+        write_pool_file "$NEW_POOL" "$USER_NAME" "$NEW_SOCKET" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
         FPM_BIN="php-fpm${NEW_PHP}"
         if ! command -v "$FPM_BIN" &>/dev/null; then
             if [ -x "/usr/sbin/php-fpm${NEW_PHP}" ]; then
@@ -1102,6 +1189,100 @@ else:
 
         db_exec "UPDATE sites SET php_version='${NEW_PHP}' WHERE domain='${DOMAIN}';"
         echo "✅ Atomically migrated ${DOMAIN} to PHP ${NEW_PHP}!"
+        exit 0
+        ;;
+
+    site:pool)
+        if [ -z "${LEANSTACK_ROOT:-}" ]; then
+            require_root
+        fi
+        init_db
+        DOMAIN=""
+        NEW_MODE=""
+        NEW_MAX=""
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --mode=*) NEW_MODE="${1#--mode=}" ;;
+                --max-children=*) NEW_MAX="${1#--max-children=}" ;;
+                -*) echo "ERROR: unknown option '$1'." >&2; exit 1 ;;
+                *)
+                    if [ -n "$DOMAIN" ]; then
+                        echo "Usage: lsctl site:pool <domain> [--mode=ondemand|dynamic|static] [--max-children=N]" >&2
+                        exit 1
+                    fi
+                    DOMAIN="$1"
+                    ;;
+            esac
+            shift
+        done
+        [ -z "$DOMAIN" ] && { echo "Usage: lsctl site:pool <domain> [--mode=ondemand|dynamic|static] [--max-children=N]" >&2; exit 1; }
+        if [[ ! "$DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]]; then
+            echo "ERROR: invalid domain." >&2
+            exit 1
+        fi
+        if [ -n "$NEW_MODE" ]; then
+            case "$NEW_MODE" in
+                ondemand|dynamic|static) ;;
+                *) echo "ERROR: invalid pool mode '$NEW_MODE'." >&2; exit 1 ;;
+            esac
+        fi
+        if [ -n "$NEW_MAX" ]; then
+            if [[ ! "$NEW_MAX" =~ ^[0-9]+$ ]] || [ "$NEW_MAX" -lt 2 ]; then
+                echo "ERROR: max-children must be an integer >= 2." >&2
+                exit 1
+            fi
+        fi
+        SITE_ROW=$(db_query "SELECT user, php_version, pool_mode, memory_limit, site_path FROM sites WHERE domain='$DOMAIN';")
+        [ -z "$SITE_ROW" ] && { echo "ERROR: Site '$DOMAIN' not found." >&2; exit 1; }
+        USER_NAME=$(echo "$SITE_ROW" | cut -d '|' -f 1)
+        PHP_VER=$(echo "$SITE_ROW" | cut -d '|' -f 2)
+        POOL_MODE=$(echo "$SITE_ROW" | cut -d '|' -f 3)
+        MEMORY_LIMIT=$(echo "$SITE_ROW" | cut -d '|' -f 4)
+        WEB_ROOT=$(echo "$SITE_ROW" | cut -d '|' -f 5)
+        [ -n "$NEW_MODE" ] && POOL_MODE="$NEW_MODE"
+        POOL_FILE="$(php_pool_root)/${PHP_VER}/fpm/pool.d/${USER_NAME}.conf"
+        if [ -n "$NEW_MAX" ]; then
+            SITE_MAX_CHILDREN="$NEW_MAX"
+        elif [ -f "$POOL_FILE" ]; then
+            SITE_MAX_CHILDREN=$(awk '/^pm.max_children/ {print $3; exit}' "$POOL_FILE")
+        fi
+        if [ -z "${SITE_MAX_CHILDREN:-}" ]; then
+            SITE_MAX_CHILDREN=$(site_max_children "$MEMORY_LIMIT" "$(host_budget_children)")
+        fi
+        HOST_BUDGET=$(host_budget_children)
+        USED_CHILDREN=$(sum_pool_children "$(php_pool_root)" "$POOL_FILE")
+        warn_php_budget "$USED_CHILDREN" "$SITE_MAX_CHILDREN" "$HOST_BUDGET"
+        SOCKET_PATH="/run/php/php${PHP_VER}-${USER_NAME}.sock"
+        BACKUP=""
+        if [ -f "$POOL_FILE" ]; then
+            BACKUP="${POOL_FILE}.bak"
+            cp -a "$POOL_FILE" "$BACKUP"
+        fi
+        write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
+        if [ -z "${LEANSTACK_ROOT:-}" ]; then
+            FPM_BIN="php-fpm${PHP_VER}"
+            if ! command -v "$FPM_BIN" &>/dev/null; then
+                if [ -x "/usr/sbin/php-fpm${PHP_VER}" ]; then
+                    FPM_BIN="/usr/sbin/php-fpm${PHP_VER}"
+                elif command -v php-fpm &>/dev/null; then
+                    FPM_BIN="php-fpm"
+                fi
+            fi
+            if ! "$FPM_BIN" -t &>/dev/null; then
+                if [ -n "$BACKUP" ]; then
+                    mv "$BACKUP" "$POOL_FILE"
+                else
+                    rm -f "$POOL_FILE"
+                fi
+                echo "ERROR: PHP syntax check failed." >&2
+                exit 1
+            fi
+            systemctl reload "php${PHP_VER}-fpm" 2>/dev/null || systemctl restart "php${PHP_VER}-fpm" 2>/dev/null || true
+        fi
+        rm -f "$BACKUP"
+        db_exec "UPDATE sites SET pool_mode='${POOL_MODE}' WHERE domain='${DOMAIN}';"
+        echo ">>> Pool: ${POOL_MODE} max_children=${SITE_MAX_CHILDREN}"
         exit 0
         ;;
 
@@ -1183,7 +1364,9 @@ else:
         ;;
 
     wp:create|site:create)
-        require_root
+        if [ -z "${LEANSTACK_ROOT:-}" ]; then
+            require_root
+        fi
         init_db
 
         PROFILE="default"
@@ -1301,7 +1484,7 @@ PY
         P_ADMIN_EMAIL=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_email', 'admin@example.com'))" "$PROFILE_DATA")
         P_ADMIN_PASS=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_pass', ''))" "$PROFILE_DATA")
         P_PHP=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('php', '8.5'))" "$PROFILE_DATA")
-        P_POOL_MODE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('pool_mode', 'dynamic'))" "$PROFILE_DATA")
+        P_POOL_MODE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('pool_mode', 'ondemand'))" "$PROFILE_DATA")
         P_MEM=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('memory_limit', '256M'))" "$PROFILE_DATA")
         P_TIMEZONE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('timezone', 'UTC'))" "$PROFILE_DATA")
         P_CACHE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('cache', 'on'))" "$PROFILE_DATA")
@@ -1314,6 +1497,10 @@ PY
         ADMIN_PASS="${CLI_ADMIN_PASS:-$P_ADMIN_PASS}"
         PHP_VER="${CLI_PHP:-$P_PHP}"
         POOL_MODE="${CLI_POOL_MODE:-$P_POOL_MODE}"
+        case "$POOL_MODE" in
+            ondemand|dynamic|static) ;;
+            *) echo "ERROR: invalid pool mode '$POOL_MODE'." >&2; exit 1 ;;
+        esac
         MEMORY_LIMIT="${CLI_MEM_LIMIT:-$P_MEM}"
         SITE_TITLE="${CLI_TITLE:-$DOMAIN}"
         [ -n "$CLI_CF" ] && IS_CF=$CLI_CF || IS_CF=$P_CF
@@ -1341,6 +1528,17 @@ PY
         WEB_ROOT="/home/${USER_NAME}/htdocs"
         LOG_DIR="/home/${USER_NAME}/logs"
         SOCKET_PATH="/run/php/php${PHP_VER}-${USER_NAME}.sock"
+        HOST_BUDGET=$(host_budget_children)
+        SITE_MAX_CHILDREN=$(site_max_children "$MEMORY_LIMIT" "$HOST_BUDGET")
+        POOL_FILE="$(php_pool_root)/${PHP_VER}/fpm/pool.d/${USER_NAME}.conf"
+        USED_CHILDREN=$(sum_pool_children "$(php_pool_root)" "$POOL_FILE")
+        warn_php_budget "$USED_CHILDREN" "$SITE_MAX_CHILDREN" "$HOST_BUDGET"
+        if [ -n "${LEANSTACK_ROOT:-}" ]; then
+            write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
+            db_exec "INSERT INTO sites (domain, user, php_version, pool_type, pool_mode, memory_limit, table_prefix, is_cf, profile_used, site_path, db_name, db_user, db_pass, admin_user, admin_pass, admin_email, wp_version) VALUES ('${DOMAIN}', '${USER_NAME}', '${PHP_VER}', 'dedicated', '${POOL_MODE}', '${MEMORY_LIMIT}', 'wp_', ${IS_CF}, '${PROFILE}', '${WEB_ROOT}', '${USER_NAME}_db', '${USER_NAME}_u', 'fixture', '${ADMIN_USER}', 'fixture', '${ADMIN_EMAIL}', 'latest');"
+            echo ">>> Pool: ${POOL_MODE} max_children=${SITE_MAX_CHILDREN}"
+            exit 0
+        fi
 
         RAND_PREFIX=$(openssl rand -hex 3)
         TABLE_PREFIX="${RAND_PREFIX}_"
@@ -1401,35 +1599,8 @@ PY
         mariadb -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';"
         mariadb -e "FLUSH PRIVILEGES;"
 
-        # PHP-FPM Pool Generation (Hardware-Aware Dynamic Sizing)
-        CALC_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 2048)
-        if [ "$CALC_RAM_MB" -le 1024 ]; then
-            SITE_MAX_CHILDREN=8; SITE_START=2; SITE_MIN_SPARE=1; SITE_MAX_SPARE=4
-        elif [ "$CALC_RAM_MB" -le 2048 ]; then
-            SITE_MAX_CHILDREN=15; SITE_START=3; SITE_MIN_SPARE=2; SITE_MAX_SPARE=6
-        elif [ "$CALC_RAM_MB" -le 4096 ]; then
-            SITE_MAX_CHILDREN=25; SITE_START=5; SITE_MIN_SPARE=3; SITE_MAX_SPARE=10
-        elif [ "$CALC_RAM_MB" -le 8192 ]; then
-            SITE_MAX_CHILDREN=40; SITE_START=8; SITE_MIN_SPARE=4; SITE_MAX_SPARE=16
-        else
-            SITE_MAX_CHILDREN=60; SITE_START=12; SITE_MIN_SPARE=6; SITE_MAX_SPARE=24
-        fi
-
-        POOL_FILE="/etc/php/${PHP_VER}/fpm/pool.d/${USER_NAME}.conf"
-        cp "${TEMPLATE_DIR}/pool.conf.tpl" "$POOL_FILE"
-        sed -i "s|{{USER_NAME}}|${USER_NAME}|g" "$POOL_FILE"
-        sed -i "s|{{SOCKET_PATH}}|${SOCKET_PATH}|g" "$POOL_FILE"
-        sed -i "s|{{POOL_MODE}}|${POOL_MODE}|g" "$POOL_FILE"
-        sed -i "s|{{MAX_CHILDREN}}|${SITE_MAX_CHILDREN}|g" "$POOL_FILE"
-        sed -i "s|{{WEB_ROOT}}|${WEB_ROOT}|g" "$POOL_FILE"
-        sed -i "s|{{MEMORY_LIMIT}}|${MEMORY_LIMIT}|g" "$POOL_FILE"
-
-        if [ "$POOL_MODE" == "dynamic" ]; then
-            DYNAMIC_SETTINGS="pm.start_servers = ${SITE_START}\npm.min_spare_servers = ${SITE_MIN_SPARE}\npm.max_spare_servers = ${SITE_MAX_SPARE}"
-            sed -i "s|{{PM_DYNAMIC_SETTINGS}}|${DYNAMIC_SETTINGS}|g" "$POOL_FILE"
-        else
-            sed -i "s|{{PM_DYNAMIC_SETTINGS}}||g" "$POOL_FILE"
-        fi
+        # PHP-FPM pool from the host budget and this site's memory_limit.
+        write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
 
         if command -v "php-fpm${PHP_VER}" &>/dev/null; then
             "php-fpm${PHP_VER}" -t

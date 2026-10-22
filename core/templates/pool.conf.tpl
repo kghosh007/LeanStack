@@ -33,7 +33,7 @@ php_admin_value[memory_limit] = {{MEMORY_LIMIT}}
 php_admin_value[max_execution_time] = 300
 
 ; Block dangerous command execution functions (Permits safe opcache_invalidate for tenant scripts while blocking opcache_reset)
-php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache
 php_admin_value[max_input_vars] = 5000
 php_admin_flag[allow_url_include] = off
 php_admin_flag[expose_php] = off

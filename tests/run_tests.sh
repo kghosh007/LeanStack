@@ -91,6 +91,7 @@ run_pillar 8 "CLI Engine & Profiles System" "
     '${BASE_DIR}/core/bin/lsctl' help >/dev/null && \
     '${BASE_DIR}/core/bin/cpctl' help >/dev/null && \
     '${BASE_DIR}/core/bin/lsctl' watcher:status --json >/dev/null && \
+    python3 '${BASE_DIR}/tests/test_invariants.py' && \
     python3 '${BASE_DIR}/tests/test_cli_and_templates.py'
 "
 

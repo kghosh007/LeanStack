@@ -327,7 +327,7 @@ session.use_strict_mode = 1
 session.cookie_httponly = 1
 session.cookie_secure = 1
 session.cookie_samesite = Lax
-disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset
+disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache
 """
 
 

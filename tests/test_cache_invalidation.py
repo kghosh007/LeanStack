@@ -137,7 +137,11 @@ class TestMultiTenantOpcacheIsolation(unittest.TestCase):
         self.assertIsNotNone(m)
         disabled = [fn.strip() for fn in m.group(1).split(",")]
         self.assertIn("opcache_reset", disabled)
+        self.assertIn("opcache_flush", disabled)
+        self.assertIn("apcu_clear_cache", disabled)
+        self.assertIn("apc_clear_cache", disabled)
         self.assertNotIn("opcache_invalidate", disabled)
+        self.assertNotIn("apcu_delete", disabled)
 
     def test_tenant_opcache_invalidation_filter(self):
         """Simulate OPcache status scripts and test strict ABSPATH tenant scoping."""
@@ -148,17 +152,25 @@ class TestMultiTenantOpcacheIsolation(unittest.TestCase):
         mock_scripts = {
             "/home/tenant1/htdocs/wp-content/themes/custom/header.php": {"hits": 42},
             "/home/tenant1/htdocs/wp-includes/plugin.php": {"hits": 100},
+            "/home/tenant1/htdocs-evil/index.php": {"hits": 7},
             "/home/tenant2/htdocs/index.php": {"hits": 10},
             "/usr/share/php/Composer/autoload.php": {"hits": 999}
         }
 
+        bridge = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
+        with open(bridge, "r") as f:
+            php = f.read()
+        self.assertIn("rtrim( (string) $doc_root, '/' ) . '/'", php)
+
         # Algorithm in LeanStackBridge::purge_tenant_opcache()
+        doc_root = tenant_abspath.rstrip("/") + "/"
         purged = []
         for script_path in mock_scripts.keys():
-            if script_path.startswith(tenant_abspath):
+            if script_path.startswith(doc_root):
                 purged.append(script_path)
 
         self.assertEqual(len(purged), 2)
+        self.assertNotIn("/home/tenant1/htdocs-evil/index.php", purged)
         self.assertIn("/home/tenant1/htdocs/wp-content/themes/custom/header.php", purged)
         self.assertIn("/home/tenant1/htdocs/wp-includes/plugin.php", purged)
         self.assertNotIn("/home/tenant2/htdocs/index.php", purged)

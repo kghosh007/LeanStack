@@ -1120,6 +1120,7 @@ class LeanStackBridge {
             $status = @opcache_get_status( true );
             if ( ! empty( $status['scripts'] ) && is_array( $status['scripts'] ) ) {
                 $doc_root = function_exists( 'wp_normalize_path' ) ? wp_normalize_path( ABSPATH ) : ABSPATH;
+                $doc_root = rtrim( (string) $doc_root, '/' ) . '/';
                 foreach ( array_keys( $status['scripts'] ) as $script_path ) {
                     $normalized = function_exists( 'wp_normalize_path' ) ? wp_normalize_path( $script_path ) : $script_path;
                     if ( 0 === strpos( $normalized, $doc_root ) ) {
@@ -2216,7 +2217,7 @@ class LeanStackBridge {
             <?php elseif ( 'php-cache' === $active_tab ) : ?>
                 <div style="background: #fff; border: 1px solid #ccd0d4; padding: 20px; margin-top: 20px; border-radius: 4px;">
                     <h3><span class="dashicons dashicons-shield-alt" style="color: #2271b1;"></span> <?php _e( 'Multi-Tenant Isolated OPcache Purge', 'leanstack' ); ?></h3>
-                    <p><?php _e( 'In a multi-tenant hosting architecture, running <code>opcache_reset()</code> clears bytecode caches for all sites on the server, causing performance degradation across all tenants. LeanStack enforces safe per-tenant invalidation: only PHP scripts residing inside this site\'s document root are invalidated.', 'leanstack' ); ?></p>
+                    <p><?php _e( 'In a multi-tenant hosting architecture, running <code>opcache_reset()</code> or <code>apcu_clear_cache()</code> clears caches for every site on this PHP version. LeanStack invalidates only this site: OPcache scripts under its document root, and APCu keys with this site\'s prefix.', 'leanstack' ); ?></p>
 
                     <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
                         <?php wp_nonce_field( 'leanstack_purge_opcache_action', 'leanstack_nonce' ); ?>

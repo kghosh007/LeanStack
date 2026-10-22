@@ -65,9 +65,9 @@ process_php_hardening() {
         revert_at=$(python3 -c "import json; d=json.load(open('$filepath')); print(d.get('revert_at', 0))" 2>/dev/null || echo "0")
     fi
 
-    local df_val="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset"
+    local df_val="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"
     if [ "$mode" == "benchmark" ]; then
-        df_val="exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset"
+        df_val="exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"
         cp -f "$filepath" "$active_marker" 2>/dev/null || true
         chmod 644 "$active_marker" 2>/dev/null || true
         chown "${tenant_user}:www-data" "$active_marker" 2>/dev/null || true

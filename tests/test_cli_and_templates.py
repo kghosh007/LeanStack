@@ -31,7 +31,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
             cfg = data[prof]
             self.assertIn("php", cfg)
             self.assertIn("memory_limit", cfg)
-            self.assertIn("pool_mode", cfg)
+            self.assertEqual(cfg["pool_mode"], "ondemand")
             self.assertIn("plugins", cfg)
 
     def test_vhost_template_security(self):
@@ -949,14 +949,14 @@ class TestProfilesAndTemplates(unittest.TestCase):
         gk_path = os.path.join(BASE_DIR, "core", "bin", "ls-gatekeeper")
         with open(gk_path, "r") as f:
             gk_content = f.read()
-        self.assertIn('local df_val="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset"', gk_content)
+        self.assertIn('local df_val="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"', gk_content)
         self.assertIn('if [ "$mode" == "benchmark" ]; then', gk_content)
-        self.assertIn('df_val="exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset"', gk_content)
+        self.assertIn('df_val="exec,passthru,shell_exec,system,proc_open,popen,show_source,dl,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"', gk_content)
 
         watcher_path = os.path.join(BASE_DIR, "core", "bin", "ls-watcher")
         with open(watcher_path, "r") as f:
             watcher_content = f.read()
-        self.assertIn('local df_strict="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset"', watcher_content)
+        self.assertIn('local df_strict="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"', watcher_content)
 
     def test_ls_cron_queue_sudo_arguments(self):
         """Verify ls-cron-queue uses sudo -u "$user" -H without --chdir to avoid sudoers CWD permission errors."""

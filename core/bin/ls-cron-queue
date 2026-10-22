@@ -203,31 +203,17 @@ echo "LS_TELEMETRY:{$dur}:{$cpu}:{$mem}:{$executed}";
         local cron_out=""
         cron_out=$(
             cd "$site_path" 2>/dev/null || true
-            local sudo_cmd=()
-            if [ "$(id -u)" -eq 0 ]; then
-                sudo_cmd=(sudo -u "$user" -H)
-            fi
             local err_tmp
             err_tmp=$(mktemp)
 
-            out=$(timeout 60 "${sudo_cmd[@]}" "$php_bin" \
-                -d open_basedir="${allowed_paths}" \
-                -d disable_functions="${disabled_funcs}" \
-                -d display_errors=Off \
-                -d error_reporting="E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED" \
-                "$wp_bin" eval "$eval_php" --path="$site_path" 2> "$err_tmp" || true)
+            out=$(timeout 60 su -s /bin/bash "$user" -c "cd '$site_path' && '$php_bin' -d open_basedir='$allowed_paths' -d disable_functions='$disabled_funcs' -d display_errors=Off -d error_reporting='E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED' '$wp_bin' eval \"$eval_php\" --path='$site_path'" 2> "$err_tmp" || true)
 
             if [[ "$out" != *"LS_TELEMETRY:"* ]]; then
-                timeout 60 "${sudo_cmd[@]}" "$php_bin" \
-                    -d open_basedir="${allowed_paths}" \
-                    -d disable_functions="${disabled_funcs}" \
-                    -d display_errors=Off \
-                    -d error_reporting="E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED" \
-                    "$wp_bin" cron event run --due-now --path="$site_path" --quiet 2>> "$err_tmp" || true
+                timeout 60 su -s /bin/bash "$user" -c "cd '$site_path' && '$php_bin' -d open_basedir='$allowed_paths' -d disable_functions='$disabled_funcs' -d display_errors=Off -d error_reporting='E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED' '$wp_bin' cron event run --due-now --path='$site_path' --quiet" 2>> "$err_tmp" || true
             fi
 
             if [ -s "$err_tmp" ]; then
-                grep -v -E "open_basedir restriction in effect\. File\(/home|open_basedir restriction in effect\. File\(/" "$err_tmp" >> "$LOG_FILE" || true
+                cat "$err_tmp" >> "$LOG_FILE"
             fi
             rm -f "$err_tmp"
 

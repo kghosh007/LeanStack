@@ -6,7 +6,14 @@
  */
 
 // 1. HTTP & CORS Headers
-header('Access-Control-Allow-Origin: *');
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+$host = $_SERVER['HTTP_HOST'] ?? '';
+if (!empty($origin)) {
+    $parsed = parse_url($origin, PHP_URL_HOST);
+    if ($parsed && ($parsed === $host || $parsed === 'localhost' || $parsed === '127.0.0.1')) {
+        header('Access-Control-Allow-Origin: ' . $origin);
+    }
+}
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS, DELETE');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
 header('X-Content-Type-Options: nosniff');
@@ -19,18 +26,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// 2. Storage Setup (Resilient Multi-Tier Storage Directory)
+// 2. Storage Setup (Resilient Multi-Tier Storage Directory, Mode 0700)
 $storageDir = dirname(__DIR__, 2) . '/data';
 if (!is_dir($storageDir) || !is_writable($storageDir)) {
     $storageDir = __DIR__ . '/data';
     if (!is_dir($storageDir)) {
-        @mkdir($storageDir, 0755, true);
+        @mkdir($storageDir, 0700, true);
     }
 }
 if (!is_writable($storageDir)) {
     $fallbackTmp = sys_get_temp_dir() . '/leanstack_telemetry';
     if (!is_dir($fallbackTmp)) {
-        @mkdir($fallbackTmp, 0755, true);
+        @mkdir($fallbackTmp, 0700, true);
     }
     if (is_writable($fallbackTmp)) {
         $storageDir = $fallbackTmp;
@@ -41,35 +48,40 @@ $dbPath = $storageDir . '/telemetry.sqlite';
 $jsonFallbackPath = $storageDir . '/events.json';
 $passPath = $storageDir . '/passcode.hash';
 
-// Default Master Passcode: leanstack2026
-function getMasterPasscode($passPath) {
-    if (file_exists($passPath)) {
-        $saved = trim(@file_get_contents($passPath));
-        if (!empty($saved)) return $saved;
-    }
-    return 'leanstack2026';
-}
-
+// Master Passcode Verification (LS-16: No plaintext default, Bearer header only, timing-safe)
 function verifyAuth($passPath) {
-    $expected = getMasterPasscode($passPath);
-    
-    // Check Authorization header across all SAPI environments
+    // 1. Resolve stored secret / hash
+    $storedHash = '';
+    if (file_exists($passPath)) {
+        $storedHash = trim((string) @file_get_contents($passPath));
+    }
+    if (empty($storedHash) && !empty($_ENV['LEANSTACK_TELEMETRY_SECRET'])) {
+        $storedHash = (string) $_ENV['LEANSTACK_TELEMETRY_SECRET'];
+    } elseif (empty($storedHash) && !empty(getenv('LEANSTACK_TELEMETRY_SECRET'))) {
+        $storedHash = (string) getenv('LEANSTACK_TELEMETRY_SECRET');
+    }
+
+    if (empty($storedHash)) {
+        return false;
+    }
+
+    // 2. Extract Authorization Bearer header only (reject query param ?auth=)
     $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
     if (empty($authHeader) && function_exists('getallheaders')) {
         $headers = getallheaders();
         $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
     }
-    if (preg_match('/Bearer\s+(.*)$/i', $authHeader, $matches)) {
-        if (trim($matches[1]) === $expected) return true;
+    if (!preg_match('/Bearer\s+(\S+)$/i', trim($authHeader), $matches)) {
+        return false;
+    }
+    $provided = $matches[1];
+
+    // 3. Constant-time comparison
+    if (str_starts_with($storedHash, '$2y$') || str_starts_with($storedHash, '$argon2')) {
+        return password_verify($provided, $storedHash);
     }
 
-    // Check query parameter ?auth=
-    $queryAuth = $_GET['auth'] ?? '';
-    if (!empty($queryAuth) && $queryAuth === $expected) {
-        return true;
-    }
-
-    return false;
+    return hash_equals(hash('sha256', $storedHash), hash('sha256', $provided));
 }
 
 // SQLite Database Connection

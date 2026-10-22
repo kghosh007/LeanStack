@@ -1108,7 +1108,10 @@ cur = conn.cursor()
 cur.execute('SELECT * FROM sites WHERE domain=?', ('$TARGET_DOMAIN',))
 row = cur.fetchone()
 if row:
-    print(json.dumps(dict(row), indent=2))
+    d = dict(row)
+    d.pop('db_pass', None)
+    d.pop('admin_pass', None)
+    print(json.dumps(d, indent=2))
 else:
     print(json.dumps({'error': 'Site not found'}, indent=2))
 "

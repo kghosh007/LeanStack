@@ -1,3 +1,28 @@
+validate_domain() {
+    local d="$1"
+    if [ -z "$d" ]; then
+        echo "ERROR: Domain name is required." >&2
+        return 1
+    fi
+    if [ "${#d}" -gt 253 ]; then
+        echo "ERROR: Domain '$d' exceeds maximum length of 253 characters." >&2
+        return 1
+    fi
+    if ! [[ "$d" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+        echo "ERROR: Invalid domain name '$d'. Must be a fully-qualified domain name (FQDN)." >&2
+        return 1
+    fi
+    return 0
+}
+
+is_system_user() {
+    local u="$1"
+    case "$u" in
+        root|daemon|bin|sys|sync|games|man|lp|mail|news|uucp|proxy|majordomo|postgres|mysql|mariadb|redis|valkey|angie|nginx|www-data|backup|list|irc|gnats|nobody|systemd-*|_*)
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
 #!/usr/bin/env bash
 # ==============================================================================
 # LeanStack Control Plane Engine (lsctl)

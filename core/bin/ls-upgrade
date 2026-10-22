@@ -1854,6 +1854,8 @@ from           noreply@{domain}
                         if user in extra_grp.gr_mem and hasattr(os, "geteuid") and os.geteuid() == 0:
                             subprocess.run(["gpasswd", "-d", user, extra], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             self.log(f"Removed tenant {user} from group {extra}", Colors.GREEN, prefix="  ✔")
+                    if hasattr(os, "geteuid") and os.geteuid() == 0:
+                        subprocess.run(["usermod", "-a", "-G", "tenants", user], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
 
@@ -2352,10 +2354,7 @@ from           noreply@{domain}
                             if cli_cmd:
                                 subprocess.run([cli_cmd, "-s", valkey_sock, "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                             self.log(f"Limited Valkey ACL for {user} to prefix {prefix}", Colors.GREEN, prefix="  ✔")
-                            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                                socket_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ls-valkey-sockets")
-                                if os.path.isfile(socket_script):
-                                    subprocess.run(["bash", socket_script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        self.reconcile_valkey_socket()
                     except Exception as e:
                         self.log(f"Warning: Valkey ACL update for {user}: {e}", Colors.YELLOW, prefix="  ⚠️")
 
@@ -2581,6 +2580,7 @@ from           noreply@{domain}
                     except Exception as e:
                         self.log(f"Notice: APCu config reconciliation: {e}", Colors.DIM, prefix="  ℹ")
 
+        self.reconcile_valkey_socket()
         if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl") and os.path.isdir("/run/systemd/system"):
             if php_reloaded_needed:
                 for v_str in ["8.5", "8.4", "8.3", "8.2", "8.1"]:
@@ -2634,6 +2634,29 @@ from           noreply@{domain}
                 except Exception:
                     pass
 
+    def reconcile_valkey_socket(self) -> None:
+        """Give group tenants access to the live Valkey socket.
+
+        Isolation removed site users from group valkey. The socket stayed
+        mode 0660 and owned by valkey:valkey, so PhpRedis reports
+        "Permission denied". A restart applies the same change through the
+        valkey.service drop-in.
+        """
+        if self.dry_run:
+            return
+        if hasattr(os, "geteuid") and os.geteuid() != 0 and not os.environ.get("LEANSTACK_VALKEY_RUN"):
+            return
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "ls-valkey-sockets"),
+            "/usr/local/bin/ls-valkey-sockets",
+            "/opt/leanstack/core/bin/ls-valkey-sockets",
+        ]
+        script = next((path for path in candidates if os.path.isfile(path)), None)
+        if not script:
+            return
+        subprocess.run(["bash", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        self.log("Granted group tenants access to the Valkey socket.", Colors.GREEN, prefix="  ✔")
+
     def reload_services(self) -> bool:
         """Validates configuration syntax and reloads services gracefully."""
         self.log("Validating syntax and reloading services...", Colors.CYAN)
@@ -2649,6 +2672,7 @@ from           noreply@{domain}
                 subprocess.run(["systemctl", "--no-ask-password", "reload", "angie"], check=False)
                 self.log("Angie reloaded with zero downtime.", Colors.GREEN, prefix="  ✔")
 
+        self.reconcile_valkey_socket()
         if not self.dry_run and hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("systemctl"):
             for v_str in ["8.5", "8.4", "8.3", "8.2", "8.1"]:
                 svc = f"php{v_str}-fpm"

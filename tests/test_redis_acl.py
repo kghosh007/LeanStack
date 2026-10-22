@@ -1,5 +1,9 @@
+import grp
 import os
+import pwd
 import shutil
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -79,6 +83,37 @@ class TestValkeyAclSyntax(unittest.TestCase):
                 os.unlink(acl_path)
             if os.path.exists(sock_path):
                 os.unlink(sock_path)
+
+    def test_socket_is_reachable_by_the_tenants_group(self):
+        """A site user is not in group valkey. The socket group is tenants, mode 0660."""
+        script = os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-valkey-sockets")
+        work = tempfile.mkdtemp(prefix="ls_valkey_sock_")
+        try:
+            run_dir = os.path.join(work, "valkey")
+            os.mkdir(run_dir, 0o700)
+            sock_path = os.path.join(run_dir, "valkey.sock")
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(sock_path)
+            listener.listen(1)
+            os.chmod(sock_path, 0o600)
+            group = grp.getgrgid(os.getgid()).gr_name
+            owner = pwd.getpwuid(os.getuid()).pw_name
+            env = os.environ.copy()
+            env["LEANSTACK_VALKEY_RUN"] = run_dir
+            env["LEANSTACK_VALKEY_SOCKET_GROUP"] = group
+            env["LEANSTACK_VALKEY_SOCKET_OWNER"] = owner
+            result = subprocess.run(["bash", script], env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            sock_stat = os.stat(sock_path)
+            dir_stat = os.stat(run_dir)
+            self.assertEqual(stat.S_IMODE(sock_stat.st_mode), 0o660)
+            self.assertEqual(sock_stat.st_gid, os.getgid())
+            self.assertEqual(stat.S_IMODE(dir_stat.st_mode), 0o750)
+            self.assertEqual(dir_stat.st_gid, os.getgid())
+            listener.close()
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

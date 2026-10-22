@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# Re-apply per-tenant execute/read on the shared Valkey socket after each start.
-# Valkey listens on one socket. A tenant is not in group valkey. The ACL user
-# is the key boundary; this only lets that Unix user reach the socket.
+# Site users are in group tenants, not group valkey. Valkey creates the socket
+# as valkey:valkey mode 0660, so after those users leave group valkey PhpRedis
+# fails with "Permission denied" before AUTH. Group tenants may open the
+# socket. The Valkey ACL still limits each user to that site's key prefix.
 set -u
 
-dir="/run/valkey"
-sock="${dir}/valkey.sock"
-acl="/etc/valkey/users.acl"
+dir="${LEANSTACK_VALKEY_RUN:-/run/valkey}"
+group="${LEANSTACK_VALKEY_SOCKET_GROUP:-tenants}"
+owner="${LEANSTACK_VALKEY_SOCKET_OWNER:-valkey}"
+
+grant() {
+    local path="$1"
+    local mode="$2"
+    [ -e "$path" ] || return 0
+    if [ "$(id -u)" -eq 0 ]; then
+        groupadd -f "$group" 2>/dev/null || true
+    fi
+    chown "${owner}:${group}" "$path" 2>/dev/null || chgrp "$group" "$path" 2>/dev/null || return 0
+    chmod "$mode" "$path" 2>/dev/null || true
+}
 
 [ -d "$dir" ] || exit 0
-chown valkey:valkey "$dir" 2>/dev/null || true
-chmod 750 "$dir" 2>/dev/null || true
-[ -f "$acl" ] || exit 0
-command -v setfacl >/dev/null || exit 0
-
-while read -r _ name _; do
-    [ -n "${name:-}" ] || continue
-    [ "$name" = "default" ] && continue
-    setfacl -m "u:${name}:x" "$dir" 2>/dev/null || true
-    if [ -S "$sock" ]; then
-        setfacl -m "u:${name}:rw" "$sock" 2>/dev/null || true
-    fi
-done < <(awk '/^user / {print $1, $2}' "$acl")
+grant "$dir" 750
+grant "${dir}/valkey.sock" 660
+# A host upgraded from Redis keeps the old socket path.
+if [ -z "${LEANSTACK_VALKEY_RUN:-}" ] && [ -d /run/redis ]; then
+    grant /run/redis 750
+    grant /run/redis/redis-server.sock 660
+fi

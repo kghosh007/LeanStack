@@ -68,20 +68,9 @@ server {
     # Tenant FastCGI Cache Configuration
     include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/cache-config.conf;
 
-    # Block direct HTTP execution of mu-plugins (LS-04)
-    location ~* /wp-content/mu-plugins/.*\.php$ {
-        deny all;
-        access_log off;
-        log_not_found off;
-        return 403;
-    }
-
-    # Universal Protocol Detection
+    # Universal Protocol Detection (TLS on native socket or verified Cloudflare edge)
     set $custom_https $https;
     if ($cf_proto_https = 1) {
-        set $custom_https on;
-    }
-    if ($x_forwarded_https = 1) {
         set $custom_https on;
     }
 
@@ -121,6 +110,14 @@ server {
 
     # 3. Hard Block: No PHP execution in wp-includes
     location ~* /wp-includes/.*\.php$ {
+        deny all;
+        access_log off;
+        log_not_found off;
+        return 403;
+    }
+
+    # 3b. Hard Block: No direct execution of mu-plugins via HTTP
+    location ~* /wp-content/mu-plugins/.*\.php$ {
         deny all;
         access_log off;
         log_not_found off;
@@ -201,9 +198,13 @@ server {
     # ==========================================================================
     location ~ \.php$ {
         try_files $uri =404;
-        ssi on;
-        ssi_silent_errors on;
         fastcgi_split_path_info ^(.+\.php)(/.+)$;
+
+        # Server-Side Includes (SSI) Engine for Hole-Punching (Scoped to PHP execution)
+        ssi on;
+
+        # Dynamic Execution Rate Limiting (LS-19)
+        limit_req zone=perip burst=40 nodelay;
 
         # Microcache / Page Cache Bypass Logic
         set $skip_cache 0;
@@ -216,7 +217,7 @@ server {
         if ($query_string != "") {
             set $skip_cache 1;
         }
-        if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in|woocommerce_items_in_cart|wp_woocommerce_session|woocommerce_cart_hash") {
+        if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in|woocommerce_items_in_cart|woocommerce_cart_hash|wp_woocommerce_session") {
             set $skip_cache 1;
         }
         if ($request_uri ~* "/wp-admin/|/wp-json/|/xmlrpc.php|wp-.*.php|/feed/|index.php|sitemap(_index)?.xml|/cart.*|/checkout.*|/my-account.*") {
@@ -227,7 +228,6 @@ server {
         fastcgi_cache CACHE_{{ZONE_KEY}};
         fastcgi_cache_bypass $skip_cache;
         fastcgi_no_cache $skip_cache $nocache_response;
-        fastcgi_no_cache $skip_cache;
         fastcgi_cache_valid 200 60m;
         fastcgi_cache_use_stale error timeout updating invalid_header http_500 http_503;
         fastcgi_cache_background_update on;
@@ -264,8 +264,8 @@ server {
         include /etc/angie/fastcgi_params;
         fastcgi_pass {{TARGET_SOCKET}};
         fastcgi_param SCRIPT_FILENAME $realpath_root/wp-content/mu-plugins/leanstack-holepunch.php;
-        fastcgi_param LEANSTACK_ESI_INTERNAL 1;
         fastcgi_param DOCUMENT_ROOT $realpath_root;
         fastcgi_param HTTPS $custom_https;
+        fastcgi_param LEANSTACK_ESI_INTERNAL 1;
     }
 }

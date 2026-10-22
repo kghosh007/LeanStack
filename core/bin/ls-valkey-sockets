@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Re-apply per-tenant execute/read on the shared Valkey socket after each start.
+# Valkey listens on one socket. A tenant is not in group valkey. The ACL user
+# is the key boundary; this only lets that Unix user reach the socket.
+set -u
+
+dir="/run/valkey"
+sock="${dir}/valkey.sock"
+acl="/etc/valkey/users.acl"
+
+[ -d "$dir" ] || exit 0
+chown valkey:valkey "$dir" 2>/dev/null || true
+chmod 750 "$dir" 2>/dev/null || true
+[ -f "$acl" ] || exit 0
+command -v setfacl >/dev/null || exit 0
+
+while read -r _ name _; do
+    [ -n "${name:-}" ] || continue
+    [ "$name" = "default" ] && continue
+    setfacl -m "u:${name}:x" "$dir" 2>/dev/null || true
+    if [ -S "$sock" ]; then
+        setfacl -m "u:${name}:rw" "$sock" 2>/dev/null || true
+    fi
+done < <(awk '/^user / {print $1, $2}' "$acl")

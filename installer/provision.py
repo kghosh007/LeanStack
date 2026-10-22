@@ -88,7 +88,7 @@ def _valkey_conf(profile):
     return f"""# LeanStack Valkey. Values come from the tuning document.
 port {valkey["port"]}
 unixsocket {valkey["unixsocket"]}
-unixsocketperm {valkey["unixsocketperm"]}
+unixsocketperm 660
 daemonize no
 supervised systemd
 pidfile /run/valkey/valkey.pid
@@ -222,7 +222,7 @@ http {{
     fastcgi_cache_path /var/cache/angie/fastcgi levels=1:2 keys_zone=WORDPRESS:100m inactive=60m max_size={angie["fastcgi_cache_max_size"]};
     fastcgi_cache_key "$scheme$request_method$host$request_uri";
     fastcgi_cache_use_stale error timeout updating invalid_header http_500 http_503;
-    fastcgi_ignore_headers Cache-Control Expires Set-Cookie;
+    fastcgi_ignore_headers Cache-Control Expires;
 
     limit_req_zone $binary_remote_addr zone=perip:20m rate=20r/s;
     limit_req_zone $server_name zone=persite:20m rate=150r/s;
@@ -331,18 +331,22 @@ disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_sour
 """
 
 
-def _system_pool(ver):
-    return f"""[system]
-user = www-data
-group = www-data
-listen = /run/php/php{ver}-fpm-system.sock
-listen.owner = www-data
-listen.group = www-data
-listen.mode = 0660
-pm = ondemand
-pm.max_children = 2
-pm.process_idle_timeout = 10s
-"""
+# Object-cache commands only. SELECT and FLUSHDB stay denied so one site cannot
+# switch database or wipe another site's keys. The key pattern is applied by the caller.
+TENANT_ACL_COMMANDS = (
+    "-@all +@read +@write +@set +@sortedset +@list +@hash +@string "
+    "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting "
+    "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
+    "+scan +type +exists +del +persist +touch +eval +evalsha -select -flushdb -flushall"
+)
+
+
+def tenant_acl_line(user, password, prefix):
+    """One Valkey user limited to keys that start with prefix.
+
+    resetkeys runs before the pattern. A later resetkeys would wipe it.
+    """
+    return f"user {user} on >{password} resetkeys ~{prefix}* {TENANT_ACL_COMMANDS}"
 
 
 def _whitelists():
@@ -405,7 +409,7 @@ def render_files(profile, php_versions):
             "[Journal]\nSystemMaxUse=100M\nRuntimeMaxUse=50M\n"
         ),
         "etc/valkey/valkey.conf": _valkey_conf(profile),
-        "etc/valkey/users.acl": "user default on nopass ~* &* +@all\n",
+        "etc/valkey/users.acl": "user default off\n",
         "etc/systemd/system/valkey.service": (
             "[Unit]\n"
             "Description=Valkey High-Performance In-Memory Data Store\n"
@@ -421,7 +425,8 @@ def render_files(profile, php_versions):
             "RestartSec=3\n"
             "LimitNOFILE=65535\n"
             "RuntimeDirectory=valkey\n"
-            "RuntimeDirectoryMode=0775\n"
+            "RuntimeDirectoryMode=0750\n"
+            "ExecStartPost=-/opt/leanstack/core/bin/ls-valkey-sockets\n"
             "UMask=007\n\n"
             "[Install]\n"
             "WantedBy=multi-user.target\n"
@@ -446,7 +451,6 @@ def render_files(profile, php_versions):
         files[f"{base}/cli/conf.d/99-leanstack-opcache.ini"] = _opcache_ini(profile)
         files[f"{base}/fpm/conf.d/98-leanstack-runtime.ini"] = _php_runtime_ini()
         files[f"{base}/cli/conf.d/98-leanstack-runtime.ini"] = _php_runtime_ini()
-        files[f"{base}/fpm/pool.d/system.conf"] = _system_pool(ver)
     return files
 
 

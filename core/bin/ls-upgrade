@@ -1585,10 +1585,10 @@ www-data hard nofile 65535
             self.log(f"Notice: Kernel sysctl tuning reconciliation: {e}", Colors.DIM, prefix="  ℹ")
             return False
 
-    def reconcile_pool_content(self, content: str, user: str) -> tuple[str, bool]:
+    def reconcile_pool_content(self, content: str, user: str, domain: str | None = None) -> tuple[str, bool]:
         """
         Reconciles PHP-FPM pool configuration for tenant sandboxing:
-        1. Updates open_basedir to allow /home/{user} directly while retaining sockets, Angie cache, and /proc
+        1. Limits open_basedir to the tenant home, that site's cache directory, and the two socket files
         2. Removes symlink and link from disable_functions for Query Monitor drop-in support
         3. Configures max_input_vars = 5000
         4. Enables APCu accelerator flag
@@ -1596,36 +1596,32 @@ www-data hard nofile 65535
         p_changed = False
         p_content = content
 
-        # 1. Reconcile open_basedir to allow /home/{user} directly and include sockets
+        # 1. open_basedir is the home, this site's cache, and the socket files.
+        safe_domain = ""
+        if domain and re.fullmatch(r"[A-Za-z0-9.-]+", domain):
+            safe_domain = domain
+        ob_parts = [f"/home/{user}"]
+        if safe_domain:
+            ob_parts.append(f"/var/cache/angie/sites/{safe_domain}")
+        ob_parts.extend(["/run/mysqld/mysqld.sock", "/run/valkey/valkey.sock"])
+        new_ob_line = f"php_admin_value[open_basedir] = {':'.join(ob_parts)}"
         ob_match = re.search(r"php_admin_value\[open_basedir\]\s*=\s*([^\n]+)", p_content)
         if ob_match:
-            ob_val = ob_match.group(1).strip()
-            parts = [p.strip() for p in ob_val.split(":") if p.strip()]
-            u_home = f"/home/{user}"
-            if u_home not in parts or any(p.startswith(u_home + "/") for p in parts):
-                new_parts = [u_home]
-                for p in parts:
-                    if p == u_home or p.startswith(u_home + "/"):
-                        continue
-                    if p not in new_parts:
-                        new_parts.append(p)
-                for req_path in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc", "/usr/bin/msmtp"]:
-                    if req_path not in new_parts:
-                        new_parts.append(req_path)
-                new_ob_line = f"php_admin_value[open_basedir] = {':'.join(new_parts)}"
-                if new_ob_line != ob_match.group(0):
-                    p_content = p_content.replace(ob_match.group(0), new_ob_line)
-                    p_changed = True
-            else:
-                needed = [req for req in ["/var/cache/angie/sites", "/run/valkey", "/run/mysqld", "/proc", "/usr/bin/msmtp"] if req not in parts]
-                if needed:
-                    new_parts = list(parts) + needed
-                    new_ob_line = f"php_admin_value[open_basedir] = {':'.join(new_parts)}"
-                    p_content = p_content.replace(ob_match.group(0), new_ob_line)
-                    p_changed = True
+            if ob_match.group(0) != new_ob_line:
+                p_content = p_content.replace(ob_match.group(0), new_ob_line)
+                p_changed = True
         else:
-            default_ob = f"/home/{user}:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc:/usr/bin/msmtp"
-            p_content = p_content.strip() + f"\nphp_admin_value[open_basedir] = {default_ob}\n"
+            p_content = p_content.rstrip() + f"\n{new_ob_line}\n"
+            p_changed = True
+
+        listen_match = re.search(r"^listen\.group\s*=\s*\S+", p_content, re.M)
+        listen_line = f"listen.group = {user}"
+        if listen_match:
+            if listen_match.group(0) != listen_line:
+                p_content = p_content.replace(listen_match.group(0), listen_line, 1)
+                p_changed = True
+        else:
+            p_content = p_content.rstrip() + f"\n{listen_line}\n"
             p_changed = True
 
         # 2. Reconcile disable_functions (remove symlink,link,curl_multi_exec,parse_ini_file)
@@ -1846,19 +1842,20 @@ from           noreply@{domain}
                         except Exception:
                             pass
 
-                # 3. Ensure Dedicated Cache Directory, Group Access & Angie Zone Exist
+                # 3. Ensure Dedicated Cache Directory, Group Access & Angie Zone Exist.
+                # Tenants do not join www-data or valkey. File group www-data is enough for Angie.
                 try:
                     import grp
-                    w_grp = grp.getgrnam("www-data")
-                    if user not in w_grp.gr_mem:
-                        subprocess.run(["usermod", "-a", "-G", "www-data", user], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        php_reloaded_needed = True
-                        self.log(f"Added tenant {user} to www-data group", Colors.GREEN, prefix="  ✔")
+                    for extra in ("www-data", "valkey"):
+                        try:
+                            extra_grp = grp.getgrnam(extra)
+                        except KeyError:
+                            continue
+                        if user in extra_grp.gr_mem and hasattr(os, "geteuid") and os.geteuid() == 0:
+                            subprocess.run(["gpasswd", "-d", user, extra], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            self.log(f"Removed tenant {user} from group {extra}", Colors.GREEN, prefix="  ✔")
                 except Exception:
-                    try:
-                        subprocess.run(["usermod", "-a", "-G", "www-data", user], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    except Exception:
-                        pass
+                    pass
 
                 site_cache_dir = f"/var/cache/angie/sites/{domain}"
                 if os.path.isdir("/var/cache/angie"):
@@ -1936,7 +1933,7 @@ from           noreply@{domain}
                         try:
                             with open(pp, "r") as f_pf:
                                 p_content = f_pf.read()
-                            p_new, p_changed = self.reconcile_pool_content(p_content, user)
+                            p_new, p_changed = self.reconcile_pool_content(p_content, user, domain)
                             if p_changed:
                                 with open(pp, "w") as f_pf:
                                     f_pf.write(p_new)
@@ -2030,6 +2027,11 @@ from           noreply@{domain}
                             valkey_db = m_db.group(1)
 
                         modified = False
+                        db_define = re.search(r"define\s*\(\s*['\"]WP_REDIS_DATABASE['\"]\s*,\s*[0-9]+\s*\)", wpc)
+                        if db_define and not re.search(r"WP_REDIS_DATABASE['\"]\s*,\s*0\s*\)", db_define.group(0)):
+                            wpc = wpc.replace(db_define.group(0), "define( 'WP_REDIS_DATABASE', 0 )", 1)
+                            modified = True
+                            valkey_db = "0"
                         # 4a. Backfill / Harmonize WP_REDIS_USERNAME and WP_REDIS_USER
                         if re.search(r"define\s*\(\s*['\"]WP_REDIS_USERNAME['\"]\s*,\s*['\"][^'\"]*['\"]\s*\)", wpc):
                             wpc_new = re.sub(
@@ -2286,37 +2288,43 @@ from           noreply@{domain}
                                 acl_content = f_acl.read()
 
                         acl_changed = False
-                        if not re.search(r"^user\s+default\s+.*nopass", acl_content, re.MULTILINE):
-                            if re.search(r"^user\s+default\s+.*$", acl_content, re.MULTILINE):
-                                acl_content = re.sub(r"^user\s+default\s+.*$", "user default on nopass ~* &* +@all", acl_content, flags=re.MULTILINE)
-                            else:
-                                acl_content = "user default on nopass ~* &* +@all\n" + acl_content
+                        if re.search(r"^user\s+default\s+", acl_content, re.MULTILINE):
+                            acl_content_new = re.sub(r"^user\s+default\s+.*$", "user default off", acl_content, flags=re.MULTILINE)
+                        else:
+                            acl_content_new = "user default off\n" + acl_content
+                        if acl_content_new != acl_content:
+                            acl_content = acl_content_new
                             acl_changed = True
 
-                        if valkey_pass:
-                            user_rule = f"user {user} on >{valkey_pass} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info\n"
+                        prefix = f"ls_{user}_"
+                        if os.path.isfile(wp_config):
+                            try:
+                                with open(wp_config, "r", encoding="utf-8", errors="ignore") as f_pref:
+                                    pref_text = f_pref.read()
+                                m_prefix = re.search(r"define\s*\(\s*['\"]WP_REDIS_PREFIX['\"]\s*,\s*['\"]([^'\"]+)['\"]", pref_text)
+                                if m_prefix and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", m_prefix.group(1)):
+                                    prefix = m_prefix.group(1)
+                            except Exception:
+                                pass
+
+                        if valkey_pass and re.fullmatch(r"[A-Za-z0-9]+", valkey_pass):
+                            user_rule = (
+                                f"user {user} on >{valkey_pass} resetkeys ~{prefix}* -@all "
+                                "+@read +@write +@set +@sortedset +@list +@hash +@string "
+                                "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting "
+                                "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
+                                "+scan +type +exists +del +persist +touch +eval +evalsha -select -flushdb -flushall"
+                            )
                             user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
                             if re.search(user_pattern, acl_content, re.MULTILINE):
-                                acl_content_new = re.sub(user_pattern, user_rule.strip(), acl_content, flags=re.MULTILINE)
+                                acl_content_new = re.sub(user_pattern, user_rule, acl_content, flags=re.MULTILINE)
                                 if acl_content_new != acl_content:
                                     acl_content = acl_content_new
                                     acl_changed = True
                             else:
                                 if acl_content and not acl_content.endswith("\n"):
                                     acl_content += "\n"
-                                acl_content += user_rule
-                                acl_changed = True
-                        elif f"user {user} " in acl_content and f"~{user}:*" in acl_content:
-                            acl_content = acl_content.replace(f"~{user}:*", "~*")
-                            acl_changed = True
-
-                        user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
-                        m_u = re.search(user_pattern, acl_content, re.MULTILINE)
-                        if m_u:
-                            rule_str = m_u.group(0).strip()
-                            if "-@admin" in rule_str and (rule_str.rfind("+info") < rule_str.rfind("-@admin")):
-                                rule_str_fixed = rule_str.replace(" +info", "") + " +info"
-                                acl_content = re.sub(user_pattern, rule_str_fixed, acl_content, flags=re.MULTILINE)
+                                acl_content += user_rule + "\n"
                                 acl_changed = True
 
                         if acl_changed:
@@ -2343,7 +2351,11 @@ from           noreply@{domain}
                             cli_cmd = next((c for c in cli_candidates if c), None)
                             if cli_cmd:
                                 subprocess.run([cli_cmd, "-s", valkey_sock, "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                            self.log(f"Harmonized Valkey ACL permissions (~*) for {user}", Colors.GREEN, prefix="  ✔")
+                            self.log(f"Limited Valkey ACL for {user} to prefix {prefix}", Colors.GREEN, prefix="  ✔")
+                            if hasattr(os, "geteuid") and os.geteuid() == 0:
+                                socket_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ls-valkey-sockets")
+                                if os.path.isfile(socket_script):
+                                    subprocess.run(["bash", socket_script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                     except Exception as e:
                         self.log(f"Warning: Valkey ACL update for {user}: {e}", Colors.YELLOW, prefix="  ⚠️")
 

@@ -1,8 +1,12 @@
-import unittest
-import shutil
-import tempfile
 import os
+import shutil
 import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "installer")))
 
 class TestValkeyAclSyntax(unittest.TestCase):
     def test_valkey_acl_rule_validity(self):
@@ -10,8 +14,14 @@ class TestValkeyAclSyntax(unittest.TestCase):
         if not redis_server:
             self.skipTest("redis-server or valkey-server not installed")
         
+        from provision import TENANT_ACL_COMMANDS
         with tempfile.NamedTemporaryFile("w", delete=False) as f:
-            f.write("user default on nopass ~* &* +@all\nuser test on >pass123 ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info\n")
+            f.write(
+                "user default off\n"
+                f"user test on >pass123 ~siteprefix_* {TENANT_ACL_COMMANDS}\n"
+                "user other on >pass456 ~otherprefix_* "
+                f"{TENANT_ACL_COMMANDS}\n"
+            )
             acl_path = f.name
             
         try:
@@ -24,11 +34,19 @@ class TestValkeyAclSyntax(unittest.TestCase):
                 stderr=subprocess.PIPE,
                 text=True
             )
-            import time
-            time.sleep(0.3)
-            
+            for _ in range(20):
+                if os.path.exists(sock_path):
+                    break
+                time.sleep(0.1)
+            if not os.path.exists(sock_path):
+                proc.terminate()
+                err = ""
+                if proc.stderr:
+                    err = proc.stderr.read()
+                self.fail(f"valkey did not accept the tenant ACL: {err}")
+
             redis_cli = shutil.which("redis-cli") or shutil.which("valkey-cli")
-            if redis_cli and os.path.exists(sock_path):
+            if redis_cli:
                 # 1. Verify ping works
                 res_ping = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "ping"], capture_output=True, text=True)
                 self.assertIn("PONG", res_ping.stdout)
@@ -44,6 +62,15 @@ class TestValkeyAclSyntax(unittest.TestCase):
 
                 res_shutdown = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "shutdown"], capture_output=True, text=True)
                 self.assertIn("NOPERM", res_shutdown.stdout + res_shutdown.stderr)
+
+                own = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "set", "siteprefix_page", "1"], capture_output=True, text=True)
+                self.assertIn("OK", own.stdout)
+                foreign = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "get", "otherprefix_page"], capture_output=True, text=True)
+                self.assertIn("NOPERM", foreign.stdout + foreign.stderr)
+                selected = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "select", "1"], capture_output=True, text=True)
+                self.assertIn("NOPERM", selected.stdout + selected.stderr)
+                flushed = subprocess.run([redis_cli, "-s", sock_path, "--user", "test", "-a", "pass123", "flushdb"], capture_output=True, text=True)
+                self.assertIn("NOPERM", flushed.stdout + flushed.stderr)
             
             proc.terminate()
             proc.wait(timeout=2)

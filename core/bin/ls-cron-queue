@@ -66,10 +66,10 @@ run_site_cron() {
         if [[ "$site_path" != "/home/${user}"* ]]; then
             allowed_paths="${allowed_paths}:${site_path}"
         fi
-        allowed_paths="${allowed_paths}:/usr/local/bin:/usr/bin:/usr/share/php:/tmp:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc:/etc/ssl/certs:/usr/share/ca-certificates:/etc/pki:/etc/resolv.conf"
+        allowed_paths="${allowed_paths}:/usr/local/bin:/usr/bin:/usr/share/php:/tmp:/var/cache/angie/sites/${domain}:/run/valkey/valkey.sock:/run/mysqld/mysqld.sock:/etc/ssl/certs:/usr/share/ca-certificates:/etc/pki:/etc/resolv.conf"
 
-        # WP-CLI relies on proc_open / proc_close for process management.
-        # Restrict dangerous functions while allowing proc_open for WP-CLI execution.
+        # The FPM pool disables proc_open. This runner keeps it because WP-CLI
+        # refuses to start when proc_open is missing. The process is still the tenant user.
         local disabled_funcs="exec,passthru,shell_exec,system,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"
 
         local status_dir="/home/${user}/nginx"

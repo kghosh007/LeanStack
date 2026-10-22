@@ -361,9 +361,13 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
 
         with open(fake_acl, "r") as f:
             updated_acl = f.read()
-        self.assertIn("+info", updated_acl)
-        self.assertIn("user staging_mfeasy_4809 on >s3cretPass ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info", updated_acl)
-        self.assertIn("user test_misplaced on >p2 ~* +@all -@admin -@dangerous +select +info", updated_acl)
+        upgrade = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("user default off", source)
+        self.assertNotIn("user default on nopass", source)
+        self.assertIn("-select -flushdb -flushall", source)
+        self.assertNotIn("~* +@all -@admin", source)
 
     def test_cpctl_circular_delegation_guard(self):
         """Verify cpctl wrapper aborts cleanly if circular delegation is detected."""
@@ -410,6 +414,10 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
         self.assertIn("dl,opcache_reset", reconciled)
         self.assertIn("php_admin_value[max_input_vars] = 5000", reconciled)
         self.assertIn("php_admin_flag[apc.enabled] = on", reconciled)
+        self.assertNotIn("/proc", reconciled)
+        self.assertNotIn("/var/cache/angie/sites", reconciled)
+        self.assertIn("listen.group = staging_mfeasy_4809", reconciled)
+        self.assertIn("/run/mysqld/mysqld.sock", reconciled)
 
         # Test idempotency (running second time makes no changes)
         reconciled_again, changed_again = self.upgrader.reconcile_pool_content(reconciled, user)
@@ -760,19 +768,23 @@ server {
                 self.assertIn("table_open_cache_instances     = 3", f.read())
 
     def test_reconcile_pool_content_ensures_msmtp_in_open_basedir(self):
-        """Verify reconcile_pool_content always adds /usr/bin/msmtp to open_basedir."""
+        """Verify reconcile_pool_content drops shared paths from open_basedir."""
         pool_cfg = (
             "[tenant_abc]\n"
             "user = tenant_abc\n"
-            "php_admin_value[open_basedir] = /home/tenant_abc:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc\n"
+            "php_admin_value[open_basedir] = /home/tenant_abc:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc:/usr/bin/msmtp\n"
         )
-        reconciled, changed = self.upgrader.reconcile_pool_content(pool_cfg, "tenant_abc")
+        reconciled, changed = self.upgrader.reconcile_pool_content(pool_cfg, "tenant_abc", "shop.example")
         self.assertTrue(changed)
-        self.assertIn("/usr/bin/msmtp", reconciled)
+        basedir = reconciled.split("open_basedir] = ", 1)[1].split("\n", 1)[0]
+        self.assertNotIn("/usr/bin/msmtp", basedir)
+        self.assertNotIn("/proc", basedir)
+        self.assertIn("/var/cache/angie/sites/shop.example", reconciled)
+        self.assertNotIn("/var/cache/angie/sites:", reconciled)
         self.assertIn("/home/tenant_abc", reconciled)
 
         # Idempotency check: running again makes no changes
-        reconciled2, changed2 = self.upgrader.reconcile_pool_content(reconciled, "tenant_abc")
+        reconciled2, changed2 = self.upgrader.reconcile_pool_content(reconciled, "tenant_abc", "shop.example")
         self.assertFalse(changed2)
         self.assertEqual(reconciled, reconciled2)
 

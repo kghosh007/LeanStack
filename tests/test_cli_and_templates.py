@@ -99,8 +99,12 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertNotIn("parse_ini_file", content)
         self.assertIn("php_admin_value[upload_tmp_dir]", content)
         self.assertIn("listen.mode = 0660", content)
-        self.assertIn("/run/valkey", content)
-        self.assertIn("/run/mysqld", content)
+        self.assertIn("listen.group = {{USER_NAME}}", content)
+        self.assertNotIn("listen.group = www-data", content)
+        self.assertIn("/run/valkey/valkey.sock", content)
+        self.assertIn("/run/mysqld/mysqld.sock", content)
+        self.assertIn("/var/cache/angie/sites/{{DOMAIN}}", content)
+        self.assertNotIn("/proc", content)
         self.assertIn("php_admin_value[max_input_vars] = 5000", content)
 
     def test_bridge_logs_manager(self):

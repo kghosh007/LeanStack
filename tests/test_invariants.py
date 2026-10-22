@@ -156,6 +156,44 @@ class TestPoolBudgetFixture(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
         self.assertIn("site:pool", res.stdout)
 
+    def test_pool_file_is_scoped_to_the_site(self):
+        res = self.create("shop.example")
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        text = pathlib.Path(self.pools()[0]).read_text(encoding="utf-8")
+        self.assertIn("listen.group = ", text)
+        self.assertNotIn("listen.group = www-data", text)
+        self.assertIn("/var/cache/angie/sites/shop.example", text)
+        self.assertNotIn("/var/cache/angie/sites:", text)
+        self.assertNotIn("/proc", text)
+        basedir = text.split("open_basedir] = ", 1)[1].split("\n", 1)[0]
+        self.assertNotIn("/usr/bin/msmtp", basedir)
+        disabled = text.split("disable_functions] = ", 1)[1].split("\n", 1)[0]
+        self.assertIn("proc_open", disabled)
+
+
+class TestTenantIsolation(unittest.TestCase):
+    def test_rendered_host_has_no_shared_pool_or_open_valkey(self):
+        from provision import render_files
+        doc = TuningCalculator(HardwareProbe(sim_ram_mb=2048, sim_cores=2).probe_all()).to_document()
+        files = render_files(doc, ["8.3"])
+        names = "\n".join(files)
+        self.assertNotIn("pool.d/system.conf", names)
+        self.assertEqual(files["etc/valkey/users.acl"].strip(), "user default off")
+        angie = files["etc/angie/angie.conf"]
+        self.assertIn("fastcgi_ignore_headers Cache-Control Expires;", angie)
+        self.assertNotIn("Set-Cookie", angie)
+        self.assertIn("RuntimeDirectoryMode=0750", files["etc/systemd/system/valkey.service"])
+        self.assertIn("unixsocketperm 660", files["etc/valkey/valkey.conf"])
+
+    def test_create_uses_tenant_group_only(self):
+        lsctl = pathlib.Path(LSCTL).read_text(encoding="utf-8")
+        self.assertIn('useradd -m -s /bin/false -U -G tenants -d', lsctl)
+        self.assertNotIn("-G tenants,valkey,www-data", lsctl)
+        self.assertNotIn("usermod -a -G www-data", lsctl)
+        self.assertIn("user default off", lsctl)
+        self.assertNotIn("+select +flushdb", lsctl)
+        self.assertIn("-select -flushdb", lsctl)
+
 
 if __name__ == "__main__":
     unittest.main()

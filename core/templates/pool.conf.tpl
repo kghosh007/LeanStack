@@ -9,7 +9,7 @@ group = {{USER_NAME}}
 
 listen = {{SOCKET_PATH}}
 listen.owner = www-data
-listen.group = www-data
+listen.group = {{USER_NAME}}
 listen.mode = 0660
 
 ; Process Management Model
@@ -25,7 +25,7 @@ slowlog = /home/{{USER_NAME}}/logs/php-slow.log
 catch_workers_output = yes
 
 ; Security Hardening & Tenant Sandboxing
-php_admin_value[open_basedir] = /home/{{USER_NAME}}:/var/cache/angie/sites:/run/valkey:/run/mysqld:/proc:/usr/bin/msmtp
+php_admin_value[open_basedir] = /home/{{USER_NAME}}:/var/cache/angie/sites/{{DOMAIN}}:/run/mysqld/mysqld.sock:/run/valkey/valkey.sock
 php_admin_value[upload_tmp_dir] = /home/{{USER_NAME}}/tmp
 php_admin_value[sys_temp_dir] = /home/{{USER_NAME}}/tmp
 php_admin_value[session.save_path] = /home/{{USER_NAME}}/tmp

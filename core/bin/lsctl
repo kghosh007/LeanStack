@@ -138,10 +138,12 @@ write_pool_file() {
     local maxc="$5"
     local web="$6"
     local mem="$7"
+    local domain="$8"
     local staged="${dest}.staged"
     mkdir -p "$(dirname "$dest")"
     cp "${TEMPLATE_DIR}/pool.conf.tpl" "$staged"
     sed -i "s|{{USER_NAME}}|${user}|g" "$staged"
+    sed -i "s|{{DOMAIN}}|${domain}|g" "$staged"
     sed -i "s|{{SOCKET_PATH}}|${socket}|g" "$staged"
     sed -i "s|{{POOL_MODE}}|${mode}|g" "$staged"
     sed -i "s|{{MAX_CHILDREN}}|${maxc}|g" "$staged"
@@ -154,6 +156,21 @@ write_pool_file() {
     fi
     python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace("{{PM_DYNAMIC_SETTINGS}}", sys.argv[2]))' "$staged" "$spare"
     mv "$staged" "$dest"
+}
+
+valkey_tenant_acl_line() {
+    local user="$1"
+    local pass="$2"
+    local prefix="$3"
+    echo "user ${user} on >${pass} resetkeys ~${prefix}* -@all +@read +@write +@set +@sortedset +@list +@hash +@string +@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting +ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl +scan +type +exists +del +persist +touch +eval +evalsha -select -flushdb -flushall"
+}
+
+grant_valkey_socket() {
+    local script="${SCRIPT_DIR}/ls-valkey-sockets"
+    [ -x "$script" ] || script="/opt/leanstack/core/bin/ls-valkey-sockets"
+    if [ -x "$script" ]; then
+        "$script" || true
+    fi
 }
 
 BACKUP_DIR="/var/backups/lsctl/trash"
@@ -1156,7 +1173,7 @@ else:
         if [ -z "${SITE_MAX_CHILDREN:-}" ]; then
             SITE_MAX_CHILDREN=$(site_max_children "$MEMORY_LIMIT" "$(host_budget_children)")
         fi
-        write_pool_file "$NEW_POOL" "$USER_NAME" "$NEW_SOCKET" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
+        write_pool_file "$NEW_POOL" "$USER_NAME" "$NEW_SOCKET" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT" "$DOMAIN"
         FPM_BIN="php-fpm${NEW_PHP}"
         if ! command -v "$FPM_BIN" &>/dev/null; then
             if [ -x "/usr/sbin/php-fpm${NEW_PHP}" ]; then
@@ -1259,7 +1276,7 @@ else:
             BACKUP="${POOL_FILE}.bak"
             cp -a "$POOL_FILE" "$BACKUP"
         fi
-        write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
+        write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT" "$DOMAIN"
         if [ -z "${LEANSTACK_ROOT:-}" ]; then
             FPM_BIN="php-fpm${PHP_VER}"
             if ! command -v "$FPM_BIN" &>/dev/null; then
@@ -1345,7 +1362,11 @@ else:
         # 5. Invalidate In-Memory Cache Keys & Purge Valkey ACL
         valkey-cli -s /run/valkey/valkey.sock --scan --pattern "${USER_NAME}_*" 2>/dev/null | xargs -r valkey-cli -s /run/valkey/valkey.sock del 2>/dev/null || true
         if [ -f /etc/valkey/users.acl ]; then
-            sed -i "/user ${USER_NAME} /d" /etc/valkey/users.acl 2>/dev/null || true
+            sed -i "/^user ${USER_NAME} /d" /etc/valkey/users.acl 2>/dev/null || true
+            if command -v setfacl >/dev/null && [ -d /run/valkey ]; then
+                setfacl -x "u:${USER_NAME}" /run/valkey 2>/dev/null || true
+                setfacl -x "u:${USER_NAME}" /run/valkey/valkey.sock 2>/dev/null || true
+            fi
             valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
         fi
 
@@ -1534,7 +1555,7 @@ PY
         USED_CHILDREN=$(sum_pool_children "$(php_pool_root)" "$POOL_FILE")
         warn_php_budget "$USED_CHILDREN" "$SITE_MAX_CHILDREN" "$HOST_BUDGET"
         if [ -n "${LEANSTACK_ROOT:-}" ]; then
-            write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
+            write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT" "$DOMAIN"
             db_exec "INSERT INTO sites (domain, user, php_version, pool_type, pool_mode, memory_limit, table_prefix, is_cf, profile_used, site_path, db_name, db_user, db_pass, admin_user, admin_pass, admin_email, wp_version) VALUES ('${DOMAIN}', '${USER_NAME}', '${PHP_VER}', 'dedicated', '${POOL_MODE}', '${MEMORY_LIMIT}', 'wp_', ${IS_CF}, '${PROFILE}', '${WEB_ROOT}', '${USER_NAME}_db', '${USER_NAME}_u', 'fixture', '${ADMIN_USER}', 'fixture', '${ADMIN_EMAIL}', 'latest');"
             echo ">>> Pool: ${POOL_MODE} max_children=${SITE_MAX_CHILDREN}"
             exit 0
@@ -1569,8 +1590,7 @@ PY
 
         groupadd -f tenants
         groupadd -f valkey
-        useradd -m -s /bin/false -U -G tenants,valkey,www-data -d "/home/${USER_NAME}" "$USER_NAME"
-        usermod -a -G www-data "$USER_NAME" 2>/dev/null || true
+        useradd -m -s /bin/false -U -G tenants -d "/home/${USER_NAME}" "$USER_NAME"
         grep -q " ${DOMAIN}" /etc/hosts || echo "127.0.0.1 ${DOMAIN}" >> /etc/hosts
 
         mkdir -p "$WEB_ROOT" "$LOG_DIR" "/home/${USER_NAME}/tmp"
@@ -1600,7 +1620,7 @@ PY
         mariadb -e "FLUSH PRIVILEGES;"
 
         # PHP-FPM pool from the host budget and this site's memory_limit.
-        write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT"
+        write_pool_file "$POOL_FILE" "$USER_NAME" "$SOCKET_PATH" "$POOL_MODE" "$SITE_MAX_CHILDREN" "$WEB_ROOT" "$MEMORY_LIMIT" "$DOMAIN"
 
         if command -v "php-fpm${PHP_VER}" &>/dev/null; then
             "php-fpm${PHP_VER}" -t
@@ -1624,23 +1644,24 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
 
         [ "$CACHE_ARG" == "on" ] && CACHE_LINE="define( 'WP_CACHE', true );" || CACHE_LINE="// define( 'WP_CACHE', false );"
 
-        # Valkey 8 Native ACL User & Database Index Generation
+        # Valkey ACL user. Every site stays on DB 0; the key prefix is the boundary.
         VALKEY_PASS=$(openssl rand -hex 16)
-        SITE_COUNT=$(db_query "SELECT count(*) FROM sites;")
-        [ -z "$SITE_COUNT" ] && SITE_COUNT=0
-        VALKEY_DB=$(( (SITE_COUNT % 120) + 1 ))
+        VALKEY_DB=0
 
         ACL_FILE="/etc/valkey/users.acl"
         if [ -d "/etc/valkey" ]; then
             if [ ! -f "$ACL_FILE" ]; then
-                echo "user default on nopass ~* &* +@all" > "$ACL_FILE"
-            elif ! grep -q "^user default " "$ACL_FILE"; then
-                sed -i '1s/^/user default on nopass ~* &* +@all\n/' "$ACL_FILE"
+                echo "user default off" > "$ACL_FILE"
+            elif grep -q "^user default " "$ACL_FILE"; then
+                sed -i 's/^user default .*/user default off/' "$ACL_FILE"
+            else
+                sed -i '1s/^/user default off\n/' "$ACL_FILE"
             fi
-            sed -i "/user ${USER_NAME} /d" "$ACL_FILE" 2>/dev/null || true
-            echo "user ${USER_NAME} on >${VALKEY_PASS} ~* +@all -@admin -@dangerous -flushall -shutdown -config -debug -monitor +select +flushdb +info" >> "$ACL_FILE"
+            sed -i "/^user ${USER_NAME} /d" "$ACL_FILE" 2>/dev/null || true
+            valkey_tenant_acl_line "$USER_NAME" "$VALKEY_PASS" "$CACHE_KEY_SALT" >> "$ACL_FILE"
             chown valkey:valkey "$ACL_FILE" 2>/dev/null || true
             chmod 640 "$ACL_FILE" 2>/dev/null || true
+            grant_valkey_socket
             if command -v valkey-cli &>/dev/null; then
                 valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
             elif command -v redis-cli &>/dev/null; then
@@ -2013,11 +2034,11 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
             acl_tenants=$(grep -c "^user " /etc/valkey/users.acl 2>/dev/null || true)
             [ -z "$acl_tenants" ] && acl_tenants="0"
             echo "  [PASS] Valkey ACL active (${acl_tenants} user(s) configured in /etc/valkey/users.acl)"
-            if ! grep -q "^user default " /etc/valkey/users.acl 2>/dev/null; then
-                echo "  [WARN] User default not declared in /etc/valkey/users.acl (run: sudo lsctl sync-tenants)"
+            if ! grep -q "^user default off" /etc/valkey/users.acl 2>/dev/null; then
+                echo "  [WARN] Valkey default user is not off (run: sudo lsctl sync-tenants)"
             fi
-            if grep -E "^user [^ ]+ on .* -@admin" /etc/valkey/users.acl 2>/dev/null | grep -vq "\+info"; then
-                echo "  [WARN] Valkey ACL tenant user(s) missing +info permission required by WordPress Redis Object Cache (run: sudo lsctl sync-tenants)"
+            if grep -E "^user [^ ]+ on " /etc/valkey/users.acl 2>/dev/null | grep -Eq "\+select|~\\*"; then
+                echo "  [WARN] Valkey tenant ACL can still select a database or read every key (run: sudo lsctl sync-tenants)"
             fi
         fi
         if [ -f "$DB_FILE" ]; then

@@ -26,10 +26,10 @@ LOG_FILE="${LOG_DIR}/cron.log"
 # Atomic Flocking Mutex (guarantees zero overlapping cron batches)
 LOCK_FILE="/run/ls-cron.lock"
 if ! touch "$LOCK_FILE" 2>/dev/null; then
-    LOCK_FILE="/tmp/ls-cron.lock"
+    LOCK_FILE="/run/ls-cron.lock"
     touch "$LOCK_FILE" 2>/dev/null || true
 fi
-chmod 666 "$LOCK_FILE" 2>/dev/null || true
+chmod 600 "$LOCK_FILE" 2>/dev/null || true
 exec 201>"$LOCK_FILE"
 if ! flock -n 201; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack cron queue process is currently running. Skipping." >> "$LOG_FILE" 2>/dev/null || true

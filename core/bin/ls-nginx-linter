@@ -9,9 +9,11 @@ import os
 import re
 import json
 import argparse
+import ipaddress
+import socket
 
 PROHIBITED_DIRECTIVES = {
-    "user", "include", "listen", "server_name", "ssl_certificate",
+    "user", "include", "ssi", "alias", "listen", "server_name", "ssl_certificate",
     "ssl_certificate_key", "ssl_trusted_certificate", "ssl_dhparam",
     "access_by_lua", "content_by_lua", "rewrite_by_lua", "init_by_lua",
     "init_worker_by_lua", "header_filter_by_lua", "body_filter_by_lua",
@@ -23,16 +25,100 @@ PROHIBITED_DIRECTIVES = {
     "events", "http", "stream", "mail"
 }
 
-FORBIDDEN_PROXY_TARGETS = [
-    r"127\.0\.0\.1",
-    r"localhost",
-    r"0\.0\.0\.0",
-    r"169\.254\.169\.254",   # Cloud Instance Metadata
-    r"10\.\d+\.\d+\.\d+",
-    r"172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+",
-    r"192\.168\.\d+\.\d+",
-    r"\[::1\]"
-]
+def _forbidden_ip(value):
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return (
+        addr.is_private or addr.is_loopback or addr.is_link_local
+        or addr.is_reserved or addr.is_multicast or addr.is_unspecified
+    )
+
+
+def _mapped_addresses(host):
+    mapped = os.environ.get("LEANSTACK_RESOLVE", "")
+    for item in mapped.split(","):
+        if "=" not in item:
+            continue
+        name, addr = item.split("=", 1)
+        if name.strip() == host:
+            addr = addr.strip()
+            return [addr] if addr else []
+    return None
+
+
+def _resolve_host(host):
+    forced = _mapped_addresses(host)
+    if forced is not None:
+        return forced
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return []
+    return sorted({item[4][0] for item in infos})
+
+
+def _proxy_host(target):
+    """Host of a proxy URL, after userinfo, brackets, and a single port."""
+    raw = target.strip().strip("\"'").split()[0]
+    if raw.startswith("unix:"):
+        return ""
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+    raw = raw.split("/", 1)[0].split("?", 1)[0]
+    if "@" in raw:
+        raw = raw.rsplit("@", 1)[1]
+    if raw.startswith("["):
+        end = raw.find("]")
+        return raw[1:end] if end > 1 else ""
+    if raw.count(":") == 1:
+        raw = raw.split(":", 1)[0]
+    return raw
+
+
+def _reject_upstream(idx, directive, target, allow_unix=False):
+    """Reject variable targets and any host that is not a public literal."""
+    if "$" in target:
+        return {
+            "valid": False,
+            "error": f"Line {idx}: variable proxy target",
+            "line": idx,
+        }
+    raw = target.strip().strip("\"'").split()[0]
+    if raw.startswith("unix:"):
+        if allow_unix:
+            return None
+        return {
+            "valid": False,
+            "error": f"Line {idx}: {directive} host is not a public address.",
+            "line": idx,
+        }
+    host = _proxy_host(target)
+    if not host:
+        return {
+            "valid": False,
+            "error": f"Line {idx}: {directive} host is not a public address.",
+            "line": idx,
+        }
+    if _forbidden_ip(host):
+        return {
+            "valid": False,
+            "error": f"Line {idx}: {directive} cannot target internal or metadata host '{host}'.",
+            "line": idx,
+        }
+    try:
+        ipaddress.ip_address(host)
+        addresses = [host]
+    except ValueError:
+        addresses = _resolve_host(host)
+    if not addresses or any(_forbidden_ip(addr) for addr in addresses):
+        return {
+            "valid": False,
+            "error": f"Line {idx}: {directive} host '{host}' does not resolve to a public address.",
+            "line": idx,
+        }
+    return None
 
 def lint_headers(filepath, strict_csp=False):
     """Lints security-headers.conf to ensure only safe add_header directives exist."""
@@ -120,17 +206,18 @@ def lint_rules(filepath, tenant_user=None):
         if brace_depth < 0:
             return {"valid": False, "error": f"Line {idx}: Unexpected closing brace '}}'.", "line": idx}
 
-        # Check prohibited directives anywhere in the line
+        # Match a directive at the start of a statement. A URL scheme such as
+        # http:// must not count as the http block directive.
         for prohibited in PROHIBITED_DIRECTIVES:
-            if re.search(r"\b" + prohibited + r"\b", line):
+            if re.search(r"(?:^|[{;])\s*" + re.escape(prohibited) + r"\b", line):
                 return {
                     "valid": False,
                     "error": f"Line {idx}: Directive '{prohibited}' is strictly prohibited for tenant security.",
                     "line": idx
                 }
 
-        # Check path traversal in root / alias
-        for d in ("root", "alias"):
+        # Check path traversal in root. alias is prohibited above.
+        for d in ("root",):
             m_path = re.search(r"\b" + d + r"\s+([^;]+);", line)
             if m_path:
                 target_path = m_path.group(1).strip("\"'")
@@ -161,31 +248,23 @@ def lint_rules(filepath, tenant_user=None):
         m_fcgi = re.search(r"\bfastcgi_pass\s+([^;]+);", line)
         if m_fcgi:
             target = m_fcgi.group(1).strip("\"'")
+            rejected = _reject_upstream(idx, "fastcgi_pass", target, allow_unix=True)
+            if rejected:
+                return rejected
             if tenant_user and not target.endswith(f"-{tenant_user}.sock"):
                 return {
                     "valid": False,
                     "error": f"Line {idx}: fastcgi_pass can only reference Unix socket for tenant '{tenant_user}'.",
                     "line": idx
                 }
-            for forb in FORBIDDEN_PROXY_TARGETS:
-                if re.search(forb, target, re.IGNORECASE):
-                    return {
-                        "valid": False,
-                        "error": f"Line {idx}: fastcgi_pass cannot proxy to internal host '{target}'.",
-                        "line": idx
-                    }
 
-        # Check proxy_pass internal IP targets
+        # Check proxy_pass. Resolve the host before accept.
         m_proxy = re.search(r"\bproxy_pass\s+([^;]+);", line)
         if m_proxy:
             target = m_proxy.group(1).strip("\"'")
-            for forb in FORBIDDEN_PROXY_TARGETS:
-                if re.search(forb, target, re.IGNORECASE):
-                    return {
-                        "valid": False,
-                        "error": f"Line {idx}: proxy_pass cannot target internal or metadata host '{target}'.",
-                        "line": idx
-                    }
+            rejected = _reject_upstream(idx, "proxy_pass", target)
+            if rejected:
+                return rejected
 
     if brace_depth != 0:
         return {"valid": False, "error": f"Unbalanced braces detected (depth: {brace_depth}).", "line": len(lines)}

@@ -21,6 +21,7 @@ else
     DB_FILE="/var/lib/lsctl/sites.db"
 fi
 LOG_FILE="/var/log/cpctl/gatekeeper.log"
+TENANT_CUSTOM="${LEANSTACK_TENANT_CUSTOM:-/etc/angie/tenant-custom}"
 mkdir -p /var/log/cpctl 2>/dev/null || true
 
 log() {
@@ -31,20 +32,19 @@ log() {
 
 get_domain_for_user() {
     local u="$1"
-    local domain=""
-    if [ -f "$DB_FILE" ] && command -v sqlite3 &>/dev/null; then
-        domain=$(sqlite3 "$DB_FILE" "SELECT domain FROM sites WHERE user='$u' LIMIT 1;" 2>/dev/null || true)
+    if [[ ! "$u" =~ ^[A-Za-z0-9_-]+$ ]] || [ ! -f "$DB_FILE" ]; then
+        echo ""
+        return 0
     fi
-    if [ -z "$domain" ]; then
-        # Fallback: scan /etc/angie/http.d/ for user socket or tenant directory
-        for vhost in /etc/angie/http.d/*.conf; do
-            if [ -f "$vhost" ] && grep -q "${u}" "$vhost" 2>/dev/null; then
-                domain=$(basename "$vhost" .conf)
-                break
-            fi
-        done
-    fi
-    echo "$domain"
+    python3 - "$DB_FILE" "$u" << 'PY'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+try:
+    row = conn.execute("SELECT domain FROM sites WHERE user=? LIMIT 1", (sys.argv[2],)).fetchone()
+finally:
+    conn.close()
+print(row[0] if row and row[0] else "")
+PY
 }
 
 process_php_hardening() {
@@ -186,18 +186,22 @@ process_tenant_config() {
 
     local domain
     domain=$(get_domain_for_user "$tenant_user")
-    if [ -z "$domain" ]; then
-        log "Warning: Could not determine domain for user '${tenant_user}'. Checking /etc/angie/tenant-custom..."
-        # If tenant directory exists with single match
-        for d in /etc/angie/tenant-custom/*; do
-            if [ -d "$d" ]; then
-                domain=$(basename "$d")
-                break
-            fi
-        done
+    if [ -z "$domain" ] || [[ ! "$domain" =~ ^[A-Za-z0-9.-]+$ ]]; then
+        log "No registered site for user '${tenant_user}'. Refusing to copy ${filename}."
+        cat > "$status_file" << EOF
+{
+  "status": "error",
+  "file": "${filename}",
+  "message": "No site is registered for this user.",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+        chmod 644 "$status_file" 2>/dev/null || true
+        chown "${tenant_user}:www-data" "$status_file" 2>/dev/null || true
+        return 1
     fi
 
-    local prod_dir="/etc/angie/tenant-custom/${domain}"
+    local prod_dir="${TENANT_CUSTOM}/${domain}"
     mkdir -p "$prod_dir" 2>/dev/null || true
     local prod_file="${prod_dir}/${filename}"
 

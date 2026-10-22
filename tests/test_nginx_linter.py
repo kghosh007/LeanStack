@@ -7,8 +7,10 @@ import unittest
 import os
 import subprocess
 import json
+import sqlite3
 import tempfile
 import shutil
+import hashlib
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 LINTER_BIN = os.path.join(BASE_DIR, "core", "bin", "cp-nginx-linter")
@@ -22,7 +24,7 @@ class TestNginxLinter(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def run_linter(self, content, mode="auto", user=None, strict_csp=False, filename="test.conf"):
+    def run_linter(self, content, mode="auto", user=None, strict_csp=False, filename="test.conf", extra_env=None):
         fpath = os.path.join(self.test_dir, filename)
         with open(fpath, "w") as f:
             f.write(content)
@@ -33,7 +35,10 @@ class TestNginxLinter(unittest.TestCase):
         if strict_csp:
             cmd.append("--strict-csp")
 
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        env = os.environ.copy()
+        if extra_env:
+            env.update(extra_env)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
         try:
             data = json.loads(res.stdout)
         except Exception:
@@ -77,7 +82,7 @@ class TestNginxLinter(unittest.TestCase):
         self.assertFalse(data.get("valid"))
 
     def test_path_traversal_in_root(self):
-        """Verify directory traversal in root/alias is rejected."""
+        """Verify directory traversal in root is rejected."""
         rules = "root /home/tenant/htdocs/../../etc;"
         code, data = self.run_linter(rules, mode="rules")
         self.assertNotEqual(code, 0)
@@ -97,6 +102,68 @@ class TestNginxLinter(unittest.TestCase):
         code, data = self.run_linter(rules, mode="rules")
         self.assertNotEqual(code, 0)
         self.assertFalse(data.get("valid"))
+
+    def test_variable_proxy_and_fastcgi_targets(self):
+        """A dollar sign in proxy_pass or fastcgi_pass is rejected before DNS."""
+        for rules in (
+            "proxy_pass http://$upstream;",
+            "fastcgi_pass $php_upstream;",
+        ):
+            code, data = self.run_linter(rules, mode="rules")
+            self.assertNotEqual(code, 0, rules)
+            self.assertIn("variable proxy target", data.get("error", ""))
+
+    def test_loopback_and_private_proxy_targets(self):
+        """Literal loopback, private, and userinfo-hidden loopback targets are rejected."""
+        for rules in (
+            "proxy_pass http://127.0.0.1;",
+            "proxy_pass http://10.1.2.3:8080/admin;",
+            "proxy_pass http://public@127.0.0.1/latest;",
+            "fastcgi_pass 127.0.0.1:9000;",
+            "proxy_pass unix:/run/angie.sock;",
+        ):
+            code, data = self.run_linter(rules, mode="rules")
+            self.assertNotEqual(code, 0, rules)
+            self.assertFalse(data.get("valid"), rules)
+
+    def test_resolved_loopback_proxy_target(self):
+        """A public name that the fixture maps to loopback is rejected."""
+        rules = "proxy_pass http://example.com/latest;"
+        code, data = self.run_linter(
+            rules,
+            mode="rules",
+            extra_env={"LEANSTACK_RESOLVE": "example.com=127.0.0.1"},
+        )
+        self.assertNotEqual(code, 0)
+        self.assertFalse(data.get("valid"))
+        self.assertIn("public address", data.get("error", ""))
+
+    def test_public_literal_proxy_and_legal_redirect(self):
+        """A public literal proxy and a redirect variable stay legal."""
+        code, data = self.run_linter("proxy_pass http://1.1.1.1/status;", mode="rules")
+        self.assertEqual(code, 0)
+        self.assertTrue(data.get("valid"))
+
+        code, data = self.run_linter(
+            "return 301 https://example.com$request_uri;",
+            mode="rules",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(data.get("valid"))
+
+        code, data = self.run_linter(
+            "fastcgi_pass unix:/run/php/php8.5-fpm-demo.sock;",
+            mode="rules",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(data.get("valid"))
+
+    def test_prohibited_ssi_and_alias(self):
+        """Tenant files cannot enable SSI or retarget the URI with alias."""
+        for rules in ("ssi on;", "alias /var/www/html;"):
+            code, data = self.run_linter(rules, mode="rules")
+            self.assertNotEqual(code, 0, rules)
+            self.assertIn("strictly prohibited", data.get("error", ""))
 
     def test_unbalanced_braces(self):
         """Verify unbalanced braces syntax error is detected."""
@@ -145,22 +212,104 @@ class TestNginxLinter(unittest.TestCase):
         self.assertFalse(data.get("valid"))
         self.assertIn("worker-src", data.get("error", ""))
 
-    def test_gatekeeper_process_mode(self):
-        """Verify cp-gatekeeper --process synchronously evaluates and records status."""
-        user_dir = os.path.join(self.test_dir, "home", "demo_usr", "nginx")
+    def _sites_db(self, rows):
+        db_path = os.path.join(self.test_dir, "sites.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE sites (domain TEXT, user TEXT)")
+        conn.executemany("INSERT INTO sites (domain, user) VALUES (?, ?)", rows)
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def _gate_env(self, db_path):
+        custom = os.path.join(self.test_dir, "tenant-custom")
+        os.makedirs(custom, exist_ok=True)
+        env = os.environ.copy()
+        env["LEANSTACK_DB"] = db_path
+        env["LEANSTACK_TENANT_CUSTOM"] = custom
+        return env, custom
+
+    def _write_tenant_conf(self, user, body):
+        user_dir = os.path.join(self.test_dir, "home", user, "nginx")
         os.makedirs(user_dir, exist_ok=True)
         conf_file = os.path.join(user_dir, "custom-early.conf")
-        with open(conf_file, "w") as f:
-            f.write("# Valid rule\nlocation /valid { try_files $uri =404; }\n")
+        with open(conf_file, "w") as handle:
+            handle.write(body)
+        return user_dir, conf_file
 
-        res = subprocess.run([GATEKEEPER_BIN, "--process", conf_file], text=True)
-        self.assertEqual(res.returncode, 0)
+    def _run_gate(self, conf_file, env):
+        return subprocess.run(
+            [GATEKEEPER_BIN, "--process", conf_file],
+            text=True,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-        status_file = os.path.join(user_dir, ".status.json")
-        self.assertTrue(os.path.exists(status_file))
-        with open(status_file, "r") as f:
-            status = json.load(f)
+    def test_gatekeeper_requires_registered_site(self):
+        """A missing sites row writes an error and leaves tenant-custom untouched."""
+        db_path = self._sites_db([("other.example", "other_usr")])
+        env, custom = self._gate_env(db_path)
+        sentinel_dir = os.path.join(custom, "other.example")
+        os.makedirs(sentinel_dir, exist_ok=True)
+        sentinel = os.path.join(sentinel_dir, "custom-early.conf")
+        with open(sentinel, "w") as handle:
+            handle.write("SENTINEL\n")
+        with open(sentinel, "rb") as handle:
+            before = handle.read()
+
+        _user_dir, conf_file = self._write_tenant_conf(
+            "demo_usr",
+            "# Valid rule\nlocation /valid { try_files $uri =404; }\n",
+        )
+        res = self._run_gate(conf_file, env)
+        self.assertNotEqual(res.returncode, 0, res.stderr)
+
+        status_file = os.path.join(os.path.dirname(conf_file), ".status.json")
+        with open(status_file, "r") as handle:
+            status = json.load(handle)
+        self.assertEqual(status.get("status"), "error")
+        self.assertEqual(status.get("message"), "No site is registered for this user.")
+        with open(sentinel, "rb") as handle:
+            self.assertEqual(handle.read(), before)
+        self.assertEqual(sorted(os.listdir(custom)), ["other.example"])
+
+    def test_gatekeeper_process_mode(self):
+        """A registered site is copied only into that domain, and a second run keeps the bytes."""
+        db_path = self._sites_db([
+            ("shop.example", "demo_usr"),
+            ("other.example", "other_usr"),
+        ])
+        env, custom = self._gate_env(db_path)
+        sentinel = os.path.join(custom, "other.example", "custom-early.conf")
+        os.makedirs(os.path.dirname(sentinel), exist_ok=True)
+        with open(sentinel, "w") as handle:
+            handle.write("SENTINEL\n")
+
+        body = "# Valid rule\nlocation /valid { try_files $uri =404; }\n"
+        _user_dir, conf_file = self._write_tenant_conf("demo_usr", body)
+        res = self._run_gate(conf_file, env)
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+
+        status_file = os.path.join(os.path.dirname(conf_file), ".status.json")
+        with open(status_file, "r") as handle:
+            status = json.load(handle)
         self.assertEqual(status.get("status"), "active")
+
+        prod = os.path.join(custom, "shop.example", "custom-early.conf")
+        self.assertTrue(os.path.isfile(prod))
+        with open(prod, "rb") as handle:
+            first = handle.read()
+        self.assertEqual(first, body.encode())
+        with open(sentinel, "rb") as handle:
+            self.assertEqual(handle.read(), b"SENTINEL\n")
+
+        res = self._run_gate(conf_file, env)
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        with open(prod, "rb") as handle:
+            second = handle.read()
+        self.assertEqual(second, first)
+        self.assertEqual(hashlib.sha256(second).hexdigest(), hashlib.sha256(first).hexdigest())
 
 
 if __name__ == "__main__":

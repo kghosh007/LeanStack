@@ -245,9 +245,9 @@ http {{
         '~*"scheme":"https"' 1;
     }}
 
-    map $http_x_forwarded_proto $x_forwarded_https {{
+    map $upstream_http_cache_control $nocache_response {{
         default 0;
-        'https' 1;
+        '~*(private|no-cache|no-store)' 1;
     }}
 
     ssl_session_timeout 1d;
@@ -338,9 +338,9 @@ disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_sour
 # last matching rule wins. The key pattern is applied by the caller.
 TENANT_ACL_COMMANDS = (
     "-@all +@read +@write +@set +@sortedset +@list +@hash +@string "
-    "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting "
+    "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction "
     "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
-    "+scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
+    "+scan +type +exists +del +persist +touch +select -flushdb -flushall"
 )
 
 

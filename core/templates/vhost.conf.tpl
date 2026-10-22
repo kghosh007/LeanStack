@@ -216,7 +216,7 @@ server {
         if ($query_string != "") {
             set $skip_cache 1;
         }
-        if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in|woocommerce_items_in_cart") {
+        if ($http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in|woocommerce_items_in_cart|wp_woocommerce_session|woocommerce_cart_hash") {
             set $skip_cache 1;
         }
         if ($request_uri ~* "/wp-admin/|/wp-json/|/xmlrpc.php|wp-.*.php|/feed/|index.php|sitemap(_index)?.xml|/cart.*|/checkout.*|/my-account.*") {
@@ -226,6 +226,7 @@ server {
         # FastCGI Dedicated Cache Tier with Anti-Thundering Locks & Background Update
         fastcgi_cache CACHE_{{ZONE_KEY}};
         fastcgi_cache_bypass $skip_cache;
+        fastcgi_no_cache $skip_cache $nocache_response;
         fastcgi_no_cache $skip_cache;
         fastcgi_cache_valid 200 60m;
         fastcgi_cache_use_stale error timeout updating invalid_header http_500 http_503;

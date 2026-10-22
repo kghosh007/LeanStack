@@ -8,6 +8,10 @@
 
 if ( ! defined( 'ABSPATH' ) ) {
     // Micro-endpoint execution directly hit by Angie SSI subrequest (/leanstack-esi/)
+    if ( ! isset( $_SERVER['LEANSTACK_ESI_INTERNAL'] ) || '1' !== (string) $_SERVER['LEANSTACK_ESI_INTERNAL'] ) {
+        http_response_code( 403 );
+        exit( 'Access denied' );
+    }
     require_once dirname( __DIR__, 2 ) . '/wp-load.php';
     leanstack_handle_esi_subrequest();
     exit;
@@ -56,6 +60,9 @@ class LeanStackHolePunch {
         if ( empty( $html ) || $this->is_editor_active() ) {
             return $html;
         }
+
+        // Neutralize any pre-existing / user-injected SSI directives before generating trusted ESI include tags
+        $html = str_replace( '<!--#', '&lt;!--#', $html );
 
         // 1. Automatic Form Nonce Hole-Punching (Prevents "Session Expired" on cached forms)
         // Matches <input type="hidden" id="_wpnonce" name="_wpnonce" value="abc123xyz" />

@@ -68,9 +68,13 @@ server {
     # Tenant FastCGI Cache Configuration
     include /etc/angie/tenant-custom/{{PRIMARY_DOMAIN}}/cache-config.conf;
 
-    # Server-Side Includes (SSI) Engine for Hole-Punching
-    ssi on;
-    ssi_silent_errors on;
+    # Block direct HTTP execution of mu-plugins (LS-04)
+    location ~* /wp-content/mu-plugins/.*\.php$ {
+        deny all;
+        access_log off;
+        log_not_found off;
+        return 403;
+    }
 
     # Universal Protocol Detection
     set $custom_https $https;
@@ -197,6 +201,8 @@ server {
     # ==========================================================================
     location ~ \.php$ {
         try_files $uri =404;
+        ssi on;
+        ssi_silent_errors on;
         fastcgi_split_path_info ^(.+\.php)(/.+)$;
 
         # Microcache / Page Cache Bypass Logic
@@ -257,6 +263,7 @@ server {
         include /etc/angie/fastcgi_params;
         fastcgi_pass {{TARGET_SOCKET}};
         fastcgi_param SCRIPT_FILENAME $realpath_root/wp-content/mu-plugins/leanstack-holepunch.php;
+        fastcgi_param LEANSTACK_ESI_INTERNAL 1;
         fastcgi_param DOCUMENT_ROOT $realpath_root;
         fastcgi_param HTTPS $custom_https;
     }

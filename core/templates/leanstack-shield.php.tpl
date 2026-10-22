@@ -49,10 +49,6 @@ if ( ! function_exists( 'leanstack_enforce_cookie_security_flags' ) ) {
 
         $is_https = ( function_exists( 'is_ssl' ) && is_ssl() )
             || ( isset( $_SERVER['HTTPS'] ) && 'off' !== strtolower( (string) $_SERVER['HTTPS'] ) && ! empty( $_SERVER['HTTPS'] ) )
-            || ( isset( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) && 'https' === strtolower( (string) $_SERVER['HTTP_X_FORWARDED_PROTO'] ) )
-            || ( isset( $_SERVER['HTTP_X_FORWARDED_SSL'] ) && 'on' === strtolower( (string) $_SERVER['HTTP_X_FORWARDED_SSL'] ) )
-            || ( isset( $_SERVER['HTTP_X_FORWARDED_SCHEME'] ) && 'https' === strtolower( (string) $_SERVER['HTTP_X_FORWARDED_SCHEME'] ) )
-            || ( isset( $_SERVER['HTTP_CF_VISITOR'] ) && false !== strpos( (string) $_SERVER['HTTP_CF_VISITOR'], 'https' ) )
             || ( isset( $_SERVER['SERVER_PORT'] ) && 443 === (int) $_SERVER['SERVER_PORT'] );
 
         $raw_headers = headers_list();
@@ -173,11 +169,10 @@ add_filter( 'mime_types', function( $mimes ) {
     return $mimes;
 } );
 
-// 6. Suppress Benign open_basedir Path Resolution Warnings
-// Prevents log bloat from third-party plugins (e.g. wp-file-manager) and core block lookups
-// attempting to traverse parent roots outside the POSIX tenant jail.
-if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
-    function leanstack_suppress_benign_open_basedir_warnings() {
+// 6. Suppress PHP 8.5+ Non-Canonical Cast Deprecation Notices
+// Prevents log bloat from third-party plugins/themes
+if ( ! function_exists( 'leanstack_suppress_non_canonical_cast_notices' ) ) {
+    function leanstack_suppress_non_canonical_cast_notices() {
         static $registered = false;
         if ( $registered ) {
             return;
@@ -193,26 +188,12 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
                     return true;
                 }
             }
-            if ( E_WARNING === $errno && false !== strpos( $errstr, 'open_basedir restriction in effect' ) ) {
-                // Benign parent directory traversal by plugins (e.g. wp-file-manager checking /home or /)
-                // or WordPress core / WP-CLI relative block or template checks
-                if ( false !== strpos( $errstr, 'File(/home)' ) ||
-                     false !== strpos( $errstr, 'File(/)' ) ||
-                     false !== strpos( $errstr, 'File(/usr/bin' ) ||
-                     false !== strpos( $errstr, 'File(core/' ) ||
-                     false !== strpos( $errstr, 'File(man-params.mustache)' ) ||
-                     ( $errfile && false !== strpos( $errfile, 'backup-storage.php' ) ) ||
-                     ( $errfile && false !== strpos( $errfile, 'blocks.php' ) ) ||
-                     ( $errfile && false !== strpos( $errfile, 'utils.php' ) ) ) {
-                    return true; // Suppress warning from debug.log and output
-                }
-            }
             if ( is_callable( $prev_handler ) ) {
                 return call_user_func( $prev_handler, $errno, $errstr, $errfile, $errline );
             }
             return false;
-        }, E_WARNING | E_DEPRECATED | ( defined( 'E_USER_DEPRECATED' ) ? E_USER_DEPRECATED : 0 ) );
+        }, E_DEPRECATED | ( defined( 'E_USER_DEPRECATED' ) ? E_USER_DEPRECATED : 0 ) );
     }
-    leanstack_suppress_benign_open_basedir_warnings();
+    leanstack_suppress_non_canonical_cast_notices();
 }
 

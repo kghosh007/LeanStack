@@ -90,8 +90,8 @@ fi
 # 1. Update Git Repository Payload if installed as git clone
 if [ "$DRY_RUN" -eq 0 ] && [ -d "${INSTALL_DIR}/.git" ]; then
     echo -e "${CYAN}🔄 Synchronizing LeanStack repository in ${INSTALL_DIR}...${NC}"
-    git -c safe.directory=* -C "$INSTALL_DIR" fetch --tags --force origin 2>/dev/null || true
-    git -c safe.directory=* -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
+    git -C "$INSTALL_DIR" fetch --tags --force origin 2>/dev/null || true
+    git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
 fi
 
 # 2. Terminate any hung or looping background processes from previous corrupted installations

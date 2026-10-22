@@ -89,7 +89,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
             content = f.read()
 
         self.assertIn("php_admin_value[open_basedir]", content)
-        self.assertIn("php_admin_value[open_basedir] = /home/{{USER_NAME}}", content)
+        self.assertIn("php_admin_value[open_basedir] = /home/{{USER_NAME}}/:/var/cache/angie/sites/{{DOMAIN}}/", content)
         self.assertNotIn(":/tmp", content)  # Global /tmp must not be in open_basedir
         self.assertIn("php_admin_value[disable_functions]", content)
         self.assertIn("dl,opcache_reset", content)
@@ -190,14 +190,16 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("HTTP_CF_VISITOR", content)
 
     def test_cron_queue_sandboxing(self):
-        """Verify cp-cron-queue applies strict PHP open_basedir, proc_open retention, and flock lock."""
+        """Verify cp-cron-queue applies strict PHP open_basedir, proc_open disabling, and flock lock."""
         cron_bin = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
         self.assertTrue(os.path.exists(cron_bin))
         with open(cron_bin, "r") as f:
             content = f.read()
         self.assertIn("-d open_basedir=", content)
         self.assertIn("-d disable_functions=", content)
-        self.assertNotIn("proc_open,", content)  # proc_open must NOT be disabled for WP-CLI
+        self.assertIn("proc_open,", content)  # proc_open IS disabled matching FPM pool
+        self.assertIn("popen,", content)
+        self.assertNotIn(":/tmp", content)    # Global /tmp must NOT be in open_basedir
         self.assertIn("flock -n", content)
         self.assertIn(".cron_status.json", content)
         self.assertIn("/home/${user}/nginx", content)
@@ -786,21 +788,15 @@ class TestProfilesAndTemplates(unittest.TestCase):
             svc_content = f.read()
         self.assertIn("WorkingDirectory=/tmp", svc_content)
 
-    def test_open_basedir_benign_warning_suppressor(self):
-        """Verify leanstack-shield and leanstack-bridge deploy benign open_basedir warning suppressor."""
+    def test_open_basedir_warnings_not_suppressed(self):
+        """Verify leanstack-shield and leanstack-bridge do not suppress open_basedir sandbox warnings."""
         shield_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-shield.php.tpl")
         bridge_tpl = os.path.join(BASE_DIR, "core", "templates", "leanstack-bridge.php.tpl")
 
         for tpl_path in [shield_tpl, bridge_tpl]:
             with open(tpl_path, "r") as f:
                 content = f.read()
-            self.assertIn("leanstack_suppress_benign_open_basedir_warnings", content)
-            self.assertIn("open_basedir restriction in effect", content)
-            self.assertIn("File(/home)", content)
-            self.assertIn("File(/)", content)
-            self.assertIn("backup-storage.php", content)
-            self.assertIn("File(core/", content)
-            self.assertIn("File(man-params.mustache)", content)
+            self.assertNotIn("open_basedir restriction in effect", content)
 
     def test_query_monitor_bridge_helper_and_reconciler(self):
         """Verify leanstack-bridge provides Query Monitor drop-in self-healing and drop-in reconciler."""
@@ -971,29 +967,30 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn('sudo_cmd=(sudo -u "$user" -H)', cq_content)
         self.assertNotIn('--chdir', cq_content)
 
-    def test_ls_cron_queue_open_basedir_suppression_and_filtering(self):
-        """Verify ls-cron-queue suppresses and filters benign open_basedir warnings from WP-CLI."""
+    def test_ls_cron_queue_surfaces_sandbox_warnings(self):
+        """Verify ls-cron-queue does not filter or suppress open_basedir sandbox errors."""
         cq_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
         with open(cq_path, "r") as f:
             cq_content = f.read()
         self.assertIn('-d display_errors=Off', cq_content)
         self.assertIn('-d error_reporting="E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED"', cq_content)
-        self.assertIn('grep -v -E "open_basedir restriction in effect\\. File\\(/home|open_basedir restriction in effect\\. File\\(/"', cq_content)
-        self.assertIn('@ini_set("display_errors", "0");', cq_content)
+        self.assertNotIn('open_basedir restriction in effect', cq_content)
+        self.assertNotIn('grep -v -E "open_basedir', cq_content)
 
     def test_upgrade_git_resilience_and_safe_directory(self):
-        """Verify ls-upgrade and update.sh use safe.directory=* and handle fetch failures gracefully."""
+        """Verify ls-upgrade and update.sh avoid safe.directory=* and verify repository ownership."""
         upgrade_path = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
         with open(upgrade_path, "r") as f:
             upgrade_content = f.read()
-        self.assertIn('["git", "-c", "safe.directory=*"]', upgrade_content)
+        self.assertNotIn('safe.directory=*', upgrade_content)
+        self.assertIn('stat_info.st_uid != os.geteuid()', upgrade_content)
         self.assertIn('Remote fetch skipped', upgrade_content)
         self.assertIn('def sanitize_cron_logs(self):', upgrade_content)
 
         update_path = os.path.join(BASE_DIR, "update.sh")
         with open(update_path, "r") as f:
             update_content = f.read()
-        self.assertIn('git -c safe.directory=*', update_content)
+        self.assertNotIn('safe.directory=*', update_content)
 
     def test_apcu_stat_cache_clearing(self):
         """Verify leanstack-apcu.php.tpl invalidates PHP stat cache before reading cron status mtime."""
@@ -1059,8 +1056,8 @@ exit 0
             self.assertEqual(data["cron_service"], "inactive")
             self.assertFalse(data["cron_locked"])
 
-    def test_sanitize_cron_logs_removes_chdir_and_open_basedir(self):
-        """Verify sanitize_cron_logs strips both benign open_basedir warnings and stale sudo --chdir errors."""
+    def test_sanitize_cron_logs_removes_chdir_and_preserves_open_basedir(self):
+        """Verify sanitize_cron_logs preserves real open_basedir warnings while stripping stale sudo --chdir errors."""
         from importlib.machinery import SourceFileLoader
         import importlib.util
         upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
@@ -1083,10 +1080,10 @@ exit 0
 
             with open(test_log, "r", encoding="utf-8") as f:
                 lines = f.readlines()
-            self.assertEqual(len(lines), 1)
-            self.assertIn("PHP Fatal error: Allowed memory size", lines[0])
-            self.assertNotIn("--chdir", lines[0])
-            self.assertNotIn("open_basedir", lines[0])
+            self.assertEqual(len(lines), 2)
+            self.assertIn("open_basedir restriction in effect", lines[0])
+            self.assertIn("PHP Fatal error: Allowed memory size", lines[1])
+            self.assertNotIn("--chdir", "".join(lines))
 
     def test_upgrade_git_fetch_force_and_behind_count(self):
         """Verify ls-upgrade uses fetch --tags --force and returns False on 0 new commits or fetch error."""
@@ -1569,8 +1566,8 @@ exit 0
         cookie_regex = r"^(phpsess+id|snn_dynamic_token|unique_session_id|wordpress_|wp-settings)"
         for cookie_name in ["PHPSESSSID", "PHPSESSID", "snn_dynamic_token", "unique_session_id", "wp-settings-1", "wp-settings-time-1"]:
             self.assertTrue(bool(re.search(cookie_regex, cookie_name, re.I)), f"Cookie {cookie_name} must match regex")
-        self.assertIn("HTTP_X_FORWARDED_SSL", shield_code)
-        self.assertIn("HTTP_X_FORWARDED_SCHEME", shield_code)
+        self.assertNotIn("HTTP_X_FORWARDED_SSL", shield_code)
+        self.assertNotIn("HTTP_X_FORWARDED_SCHEME", shield_code)
 
         # Case 2: Database performance degradation & dual config synchronization
         import importlib.machinery
@@ -1657,6 +1654,344 @@ exit 0
         self.assertIn("grub2-common.service", p1)
         self.assertIn("grub-editenv", p1)
         self.assertIn("recordfail", p1)
+
+    def test_secret_protection_and_rollback_safety_phase4(self):
+        """Verify Phase 4 fixes: secret redaction, safe stdin piping, backup modes, and safe autoupdate rollback."""
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_path, "r") as f:
+            lsctl_code = f.read()
+
+        # LS-07: DB permissions
+        self.assertIn('chmod 600 "$DB_FILE"', lsctl_code)
+        self.assertIn('chmod 700 "$DB_DIR"', lsctl_code)
+
+        # LS-07: site:info credential redaction
+        self.assertIn("admin_pass", lsctl_code)
+        # Verify db_pass and admin_pass are not selected in site:info queries
+        site_info_match = re.search(r"site:info\)[\s\S]*?;;", lsctl_code)
+        self.assertIsNotNone(site_info_match)
+        site_info_body = site_info_match.group(0)
+        self.assertNotIn("admin_pass", site_info_body)
+        self.assertNotIn("db_pass", site_info_body)
+        self.assertIn("domain, user, php_version", site_info_body)
+
+        # LS-07: Stdin piping for MariaDB & WP-CLI admin password
+        self.assertIn("--prompt=admin_password", lsctl_code)
+        self.assertIn('<<< "${ADMIN_PASS}"', lsctl_code)
+        self.assertIn("mariadb <<EOF", lsctl_code)
+        self.assertNotIn('-e "CREATE DATABASE IF NOT EXISTS', lsctl_code)
+        self.assertNotIn('-e "DROP DATABASE IF EXISTS', lsctl_code)
+
+        # LS-07: Backup permissions
+        self.assertIn('chmod 700 "/var/backups/lsctl" "$BACKUP_DIR"', lsctl_code)
+        self.assertIn('chmod 600 "$DUMP_FILE"', lsctl_code)
+
+        upgrade_path = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_path, "r") as f:
+            upgrade_code = f.read()
+        self.assertIn("0o700", upgrade_code)
+        self.assertIn("0o600", upgrade_code)
+
+        autoupdate_path = os.path.join(BASE_DIR, "core", "bin", "ls-autoupdate")
+        with open(autoupdate_path, "r") as f:
+            autoupdate_code = f.read()
+        self.assertIn('chmod 700 "/var/backups/lsctl" "$BACKUP_DIR"', autoupdate_code)
+        self.assertIn('chmod 600 "$BACKUP_DIR/sites.db"', autoupdate_code)
+
+        # LS-08: Safe directory wildcard check
+        install_path = os.path.join(BASE_DIR, "install.sh")
+        with open(install_path, "r") as f:
+            install_code = f.read()
+        update_path = os.path.join(BASE_DIR, "update.sh")
+        with open(update_path, "r") as f:
+            update_code = f.read()
+
+        self.assertNotIn("safe.directory=*", upgrade_code)
+        self.assertNotIn("safe.directory=*", install_code)
+        self.assertNotIn("safe.directory=*", update_code)
+        self.assertIn("--no-git-pull", upgrade_code)
+        self.assertIn("--no-git-pull", autoupdate_code)
+
+        # LS-09: Safe rollback without destructive rm -rf /etc/angie
+        self.assertNotIn("rm -rf /etc/angie", autoupdate_code)
+        self.assertNotIn("rm -rf /etc/php", autoupdate_code)
+        self.assertIn('cp -a "$BACKUP_DIR/angie/." /etc/angie/', autoupdate_code)
+        self.assertIn('cp -a "$BACKUP_DIR/php/." /etc/php/', autoupdate_code)
+        self.assertIn("Core update and schema migration failed", autoupdate_code)
+        self.assertIn("rollback_system", autoupdate_code)
+
+    def test_provision_delete_transactions_and_resource_caps_phase5(self):
+        """Verify Phase 5 fixes: LS-10 error cleanup trap, LS-11 cache_prefix tracking, LS-12 worker budget, LS-17 domain & dump guardrails."""
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_path, "r") as f:
+            lsctl_code = f.read()
+
+        # LS-10: Provisioning trap remains armed until AFTER database insertion
+        db_insert_pos = lsctl_code.rfind("INSERT INTO sites")
+        trap_disarm_pos = lsctl_code.rfind("trap - ERR")
+        self.assertNotEqual(db_insert_pos, -1)
+        self.assertNotEqual(trap_disarm_pos, -1)
+        self.assertGreater(trap_disarm_pos, db_insert_pos, "trap - ERR must be disarmed AFTER INSERT INTO sites")
+
+        # LS-10: cleanup_on_error cleans up partial sites row
+        self.assertIn("DELETE FROM sites WHERE domain='$DOMAIN'", lsctl_code)
+
+        # LS-11: Migration 0003 exists and adds cache_prefix
+        mig_path = os.path.join(BASE_DIR, "core", "migrations", "0003_add_cache_prefix.py")
+        self.assertTrue(os.path.exists(mig_path))
+        with open(mig_path, "r") as f:
+            mig_code = f.read()
+        self.assertIn("cache_prefix", mig_code)
+
+        # LS-11: lsctl records and validates cache_prefix
+        self.assertIn("cache_prefix", lsctl_code)
+        self.assertIn('CACHE_PREFIX="ls_${USER_NAME}_"', lsctl_code)
+        self.assertIn('valkey-cli -s /run/valkey/valkey.sock --scan --pattern "${CACHE_PREFIX}*"', lsctl_code)
+        self.assertNotIn('valkey-cli -s /run/valkey/valkey.sock --scan --pattern "${USER_NAME}_*"', lsctl_code)
+
+        # LS-12: warn_php_budget enforcement
+        self.assertIn('if [ "$force" -ne 1 ]; then', lsctl_code)
+        self.assertIn("Exceeding host PHP worker budget", lsctl_code)
+        self.assertIn('if ! warn_php_budget "$USED_CHILDREN" "$SITE_MAX_CHILDREN" "$HOST_BUDGET"', lsctl_code)
+
+        # LS-17: Domain validation and system user guardrails
+        self.assertIn("validate_domain()", lsctl_code)
+        self.assertIn("is_system_user()", lsctl_code)
+        self.assertIn("Safety backup dump failed for database", lsctl_code)
+        self.assertIn("Teardown aborted to protect data. Use --force to override.", lsctl_code)
+
+    def test_caching_security_and_locks_phase6(self):
+        """Verify Phase 6 fixes: LS-13 WooCommerce caching, LS-14 HTTPS spoofing, LS-15 0600 locks, LS-16 telemetry, LS-19 rate zones."""
+        vhost_path = os.path.join(BASE_DIR, "core", "templates", "vhost.conf.tpl")
+        with open(vhost_path, "r") as f:
+            vhost_code = f.read()
+
+        # LS-13: WooCommerce session cookies in cache bypass & Cache-Control no-cache honor
+        self.assertIn("wp_woocommerce_session", vhost_code)
+        self.assertIn("woocommerce_cart_hash", vhost_code)
+        self.assertIn("fastcgi_no_cache $skip_cache $nocache_response;", vhost_code)
+
+        provision_path = os.path.join(BASE_DIR, "installer", "provision.py")
+        with open(provision_path, "r") as f:
+            provision_code = f.read()
+        self.assertIn("map $upstream_http_cache_control $nocache_response", provision_code)
+
+        # LS-14: No spoofable x_forwarded_https in Angie vhost or provisioner
+        self.assertNotIn("x_forwarded_https", vhost_code)
+        self.assertNotIn("x_forwarded_https", provision_code)
+
+        # LS-14: No spoofable forwarded headers in leanstack-shield.php
+        shield_path = os.path.join(BASE_DIR, "core", "templates", "leanstack-shield.php.tpl")
+        with open(shield_path, "r") as f:
+            shield_code = f.read()
+        self.assertNotIn("HTTP_X_FORWARDED_PROTO", shield_code)
+        self.assertNotIn("HTTP_X_FORWARDED_SSL", shield_code)
+        self.assertNotIn("HTTP_X_FORWARDED_SCHEME", shield_code)
+        self.assertNotIn("HTTP_CF_VISITOR", shield_code)
+
+        # LS-15: Lock files mode 0600 in /run without /tmp fallback or 0666
+        autoupdate_path = os.path.join(BASE_DIR, "core", "bin", "ls-autoupdate")
+        with open(autoupdate_path, "r") as f:
+            autoupdate_code = f.read()
+        self.assertIn('chmod 600 "$LOCK_FILE"', autoupdate_code)
+        self.assertNotIn('chmod 666 "$LOCK_FILE"', autoupdate_code)
+        self.assertNotIn('/tmp/ls-maintenance.lock', autoupdate_code)
+
+        cron_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
+        with open(cron_path, "r") as f:
+            cron_code = f.read()
+        self.assertIn('chmod 600 "$LOCK_FILE"', cron_code)
+        self.assertNotIn('chmod 666 "$LOCK_FILE"', cron_code)
+        self.assertNotIn('/tmp/ls-cron.lock', cron_code)
+
+        # LS-16: Telemetry secret hardening
+        telemetry_path = os.path.join(BASE_DIR, "site", "api", "telemetry", "index.php")
+        with open(telemetry_path, "r") as f:
+            telemetry_code = f.read()
+        self.assertNotIn("leanstack2026", telemetry_code)
+        self.assertNotIn("$_GET['auth']", telemetry_code)
+        self.assertIn("hash_equals", telemetry_code)
+        self.assertIn("Bearer", telemetry_code)
+
+        # LS-19: Declared rate-limiting zones attached to PHP location
+        self.assertIn("limit_req zone=perip burst=40 nodelay;", vhost_code)
+
+    def test_structural_modularization_phase7(self):
+        """Verify Phase 7 fixes: LS-20 centralized SQLite helper and LS-21 single source YAML profiles."""
+        import subprocess, json, tempfile
+
+        db_lib_path = os.path.join(BASE_DIR, "core", "lib", "db.py")
+        profiles_lib_path = os.path.join(BASE_DIR, "core", "lib", "profiles.py")
+        profiles_yaml_path = os.path.join(BASE_DIR, "core", "config", "profiles.yaml")
+
+        self.assertTrue(os.path.exists(db_lib_path), "Missing core/lib/db.py")
+        self.assertTrue(os.path.exists(profiles_lib_path), "Missing core/lib/profiles.py")
+        self.assertTrue(os.path.exists(profiles_yaml_path), "Missing core/config/profiles.yaml")
+
+        # Test core/lib/db.py parameterized operations
+        schema_file = os.path.join(BASE_DIR, "core", "migrations", "0001_initial_schema.sql")
+        self.assertTrue(os.path.exists(schema_file))
+        with open(schema_file, "r") as f:
+            schema_sql = f.read()
+
+        with tempfile.NamedTemporaryFile(suffix=".sqlite3") as tmp_db:
+            # 1. Exec CREATE TABLE using migration schema
+            subprocess.run(
+                [
+                    "python3",
+                    db_lib_path,
+                    "exec",
+                    tmp_db.name,
+                    schema_sql
+                ],
+                check=True
+            )
+
+            # 2. Exec INSERT with parameter binding
+            subprocess.run(
+                [
+                    "python3",
+                    db_lib_path,
+                    "exec",
+                    tmp_db.name,
+                    "INSERT INTO sites (domain, user, php_version, pool_type, site_path, db_name, db_user, db_pass, admin_user, admin_pass, admin_email, cache_prefix, profile_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "modulartest.org",
+                    "moduser",
+                    "8.4",
+                    "ondemand",
+                    "/var/www/modulartest.org",
+                    "moduser_db",
+                    "moduser_u",
+                    "ultra_secret_pw",
+                    "admin",
+                    "secret_admin_pw",
+                    "admin@modulartest.org",
+                    "modpref_",
+                    "default"
+                ],
+                check=True
+            )
+
+            # 3. Query single value
+            res_query = subprocess.run(
+                [
+                    "python3",
+                    db_lib_path,
+                    "query",
+                    tmp_db.name,
+                    "SELECT user FROM sites WHERE domain = ?",
+                    "modulartest.org"
+                ],
+                stdout=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            self.assertEqual(res_query.stdout.strip(), "moduser")
+
+            # 4. Query JSON
+            res_json = subprocess.run(
+                [
+                    "python3",
+                    db_lib_path,
+                    "query-json",
+                    tmp_db.name,
+                    "SELECT domain, user, db_name FROM sites WHERE domain = ?",
+                    "modulartest.org"
+                ],
+                stdout=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            rows = json.loads(res_json.stdout.strip())
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["domain"], "modulartest.org")
+            self.assertEqual(rows[0]["db_name"], "moduser_db")
+
+            # 5. site-info formatting and secret redaction
+            res_info = subprocess.run(
+                [
+                    "python3",
+                    db_lib_path,
+                    "site-info",
+                    tmp_db.name,
+                    "modulartest.org"
+                ],
+                stdout=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            self.assertIn("modulartest.org", res_info.stdout)
+            self.assertIn("[REDACTED]", res_info.stdout)
+            self.assertNotIn("ultra_secret_pw", res_info.stdout)
+
+            # 6. cron-sites output
+            res_cron = subprocess.run(
+                [
+                    "python3",
+                    db_lib_path,
+                    "cron-sites",
+                    tmp_db.name,
+                    "modulartest.org"
+                ],
+                stdout=subprocess.PIPE,
+                text=True,
+                check=True
+            )
+            self.assertIn("modulartest.org|moduser|/var/www/modulartest.org|8.4", res_cron.stdout.strip())
+
+        # Test core/lib/profiles.py operations
+        res_list = subprocess.run(
+            ["python3", profiles_lib_path, "list", profiles_yaml_path],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        self.assertIn("default", res_list.stdout)
+        self.assertIn("agency_woocommerce", res_list.stdout)
+        self.assertIn("high_traffic", res_list.stdout)
+
+        res_show = subprocess.run(
+            ["python3", profiles_lib_path, "show", profiles_yaml_path, "default"],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        self.assertIn("Profile Name:    default", res_show.stdout)
+        self.assertIn("Memory Limit:    256M", res_show.stdout)
+
+        res_get = subprocess.run(
+            ["python3", profiles_lib_path, "get", profiles_yaml_path, "default", "memory_limit"],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        self.assertEqual(res_get.stdout.strip(), "256M")
+
+        res_get_default = subprocess.run(
+            ["python3", profiles_lib_path, "get", profiles_yaml_path, "default", "nonexistent.key", "fallback_val"],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        self.assertEqual(res_get_default.stdout.strip(), "fallback_val")
+
+        # Verify scripts wire to modular helpers
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_path, "r") as f:
+            lsctl_code = f.read()
+        self.assertIn('${LIB_DIR}/db.py', lsctl_code)
+        self.assertIn('${LIB_DIR}/profiles.py', lsctl_code)
+        self.assertNotIn("def load_yaml", lsctl_code)
+
+        cron_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
+        with open(cron_path, "r") as f:
+            cron_code = f.read()
+        self.assertIn('db.py" cron-sites', cron_code)
+
+        upgrade_path = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        with open(upgrade_path, "r") as f:
+            upgrade_code = f.read()
+        self.assertIn('core/lib', upgrade_code)
 
 
 if __name__ == "__main__":

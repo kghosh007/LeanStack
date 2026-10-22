@@ -17,11 +17,11 @@ add_filter( 'got_mod_rewrite', '__return_true', 999 );
 
 // ==============================================================================
 // Suppress Benign open_basedir Path Resolution Warnings & PHP 8.5 Deprecations
-// Prevents log bloat from third-party plugins (e.g. wp-file-manager) and core block lookups
-// attempting to traverse parent roots outside the POSIX tenant jail.
+// 1. Suppress PHP 8.5+ Non-Canonical Cast Deprecation Notices
+// Prevents log bloat from third-party plugins/themes
 // ==============================================================================
-if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
-    function leanstack_suppress_benign_open_basedir_warnings() {
+if ( ! function_exists( 'leanstack_suppress_non_canonical_cast_notices' ) ) {
+    function leanstack_suppress_non_canonical_cast_notices() {
         static $registered = false;
         if ( $registered ) {
             return;
@@ -37,25 +37,13 @@ if ( ! function_exists( 'leanstack_suppress_benign_open_basedir_warnings' ) ) {
                     return true;
                 }
             }
-            if ( E_WARNING === $errno && false !== strpos( $errstr, 'open_basedir restriction in effect' ) ) {
-                if ( false !== strpos( $errstr, 'File(/home)' ) ||
-                     false !== strpos( $errstr, 'File(/)' ) ||
-                     false !== strpos( $errstr, 'File(/usr/bin' ) ||
-                     false !== strpos( $errstr, 'File(core/' ) ||
-                     false !== strpos( $errstr, 'File(man-params.mustache)' ) ||
-                     ( $errfile && false !== strpos( $errfile, 'backup-storage.php' ) ) ||
-                     ( $errfile && false !== strpos( $errfile, 'blocks.php' ) ) ||
-                     ( $errfile && false !== strpos( $errfile, 'utils.php' ) ) ) {
-                    return true;
-                }
-            }
             if ( is_callable( $prev_handler ) ) {
                 return call_user_func( $prev_handler, $errno, $errstr, $errfile, $errline );
             }
             return false;
-        }, E_WARNING | E_DEPRECATED | ( defined( 'E_USER_DEPRECATED' ) ? E_USER_DEPRECATED : 0 ) );
+        }, E_DEPRECATED | ( defined( 'E_USER_DEPRECATED' ) ? E_USER_DEPRECATED : 0 ) );
     }
-    leanstack_suppress_benign_open_basedir_warnings();
+    leanstack_suppress_non_canonical_cast_notices();
 }
 
 // ==============================================================================

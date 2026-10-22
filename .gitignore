@@ -73,6 +73,10 @@ error.log
 php-slow.log
 mariadb-slow.log
 
+# Planning Files
+audit*.md
+implementation*.md
+
 # Environment Variables, Secrets & Sensitive Certificates
 .env
 .env.*

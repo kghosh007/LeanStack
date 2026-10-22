@@ -372,6 +372,12 @@ class LeanStackInstaller:
             for t in os.listdir(tpl_dir):
                 shutil.copy2(os.path.join(tpl_dir, t), os.path.join("/etc/lsctl/templates", t))
 
+        lib_dir = os.path.join(self.base_dir, "core", "lib")
+        if os.path.exists(lib_dir):
+            os.makedirs("/etc/lsctl/lib", exist_ok=True)
+            for lib_file in os.listdir(lib_dir):
+                shutil.copy2(os.path.join(lib_dir, lib_file), os.path.join("/etc/lsctl/lib", lib_file))
+
         prof_src = os.path.join(self.base_dir, "core", "config", "profiles.yaml")
         if os.path.exists(prof_src) and not os.path.exists("/etc/lsctl/profiles.yaml"):
             shutil.copy2(prof_src, "/etc/lsctl/profiles.yaml")

@@ -165,8 +165,8 @@ if [ "$DRY_RUN" -eq 0 ]; then
     mkdir -p "$INSTALL_DIR"
     if [ -d "${INSTALL_DIR}/.git" ]; then
         echo -e "${CYAN}🔄 Updating existing LeanStack payload in ${INSTALL_DIR}...${NC}"
-        git -c safe.directory=* -C "$INSTALL_DIR" fetch --tags --force origin 2>/dev/null || true
-        git -c safe.directory=* -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
+        git -C "$INSTALL_DIR" fetch --tags --force origin 2>/dev/null || true
+        git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
     else
         echo -e "${CYAN}⬇️ Fetching LeanStack repository into ${INSTALL_DIR}...${NC}"
         if ! git clone --depth 1 "$DEFAULT_REPO_URL" "$INSTALL_DIR" 2>/dev/null; then

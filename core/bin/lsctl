@@ -1227,7 +1227,10 @@ else:
         # Purge Old Pool
         [ -f "$OLD_POOL" ] && rm -f "$OLD_POOL" && systemctl reload "php${OLD_PHP}-fpm" 2>/dev/null || true
         rm -f "/run/php/php${OLD_PHP}-${USER_NAME}.sock"
-        rm -rf /var/cache/angie/fastcgi/* 2>/dev/null || true
+        # LS-02: Isolated cache purge
+        if [ -d "${ANGIE_CACHE_DIR:-/var/cache/angie}/sites/${DOMAIN}" ]; then
+            find "${ANGIE_CACHE_DIR:-/var/cache/angie}/sites/${DOMAIN}" -type f -delete 2>/dev/null || true
+        fi
 
         db_exec "UPDATE sites SET php_version='${NEW_PHP}' WHERE domain='${DOMAIN}';"
         echo "✅ Atomically migrated ${DOMAIN} to PHP ${NEW_PHP}!"
@@ -1402,7 +1405,10 @@ else:
 
         # 7. Remove from Database
         db_exec "DELETE FROM sites WHERE domain='$DOMAIN';"
-        rm -rf /var/cache/angie/fastcgi/* 2>/dev/null || true
+        # LS-02: Isolated cache purge
+        if [ -d "${ANGIE_CACHE_DIR:-/var/cache/angie}/sites/${DOMAIN}" ]; then
+            find "${ANGIE_CACHE_DIR:-/var/cache/angie}/sites/${DOMAIN}" -type f -delete 2>/dev/null || true
+        fi
 
         echo "🗑️  Site ${DOMAIN} completely purged with zero orphans."
         echo "Safety snapshot archived at: ${BACKUP_DIR}/"

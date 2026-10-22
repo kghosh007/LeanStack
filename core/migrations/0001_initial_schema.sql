@@ -21,5 +21,6 @@ CREATE TABLE IF NOT EXISTS sites (
     admin_pass TEXT NOT NULL,
     admin_email TEXT NOT NULL,
     wp_version TEXT DEFAULT 'latest',
+    cache_prefix TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

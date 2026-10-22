@@ -1391,7 +1391,11 @@ else:
         mariadb -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`; DROP USER IF EXISTS '${DB_USER}'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null || true
 
         # 5. Invalidate In-Memory Cache Keys & Purge Valkey ACL
-        valkey-cli -s /run/valkey/valkey.sock --scan --pattern "${USER_NAME}_*" 2>/dev/null | xargs -r valkey-cli -s /run/valkey/valkey.sock del 2>/dev/null || true
+        # LS-11: Delete Valkey keys using exact cache prefix only
+        CACHE_PREFIX=$(db_query "SELECT cache_prefix FROM sites WHERE domain='$DOMAIN';" 2>/dev/null || true)
+        if [ -n "$CACHE_PREFIX" ] && [[ "$CACHE_PREFIX" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+            valkey-cli -s /run/valkey/valkey.sock --scan --pattern "${CACHE_PREFIX}*" 2>/dev/null | xargs -r valkey-cli -s /run/valkey/valkey.sock del 2>/dev/null || true
+        fi
         if [ -f /etc/valkey/users.acl ]; then
             sed -i "/^user ${USER_NAME} /d" /etc/valkey/users.acl 2>/dev/null || true
             if command -v setfacl >/dev/null && [ -d /run/valkey ]; then

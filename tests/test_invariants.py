@@ -192,7 +192,16 @@ class TestTenantIsolation(unittest.TestCase):
         self.assertNotIn("usermod -a -G www-data", lsctl)
         self.assertIn("user default off", lsctl)
         self.assertNotIn("+select +flushdb", lsctl)
-        self.assertIn("-select -flushdb", lsctl)
+        self.assertNotIn("-select -flushdb", lsctl)
+        acl_fn = lsctl.split("valkey_tenant_acl_line()", 1)[1].split("grant_valkey_socket()", 1)[0]
+        self.assertIn("+select -flushdb -flushall", acl_fn)
+        self.assertNotIn("+flushdb", acl_fn)
+        self.assertNotIn("+flushall", acl_fn)
+        self.assertIn(
+            'Valkey tenant ACL can still flush a database or read every key',
+            lsctl,
+        )
+        self.assertNotIn("can still select a database", lsctl)
 
 
 if __name__ == "__main__":

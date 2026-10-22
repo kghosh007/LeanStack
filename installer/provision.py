@@ -331,13 +331,16 @@ disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_sour
 """
 
 
-# Object-cache commands only. SELECT and FLUSHDB stay denied so one site cannot
-# switch database or wipe another site's keys. The key pattern is applied by the caller.
+# Object-cache commands only. SELECT is allowed because the Redis Object Cache
+# settings probe always sends it, even for database 0. FLUSHDB and FLUSHALL stay
+# denied: they ignore the key pattern and would wipe every site on database 0.
+# +select is after -@all, and -flushdb -flushall stay after +@write, because the
+# last matching rule wins. The key pattern is applied by the caller.
 TENANT_ACL_COMMANDS = (
     "-@all +@read +@write +@set +@sortedset +@list +@hash +@string "
     "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting "
     "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
-    "+scan +type +exists +del +persist +touch +eval +evalsha -select -flushdb -flushall"
+    "+scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
 )
 
 

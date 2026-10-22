@@ -38,6 +38,7 @@ define( 'WP_REDIS_PASSWORD', '{{VALKEY_PASSWORD}}' );
 define( 'WP_REDIS_DATABASE', {{VALKEY_DATABASE}} );
 define( 'WP_REDIS_PREFIX', '{{CACHE_KEY_SALT}}' );
 define( 'WP_CACHE_KEY_SALT', '{{CACHE_KEY_SALT}}' );
+define( 'WP_REDIS_SELECTIVE_FLUSH', true );
 define( 'WP_REDIS_TIMEOUT', 1 );
 define( 'WP_REDIS_READ_TIMEOUT', 1 );
 define( 'WP_REDIS_DISABLE_METRICS', true );

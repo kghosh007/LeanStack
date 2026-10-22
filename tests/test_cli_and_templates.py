@@ -184,6 +184,7 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn("WP_REDIS_USER", content)
         self.assertIn("WP_REDIS_PASSWORD", content)
         self.assertIn("WP_REDIS_DATABASE", content)
+        self.assertIn("define( 'WP_REDIS_SELECTIVE_FLUSH', true );", content)
         self.assertIn("DISABLE_WP_CRON", content)
         self.assertIn("HTTP_X_FORWARDED_PROTO", content)
         self.assertIn("HTTP_CF_VISITOR", content)

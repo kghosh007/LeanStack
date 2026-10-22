@@ -162,7 +162,7 @@ valkey_tenant_acl_line() {
     local user="$1"
     local pass="$2"
     local prefix="$3"
-    echo "user ${user} on >${pass} resetkeys ~${prefix}* -@all +@read +@write +@set +@sortedset +@list +@hash +@string +@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting +ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl +scan +type +exists +del +persist +touch +eval +evalsha -select -flushdb -flushall"
+    echo "user ${user} on >${pass} resetkeys ~${prefix}* -@all +@read +@write +@set +@sortedset +@list +@hash +@string +@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting +ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl +scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
 }
 
 grant_valkey_socket() {
@@ -2037,8 +2037,8 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
             if ! grep -q "^user default off" /etc/valkey/users.acl 2>/dev/null; then
                 echo "  [WARN] Valkey default user is not off (run: sudo lsctl sync-tenants)"
             fi
-            if grep -E "^user [^ ]+ on " /etc/valkey/users.acl 2>/dev/null | grep -Eq "\+select|~\\*"; then
-                echo "  [WARN] Valkey tenant ACL can still select a database or read every key (run: sudo lsctl sync-tenants)"
+            if grep -E "^user [^ ]+ on " /etc/valkey/users.acl 2>/dev/null | grep -Eq "\+flushdb|\+flushall|~\\*"; then
+                echo "  [WARN] Valkey tenant ACL can still flush a database or read every key (run: sudo lsctl sync-tenants)"
             fi
         fi
         if [ -f "$DB_FILE" ]; then

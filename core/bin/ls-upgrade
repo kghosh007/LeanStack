@@ -2193,6 +2193,7 @@ from           noreply@{domain}
                         # 4e. Reconcile WP_REDIS optimization constants & bloat controls
                         redis_optimizations = [
                             ("WP_REDIS_DISABLE_METRICS", "define( 'WP_REDIS_DISABLE_METRICS', true );"),
+                            ("WP_REDIS_SELECTIVE_FLUSH", "define( 'WP_REDIS_SELECTIVE_FLUSH', true );"),
                             ("WP_REDIS_PERSISTENT", "define( 'WP_REDIS_PERSISTENT', true );"),
                             ("WP_REDIS_IGBINARY", "define( 'WP_REDIS_IGBINARY', true );"),
                             ("WP_REDIS_LOAD_APEXCHARTS", "define( 'WP_REDIS_LOAD_APEXCHARTS', false );"),
@@ -2315,7 +2316,7 @@ from           noreply@{domain}
                                 "+@read +@write +@set +@sortedset +@list +@hash +@string "
                                 "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +@scripting "
                                 "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
-                                "+scan +type +exists +del +persist +touch +eval +evalsha -select -flushdb -flushall"
+                                "+scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
                             )
                             user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
                             if re.search(user_pattern, acl_content, re.MULTILINE):

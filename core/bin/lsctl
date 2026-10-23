@@ -1383,9 +1383,8 @@ EOF
                 setfacl -x "u:${USER_NAME}" /run/valkey 2>/dev/null || true
                 setfacl -x "u:${USER_NAME}" /run/valkey/valkey.sock 2>/dev/null || true
             fi
-            local acl_del_res=""
-            acl_del_res=$(valkey-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
-            if [[ "$acl_del_res" != *"OK"* ]]; then
+            ACL_DEL_RES=$(valkey-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
+            if [[ "$ACL_DEL_RES" != *"OK"* ]]; then
                 systemctl restart valkey 2>/dev/null || systemctl restart valkey-server 2>/dev/null || true
                 grant_valkey_socket
             fi
@@ -1665,13 +1664,13 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
             chown valkey:valkey "$ACL_FILE" 2>/dev/null || true
             chmod 640 "$ACL_FILE" 2>/dev/null || true
             grant_valkey_socket
-            local acl_add_res=""
+            ACL_ADD_RES=""
             if command -v valkey-cli &>/dev/null; then
-                acl_add_res=$(valkey-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
+                ACL_ADD_RES=$(valkey-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
             elif command -v redis-cli &>/dev/null; then
-                acl_add_res=$(redis-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
+                ACL_ADD_RES=$(redis-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
             fi
-            if [[ "$acl_add_res" != *"OK"* ]]; then
+            if [[ "$ACL_ADD_RES" != *"OK"* ]]; then
                 systemctl restart valkey 2>/dev/null || systemctl restart valkey-server 2>/dev/null || systemctl restart redis-server 2>/dev/null || true
                 grant_valkey_socket
             fi

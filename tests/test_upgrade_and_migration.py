@@ -368,11 +368,12 @@ class TestUpgradeAndMigrationEngine(unittest.TestCase):
             source = handle.read()
         self.assertIn("user default off", source)
         self.assertNotIn("user default on nopass", source)
-        self.assertIn("+select -flushdb -flushall", source)
+        self.assertIn("+eval +evalsha +select -flushdb -flushall", source)
         self.assertNotIn("-select -flushdb", source)
         self.assertNotIn("+flushdb", source)
         self.assertNotIn("+flushall", source)
         self.assertIn("define( 'WP_REDIS_SELECTIVE_FLUSH', true );", source)
+        self.assertIn("lua-time-limit", source)
         self.assertNotIn("~* +@all -@admin", source)
 
     def test_cpctl_circular_delegation_guard(self):

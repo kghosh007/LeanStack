@@ -2372,7 +2372,7 @@ from           noreply@{domain}
                                 "+@read +@write +@set +@sortedset +@list +@hash +@string "
                                 "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction "
                                 "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
-                                "+scan +type +exists +del +persist +touch +select -flushdb -flushall"
+                                "+scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
                             )
                             user_pattern = rf"^user\s+{re.escape(user)}\s+.*$"
                             if re.search(user_pattern, acl_content, re.MULTILINE):
@@ -2410,6 +2410,18 @@ from           noreply@{domain}
                             cli_cmd = next((c for c in cli_candidates if c), None)
                             if cli_cmd:
                                 subprocess.run([cli_cmd, "-s", valkey_sock, "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                                subprocess.run([cli_cmd, "-s", valkey_sock, "config", "set", "lua-time-limit", "500"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                            valkey_conf_file = "/etc/valkey/valkey.conf"
+                            if os.path.exists(valkey_conf_file):
+                                try:
+                                    with open(valkey_conf_file, "r", encoding="utf-8") as f_vc:
+                                        vc_text = f_vc.read()
+                                    if "lua-time-limit" not in vc_text:
+                                        vc_text = vc_text.rstrip() + "\nlua-time-limit 500\n"
+                                        with open(valkey_conf_file, "w", encoding="utf-8") as f_vc:
+                                            f_vc.write(vc_text)
+                                except Exception:
+                                    pass
                             self.log(f"Limited Valkey ACL for {user} to prefix {prefix}", Colors.GREEN, prefix="  ✔")
                         self.reconcile_valkey_socket()
                     except Exception as e:

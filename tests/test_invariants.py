@@ -198,6 +198,7 @@ class TestTenantIsolation(unittest.TestCase):
         self.assertNotIn("Set-Cookie", angie)
         self.assertIn("RuntimeDirectoryMode=0750", files["etc/systemd/system/valkey.service"])
         self.assertIn("unixsocketperm 660", files["etc/valkey/valkey.conf"])
+        self.assertIn("lua-time-limit 500", files["etc/valkey/valkey.conf"])
 
     def test_create_uses_tenant_group_only(self):
         lsctl = pathlib.Path(LSCTL).read_text(encoding="utf-8")
@@ -208,7 +209,7 @@ class TestTenantIsolation(unittest.TestCase):
         self.assertNotIn("+select +flushdb", lsctl)
         self.assertNotIn("-select -flushdb", lsctl)
         acl_fn = lsctl.split("valkey_tenant_acl_line()", 1)[1].split("grant_valkey_socket()", 1)[0]
-        self.assertIn("+select -flushdb -flushall", acl_fn)
+        self.assertIn("+eval +evalsha +select -flushdb -flushall", acl_fn)
         self.assertNotIn("+flushdb", acl_fn)
         self.assertNotIn("+flushall", acl_fn)
         self.assertIn(
@@ -216,6 +217,72 @@ class TestTenantIsolation(unittest.TestCase):
             lsctl,
         )
         self.assertNotIn("can still select a database", lsctl)
+
+    def test_valkey_selective_flush_eval_and_tenant_isolation(self):
+        from provision import tenant_acl_line
+        import socket
+        import time
+
+        server_bin = shutil.which("valkey-server") or shutil.which("redis-server") or "/usr/bin/redis-server"
+        if not os.path.exists(server_bin):
+            self.skipTest("valkey-server / redis-server not available")
+
+        with tempfile.TemporaryDirectory() as d:
+            sock = os.path.join(d, "valkey.sock")
+            acl = os.path.join(d, "users.acl")
+            conf = os.path.join(d, "valkey.conf")
+            with open(acl, "w", encoding="utf-8") as f:
+                f.write("user default on nopass ~* &* +@all\n")
+                f.write(tenant_acl_line("staging_mfeasy_4809", "SecretPass123", "379cf5_") + "\n")
+                f.write(tenant_acl_line("other_tenant_1001", "OtherPass456", "999999_") + "\n")
+            with open(conf, "w", encoding="utf-8") as f:
+                f.write(f"port 0\nunixsocket {sock}\naclfile {acl}\nlua-time-limit 500\ndir {d}\n")
+
+            proc = subprocess.Popen([server_bin, conf], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                for _ in range(30):
+                    if os.path.exists(sock):
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(os.path.exists(sock), "Valkey/Redis test socket failed to start")
+
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(sock)
+
+                def send(*args):
+                    payload = f"*{len(args)}\r\n" + "".join(f"${len(str(a))}\r\n{a}\r\n" for a in args)
+                    s.sendall(payload.encode("utf-8"))
+                    return s.recv(4096).decode("utf-8", errors="replace")
+
+                # Seed another tenant's key as default before switching to tenant user
+                self.assertIn("+OK", send("SET", "999999_wp:secret", "isolated_value"))
+
+                # Authenticate as staging_mfeasy_4809
+                self.assertIn("+OK", send("AUTH", "staging_mfeasy_4809", "SecretPass123"))
+                self.assertIn("+OK", send("SET", "379cf5_wp:key1", "v1"))
+                self.assertIn("+OK", send("SET", "379cf5_wp:key2", "v2"))
+
+                # Verify WP_REDIS_SELECTIVE_FLUSH Lua script via EVAL succeeds on tenant prefix
+                lua_selective_flush = (
+                    'local cur = 0 local i = 0 local tmp '
+                    'repeat tmp = redis.call("SCAN", cur, "MATCH", ARGV[1]) '
+                    'cur = tonumber(tmp[1]) '
+                    'if tmp[2] then for _, v in pairs(tmp[2]) do redis.call("DEL", v) i = i + 1 end end '
+                    'until 0 == cur return i'
+                )
+                self.assertEqual(send("EVAL", lua_selective_flush, "0", "379cf5_*"), ":2\r\n")
+
+                # Verify cross-tenant key access inside EVAL is strictly blocked by ACL
+                self.assertIn("No permissions to access a key", send("EVAL", lua_selective_flush, "0", "*"))
+                self.assertIn("No permissions to access a key", send("EVAL", 'return redis.call("GET", "999999_wp:secret")', "0"))
+
+                # Verify FLUSHDB and SCRIPT FLUSH remain blocked
+                self.assertIn("NOPERM", send("FLUSHDB"))
+                self.assertIn("NOPERM", send("SCRIPT", "FLUSH"))
+                s.close()
+            finally:
+                proc.terminate()
+                proc.wait(timeout=5)
 
 
 if __name__ == "__main__":

@@ -204,7 +204,7 @@ valkey_tenant_acl_line() {
     local user="$1"
     local pass="$2"
     local prefix="$3"
-    echo "user ${user} on >${pass} resetkeys ~${prefix}* -@all +@read +@write +@set +@sortedset +@list +@hash +@string +@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl +scan +type +exists +del +persist +touch +select -flushdb -flushall"
+    echo "user ${user} on >${pass} resetkeys ~${prefix}* -@all +@read +@write +@set +@sortedset +@list +@hash +@string +@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction +ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl +scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
 }
 
 grant_valkey_socket() {
@@ -2030,6 +2030,9 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
             fi
             if grep -E "^user [^ ]+ on " /etc/valkey/users.acl 2>/dev/null | grep -Eq "\+flushdb|\+flushall|~\\*"; then
                 echo "  [WARN] Valkey tenant ACL can still flush a database or read every key (run: sudo lsctl sync-tenants)"
+            fi
+            if grep -E "^user [^ ]+ on " /etc/valkey/users.acl 2>/dev/null | grep -vq "\+eval"; then
+                echo "  [WARN] Valkey tenant ACL is missing +eval for WP_REDIS_SELECTIVE_FLUSH (run: sudo lsctl sync-tenants)"
             fi
         fi
         if [ -f "$DB_FILE" ]; then

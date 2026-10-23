@@ -97,6 +97,7 @@ logfile /var/log/valkey/valkey.log
 databases 128
 aclfile /etc/valkey/users.acl
 rename-command FLUSHALL ""
+lua-time-limit 500
 maxmemory {valkey["maxmemory"]}
 maxmemory-policy {valkey["maxmemory_policy"]}
 save ""
@@ -340,7 +341,7 @@ TENANT_ACL_COMMANDS = (
     "-@all +@read +@write +@set +@sortedset +@list +@hash +@string "
     "+@bitmap +@hyperloglog +@geo +@stream +@pubsub +@transaction "
     "+ping +echo +auth +hello +quit +info +unlink +expire +ttl +pexpire +pttl "
-    "+scan +type +exists +del +persist +touch +select -flushdb -flushall"
+    "+scan +type +exists +del +persist +touch +eval +evalsha +select -flushdb -flushall"
 )
 
 

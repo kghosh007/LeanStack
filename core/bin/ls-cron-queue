@@ -78,7 +78,7 @@ run_site_cron() {
         if [[ "$site_path" != "/home/${user}"* ]]; then
             allowed_paths="${allowed_paths}:${site_path}/"
         fi
-        allowed_paths="${allowed_paths}:/var/cache/angie/sites/${domain}/:/run/valkey/valkey.sock:/run/mysqld/mysqld.sock:/usr/local/bin/:/usr/bin/:/usr/share/php/:/etc/ssl/certs/:/usr/share/ca-certificates/:/etc/pki/:/etc/resolv.conf"
+        allowed_paths="${allowed_paths}:/var/cache/angie/sites/${domain}/:/run/valkey/:/run/redis/:/var/run/valkey/:/var/run/redis/:/run/mysqld/:/var/run/mysqld/:/usr/local/bin/:/usr/bin/:/usr/share/php/:/etc/ssl/certs/:/usr/share/ca-certificates/:/etc/pki/:/etc/resolv.conf"
 
         # The FPM pool disables proc_open and popen. The cron sandbox strictly mirrors this disable list.
         local disabled_funcs="exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"
@@ -202,17 +202,52 @@ $_SERVER["HTTPS"] = "on";
 if (!defined("DOING_CRON")) {
     define("DOING_CRON", true);
 }
+if (!defined("WP_REDIS_GRACEFUL")) {
+    define("WP_REDIS_GRACEFUL", true);
+}
 if ($site_path === "" || !file_exists($site_path . "/wp-load.php")) {
     fwrite(STDERR, "LeanStack cron runner: wp-load.php not found in " . $site_path . "\n");
     exit(1);
 }
+
+$GLOBALS["__ls_cron_executed"] = 0;
+$GLOBALS["__ls_cron_t0"] = $t0;
+$GLOBALS["__ls_cron_r0"] = $r0;
+$GLOBALS["__ls_cron_finished"] = false;
+
+register_shutdown_function(function() {
+    if (!empty($GLOBALS["__ls_cron_finished"])) {
+        return;
+    }
+    $GLOBALS["__ls_cron_finished"] = true;
+    if (function_exists("delete_transient")) {
+        @delete_transient("doing_cron");
+    }
+    $executed = (int) $GLOBALS["__ls_cron_executed"];
+    if ($executed > 0 && function_exists("wp_cache_delete")) {
+        @wp_cache_delete("alloptions", "options");
+        @wp_cache_delete("cron", "options");
+    }
+    $t0 = $GLOBALS["__ls_cron_t0"];
+    $r0 = $GLOBALS["__ls_cron_r0"];
+    $dur = round((microtime(true) - $t0) * 1000, 2);
+    $cpu = 0;
+    if ($r0 && function_exists("getrusage")) {
+        $r1 = getrusage();
+        $utime = ($r1["ru_utime.tv_sec"] - $r0["ru_utime.tv_sec"]) + ($r1["ru_utime.tv_usec"] - $r0["ru_utime.tv_usec"]) / 1e6;
+        $stime = ($r1["ru_stime.tv_sec"] - $r0["ru_stime.tv_sec"]) + ($r1["ru_stime.tv_usec"] - $r0["ru_stime.tv_usec"]) / 1e6;
+        $cpu = round(($utime + $stime) * 1000, 2);
+    }
+    $mem = round(memory_get_peak_usage(true) / 1048576, 2);
+    echo "LS_TELEMETRY:{$dur}:{$cpu}:{$mem}:{$executed}\n";
+});
+
 @chdir($site_path);
 require_once $site_path . "/wp-load.php";
 if (function_exists("wp_raise_memory_limit")) {
     wp_raise_memory_limit("cron");
 }
 $cron_array = function_exists("_get_cron_array") ? _get_cron_array() : array();
-$executed = 0;
 $now = time();
 if (!empty($cron_array) && is_array($cron_array)) {
     foreach ($cron_array as $timestamp => $hooks) {
@@ -228,30 +263,17 @@ if (!empty($cron_array) && is_array($cron_array)) {
                         wp_reschedule_event($timestamp, $schedule, $hook, $args);
                     }
                     wp_unschedule_event($timestamp, $hook, $args);
-                    do_action_ref_array($hook, $args);
-                    $executed++;
+                    try {
+                        do_action_ref_array($hook, $args);
+                    } catch (\Throwable $e) {
+                        fwrite(STDERR, "LeanStack cron hook exception in " . $hook . ": " . $e->getMessage() . "\n");
+                    }
+                    $GLOBALS["__ls_cron_executed"]++;
                 }
             }
         }
     }
 }
-if (function_exists("delete_transient")) {
-    delete_transient("doing_cron");
-}
-if ($executed > 0 && function_exists("wp_cache_delete")) {
-    wp_cache_delete("alloptions", "options");
-    wp_cache_delete("cron", "options");
-}
-$dur = round((microtime(true) - $t0) * 1000, 2);
-$cpu = 0;
-if ($r0 && function_exists("getrusage")) {
-    $r1 = getrusage();
-    $utime = ($r1["ru_utime.tv_sec"] - $r0["ru_utime.tv_sec"]) + ($r1["ru_utime.tv_usec"] - $r0["ru_utime.tv_usec"]) / 1e6;
-    $stime = ($r1["ru_stime.tv_sec"] - $r0["ru_stime.tv_sec"]) + ($r1["ru_stime.tv_usec"] - $r0["ru_stime.tv_usec"]) / 1e6;
-    $cpu = round(($utime + $stime) * 1000, 2);
-}
-$mem = round(memory_get_peak_usage(true) / 1048576, 2);
-echo "LS_TELEMETRY:{$dur}:{$cpu}:{$mem}:{$executed}\n";
 '
 
         local cron_out=""

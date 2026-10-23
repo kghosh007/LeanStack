@@ -626,8 +626,15 @@ def host_services(php_versions):
     _run(["systemctl", "daemon-reload"])
     _run(["systemctl", "enable", "--now", "disable-thp.service"])
     heal_grubenv()
+    _run(["groupadd", "-f", "valkey"])
+    _run(["groupadd", "-f", "tenants"])
     _run(["systemctl", "enable", "valkey.service"])
     _run(["systemctl", "restart", "valkey.service"])
+    sockets_bin = os.path.join(_repo_root(), "core", "bin", "ls-valkey-sockets")
+    if os.path.isfile(sockets_bin):
+        _run([sockets_bin])
+    elif shutil.which("ls-valkey-sockets"):
+        _run(["ls-valkey-sockets"])
     _run(["systemctl", "restart", "mariadb"])
     snippets = os.path.join(_repo_root(), "core", "snippets")
     if os.path.isdir(snippets):

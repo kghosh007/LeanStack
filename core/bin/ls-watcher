@@ -200,22 +200,29 @@ check_valkey() {
 
     local ping_res=""
     if [ -S "$socket" ]; then
-        ping_res=$("$cli_cmd" -s "$socket" ping 2>/dev/null || true)
+        ping_res=$("$cli_cmd" -s "$socket" ping 2>&1 || true)
     elif [ -S "/run/redis/redis-server.sock" ]; then
         socket="/run/redis/redis-server.sock"
-        ping_res=$("$cli_cmd" -s "$socket" ping 2>/dev/null || true)
+        ping_res=$("$cli_cmd" -s "$socket" ping 2>&1 || true)
     fi
 
-    if [ "$ping_res" != "PONG" ]; then
+    # Valkey responds with PONG when default user is on, or NOAUTH when default user is off (ACL-secured).
+    # Both confirm the server is running and processing commands on the socket.
+    if [ "$ping_res" != "PONG" ] && [[ ! "$ping_res" =~ NOAUTH ]]; then
         log "[WARN] Valkey socket unreachable or ping returned: '$ping_res'."
         if ! pidof valkey-server &>/dev/null && ! pidof redis-server &>/dev/null; then
             log "[RECOVER] Cleaning stale Valkey socket and PID files..."
             rm -f "$socket" "$pid_file" 2>/dev/null || true
         fi
-        log "[RECOVER] Restarting Valkey service..."
+        log "[RECOVER] Ensuring OS groups and restarting Valkey service..."
+        groupadd -f valkey 2>/dev/null || true
+        groupadd -f tenants 2>/dev/null || true
         systemctl restart valkey 2>/dev/null || systemctl restart valkey-server 2>/dev/null || systemctl restart redis-server 2>/dev/null || systemctl restart redis 2>/dev/null || true
+        /opt/leanstack/core/bin/ls-valkey-sockets 2>/dev/null || /usr/local/bin/ls-valkey-sockets 2>/dev/null || true
         sleep 1
-        if [ "$("$cli_cmd" -s "$socket" ping 2>/dev/null || true)" == "PONG" ]; then
+        local check_res
+        check_res=$("$cli_cmd" -s "$socket" ping 2>&1 || true)
+        if [ "$check_res" == "PONG" ] || [[ "$check_res" =~ NOAUTH ]]; then
             log "[RECOVER] Valkey health successfully restored."
         fi
     fi

@@ -3094,9 +3094,10 @@ from           noreply@{domain}
 
     def run_upgrade(self) -> bool:
         """Master orchestrator for the complete autonomous upgrade process."""
-        print(f"\n{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.CYAN}            LEANSTACK AUTONOMOUS UPGRADE & MIGRATION ENGINE                   {Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}\n")
+        if not self.quiet:
+            print(f"\n{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.CYAN}            LEANSTACK AUTONOMOUS UPGRADE & MIGRATION ENGINE                   {Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}\n")
 
         # 1. Preflight checks
         if not self.preflight_check():
@@ -3149,9 +3150,10 @@ from           noreply@{domain}
         # 9. Record version
         self.record_version(applied)
 
-        print(f"\n{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.GREEN}✔ LEANSTACK UPGRADE COMPLETED SUCCESSFULLY WITH ZERO DOWNTIME.{Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}\n")
+        if not self.quiet:
+            print(f"\n{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.GREEN}✔ LEANSTACK UPGRADE COMPLETED SUCCESSFULLY WITH ZERO DOWNTIME.{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}\n")
         return True
 
 
@@ -3178,6 +3180,7 @@ def main():
     parser.add_argument("--stack-upgrade", nargs="*", default=None, metavar=("COMPONENT", "VERSION"), help="Upgrade stack component (mariadb, angie, valkey, or all) [version]")
     parser.add_argument("--component", default=None, help="Component to upgrade")
     parser.add_argument("--component-version", default=None, help="Target component version")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential stdout progress messages")
     parser.add_argument("--json", action="store_true", help="Output summary as JSON")
     parser.add_argument("--no-git-pull", action="store_true", help="Skip remote git fetch and pull")
 
@@ -3188,7 +3191,7 @@ def main():
         db_file=args.db_file,
         dry_run=args.dry_run,
         force=args.force,
-        quiet=args.json,
+        quiet=(args.quiet or args.json),
         no_git_pull=args.no_git_pull
     )
 

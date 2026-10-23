@@ -958,6 +958,17 @@ server {
         res_default = self.upgrader.reconcile_kernel_tuning()
         self.assertTrue(res_default)
 
+    def test_ls_upgrade_quiet_flag(self):
+        """Verify ls-upgrade supports --quiet and -q flags without error for lsctl update:auto compatibility."""
+        upgrade_bin = os.path.join(BASE_DIR, "core", "bin", "ls-upgrade")
+        res = subprocess.run([sys.executable, upgrade_bin, "--quiet", "--dry-run", "--no-git-pull"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout.strip(), "")
+
+        res_short = subprocess.run([sys.executable, upgrade_bin, "-q", "--dry-run", "--no-git-pull"], capture_output=True, text=True)
+        self.assertEqual(res_short.returncode, 0)
+        self.assertEqual(res_short.stdout.strip(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

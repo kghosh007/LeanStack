@@ -423,7 +423,7 @@ class LeanStackInstaller:
                     for of in os.listdir(s_dropin):
                         shutil.copy2(os.path.join(s_dropin, of), os.path.join(d_dropin, of))
         subprocess.run(["systemctl", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "enable", "--now", "cp-cron.timer", "cp-cf-sync.timer", "cp-gatekeeper.service", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
+        subprocess.run(["systemctl", "enable", "--force", "--now", "cp-cron.timer", "cp-cf-sync.timer", "ls-gatekeeper.service", "ls-watcher.timer", "ls-autoupdate.timer"], check=False)
 
     def render_completion_card(self):
         title = "LEANSTACK DEPLOYMENT COMPLETE"

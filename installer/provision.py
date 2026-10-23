@@ -535,8 +535,57 @@ def adjust_angie_modules(root):
             handle.write(text)
 
 
+def configure_sury_php_repo(target_root="/"):
+    """Configures the canonical Ondřej Surý PHP repository (https://packages.sury.org/php/) using modern keyrings."""
+    keyrings_dir = os.path.join(target_root, "etc/apt/keyrings")
+    keyring_file = os.path.join(keyrings_dir, "sury-php.gpg")
+    sources_dir = os.path.join(target_root, "etc/apt/sources.list.d")
+    sources_file = os.path.join(sources_dir, "sury-php.list")
+
+    codename = "noble"
+    os_release = os.path.join(target_root, "etc/os-release")
+    if os.path.exists(os_release):
+        try:
+            with open(os_release, "r") as f:
+                for line in f:
+                    if line.startswith("VERSION_CODENAME="):
+                        codename = line.split("=", 1)[1].strip().strip('"\'')
+                        break
+                    elif line.startswith("UBUNTU_CODENAME="):
+                        codename = line.split("=", 1)[1].strip().strip('"\'')
+                        break
+        except Exception:
+            pass
+
+    try:
+        os.makedirs(keyrings_dir, exist_ok=True)
+        os.makedirs(sources_dir, exist_ok=True)
+        if not os.path.exists(keyring_file) or os.path.getsize(keyring_file) == 0:
+            res = subprocess.run(
+                ["curl", "-fsSL", "--connect-timeout", "10", "--retry", "3", "https://packages.sury.org/php/apt.gpg", "-o", keyring_file],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+            )
+            if res.returncode == 0 and os.path.exists(keyring_file):
+                os.chmod(keyring_file, 0o644)
+
+        # Remove obsolete Launchpad PPA lists
+        import glob
+        for legacy in glob.glob(os.path.join(sources_dir, "*ondrej-ubuntu-php*.list")) + glob.glob(os.path.join(sources_dir, "*ondrej-ubuntu-php*.sources")):
+            try:
+                os.remove(legacy)
+            except Exception:
+                pass
+
+        with open(sources_file, "w") as f:
+            f.write(f"deb [signed-by={keyring_file}] https://packages.sury.org/php/ {codename} main\n")
+        return True
+    except Exception:
+        return False
+
+
 def install_packages(php_versions):
     """Install host packages. Runs only when applying onto / as root."""
+    configure_sury_php_repo("/")
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
     base = [
@@ -602,6 +651,8 @@ def apply_document(profile, php_versions, root, dry_run):
         print("\n".join(lines))
         return lines
     write_files(root, files)
+    if not dry_run:
+        configure_sury_php_repo(root)
     if os.path.abspath(root) == "/" and os.geteuid() == 0:
         install_packages(php_versions)
         host_services(php_versions)

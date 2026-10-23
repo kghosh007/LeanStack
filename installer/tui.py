@@ -62,7 +62,8 @@ class LeanStackInstaller:
             "/etc/apt/sources.list.d/*mariadb*.list",
             "/etc/apt/sources.list.d/*valkey*.list",
             "/etc/apt/sources.list.d/*redis*.list",
-            "/etc/apt/sources.list.d/*ondrej*.list"
+            "/etc/apt/sources.list.d/*ondrej-ubuntu-php*.list",
+            "/etc/apt/sources.list.d/*ondrej-ubuntu-php*.sources"
         ]:
             stale_repos.extend(glob.glob(pat))
 

@@ -969,6 +969,57 @@ server {
         self.assertEqual(res_short.returncode, 0)
         self.assertEqual(res_short.stdout.strip(), "")
 
+    def test_sury_php_repo_configuration(self):
+        """Verify configure_sury_php_repo configures packages.sury.org and stack_upgrade supports php."""
+        sys.path.insert(0, os.path.join(BASE_DIR, "installer"))
+        from provision import configure_sury_php_repo
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_root:
+            os.makedirs(os.path.join(tmp_root, "etc"), exist_ok=True)
+            with open(os.path.join(tmp_root, "etc", "os-release"), "w") as f:
+                f.write('NAME="Ubuntu"\nVERSION_ID="26.04"\nVERSION_CODENAME=resolute\nID=ubuntu\n')
+            
+            # Create a legacy PPA file to verify it gets cleaned up
+            ppa_file = os.path.join(tmp_root, "etc", "apt", "sources.list.d", "ondrej-ubuntu-php-resolute.list")
+            os.makedirs(os.path.dirname(ppa_file), exist_ok=True)
+            with open(ppa_file, "w") as f:
+                f.write("deb https://launchpad.net/ppa resolute main\n")
+            
+            ok = configure_sury_php_repo(tmp_root)
+            self.assertTrue(ok)
+            self.assertFalse(os.path.exists(ppa_file))
+            
+            sury_list = os.path.join(tmp_root, "etc", "apt", "sources.list.d", "sury-php.list")
+            self.assertTrue(os.path.isfile(sury_list))
+            with open(sury_list, "r") as f:
+                content = f.read()
+            self.assertIn("https://packages.sury.org/php/", content)
+            self.assertIn("resolute main", content)
+            self.assertIn("sury-php.gpg", content)
+
+        # Test dry-run stack-upgrade for PHP component
+        res_php = self.upgrader.stack_upgrade(component="php")
+        self.assertTrue(res_php)
+
+        # Test configure_sury_php_repo in upgrader
+        res_upgrader_sury = self.upgrader.configure_sury_php_repo()
+        self.assertTrue(res_upgrader_sury)
+
+    def test_install_script_and_tui_sury_php_support(self):
+        """Verify install.sh and installer/tui.py correctly configure packages.sury.org/php/ and isolate stale PPAs."""
+        install_sh = os.path.join(BASE_DIR, "install.sh")
+        with open(install_sh, "r") as f:
+            sh_content = f.read()
+        self.assertIn("packages.sury.org/php/", sh_content)
+        self.assertIn("sury-php.gpg", sh_content)
+        self.assertIn("sury-php.list", sh_content)
+
+        tui_py = os.path.join(BASE_DIR, "installer", "tui.py")
+        with open(tui_py, "r") as f:
+            tui_content = f.read()
+        self.assertIn("*ondrej-ubuntu-php*.list", tui_content)
+        self.assertNotIn('"/etc/apt/sources.list.d/*ondrej*.list"', tui_content)
+
 
 if __name__ == "__main__":
     unittest.main()

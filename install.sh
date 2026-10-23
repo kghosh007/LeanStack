@@ -142,6 +142,20 @@ if [ "$DRY_RUN" -eq 0 ] && [ "$EUID" -eq 0 ]; then
     find /etc/apt/sources.list.d/ -type f -empty -delete 2>/dev/null || true
     dpkg --configure -a 2>/dev/null || true
 
+    # Configure canonical Ondřej Surý PHP repository (https://packages.sury.org/php/)
+    echo -e "${CYAN}🐘 Configuring official Ondřej Surý PHP repository (packages.sury.org/php/)...${NC}"
+    mkdir -p /etc/apt/keyrings
+    if [ ! -s /etc/apt/keyrings/sury-php.gpg ]; then
+        curl -fsSL --connect-timeout 10 --retry 3 https://packages.sury.org/php/apt.gpg -o /etc/apt/keyrings/sury-php.gpg 2>/dev/null || true
+        [ -f /etc/apt/keyrings/sury-php.gpg ] && chmod 644 /etc/apt/keyrings/sury-php.gpg 2>/dev/null || true
+    fi
+    SURY_CODENAME="${UBUNTU_CODENAME:-noble}"
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        SURY_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-noble}}"
+    fi
+    echo "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ ${SURY_CODENAME} main" > /etc/apt/sources.list.d/sury-php.list
+
     # Audit core prerequisites
     MISSING_PKGS=()
     for pkg in python3 python3-minimal curl ca-certificates git sqlite3; do

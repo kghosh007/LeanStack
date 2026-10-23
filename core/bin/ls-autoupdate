@@ -80,6 +80,15 @@ update_system_packages() {
         return 0
     fi
 
+    # Ensure canonical Ondřej Surý PHP repository is configured for security updates
+    if [ ! -f "/etc/apt/sources.list.d/sury-php.list" ]; then
+        if [ -x "/usr/local/bin/ls-upgrade" ]; then
+            python3 -c "import sys; sys.path.insert(0, '/usr/local/bin'); from importlib.machinery import SourceFileLoader; mod = SourceFileLoader('lsu', '/usr/local/bin/ls-upgrade').load_module(); u = mod.LeanStackUpgrader(); u.configure_sury_php_repo()" 2>/dev/null || true
+        elif [ -f "${SCRIPT_DIR}/ls-upgrade" ]; then
+            python3 -c "import sys; from importlib.machinery import SourceFileLoader; mod = SourceFileLoader('lsu', '${SCRIPT_DIR}/ls-upgrade').load_module(); u = mod.LeanStackUpgrader(); u.configure_sury_php_repo()" 2>/dev/null || true
+        fi
+    fi
+
     log "[APT] Refreshing package lists..."
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq 2>/dev/null || true

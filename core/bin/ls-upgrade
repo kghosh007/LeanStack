@@ -2821,6 +2821,69 @@ from           noreply@{domain}
                     return False
         return False
 
+    def configure_sury_php_repo(self, target_root: str = "/") -> bool:
+        """Configures official Ondřej Surý PHP repository (https://packages.sury.org/php/) with modern keyrings."""
+        keyrings_dir = os.path.join(target_root, "etc/apt/keyrings") if target_root != "/" else "/etc/apt/keyrings"
+        keyring_file = f"{keyrings_dir}/sury-php.gpg"
+        sources_dir = os.path.join(target_root, "etc/apt/sources.list.d") if target_root != "/" else "/etc/apt/sources.list.d"
+        sources_file = f"{sources_dir}/sury-php.list"
+
+        os_info = {"ID": "ubuntu", "VERSION_ID": "24.04", "VERSION_CODENAME": "noble"}
+        os_rel_path = os.path.join(target_root, "etc/os-release") if target_root != "/" else "/etc/os-release"
+        if os.path.exists(os_rel_path):
+            try:
+                with open(os_rel_path) as f_os:
+                    for l in f_os:
+                        k, _, v = l.partition("=")
+                        k, v = k.strip(), v.strip().strip('"\'')
+                        if k in os_info:
+                            os_info[k] = v
+            except Exception:
+                pass
+
+        codename = os_info.get("VERSION_CODENAME") or "noble"
+        if self.dry_run:
+            self.log(f"Configuring canonical Ondřej Surý PHP repository (packages.sury.org/php/ {codename})...", Colors.CYAN, prefix="  🐘")
+            self.log(f"[Dry-Run] Would configure Sury PHP repository: https://packages.sury.org/php/ {codename} main", Colors.YELLOW, prefix="  [DRY-RUN]")
+            return True
+
+        if hasattr(os, "geteuid") and os.geteuid() != 0 and target_root == "/":
+            self.log(f"Notice: Sury PHP repository configuration skipped (unprivileged)", Colors.DIM, prefix="  ℹ")
+            return True
+
+        try:
+            self.log(f"Configuring canonical Ondřej Surý PHP repository (packages.sury.org/php/ {codename})...", Colors.CYAN, prefix="  🐘")
+            os.makedirs(keyrings_dir, exist_ok=True)
+            if not os.path.exists(keyring_file) or os.path.getsize(keyring_file) == 0:
+                subprocess.run(
+                    ["curl", "-fsSL", "--connect-timeout", "10", "--retry", "3", "https://packages.sury.org/php/apt.gpg", "-o", keyring_file],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+                )
+                if os.path.exists(keyring_file):
+                    os.chmod(keyring_file, 0o644)
+
+            # Clean up obsolete PPA list files
+            import glob
+            for legacy in glob.glob(f"{sources_dir}/*ondrej-ubuntu-php*.list") + glob.glob(f"{sources_dir}/*ondrej-ubuntu-php*.sources"):
+                try:
+                    os.remove(legacy)
+                except Exception:
+                    pass
+
+            with open(sources_file, "w") as f:
+                f.write(f"deb [signed-by={keyring_file}] https://packages.sury.org/php/ {codename} main\n")
+            self.log(f"Configured official Ondřej Surý PHP repository ({codename})", Colors.GREEN, prefix="  ✔")
+            return True
+        except PermissionError as pe:
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                self.log(f"Notice: Sury PHP repository configuration skipped (unprivileged): {pe}", Colors.DIM, prefix="  ℹ")
+                return True
+            self.log(f"Notice: Failed to configure Sury PHP repository: {pe}", Colors.YELLOW, prefix="  ⚠️")
+            return False
+        except Exception as e:
+            self.log(f"Notice: Failed to configure Sury PHP repository: {e}", Colors.YELLOW, prefix="  ⚠️")
+            return False
+
     def stack_upgrade(self, component: str = "mariadb", version: Optional[str] = None) -> bool:
         """
         Upgrades server stack components (mariadb, angie, valkey, or all) to latest stable or a specified version:
@@ -2844,6 +2907,8 @@ from           noreply@{domain}
             target_comp = "angie"
         elif target_comp in ["redis", "cache"]:
             target_comp = "valkey"
+        elif target_comp in ["php", "php-fpm"]:
+            target_comp = "php"
 
         print(f"\n{Colors.BOLD}{Colors.CYAN}=============================================================================={Colors.RESET}")
         print(f"{Colors.BOLD}{Colors.CYAN}            LEANSTACK SERVER STACK UPGRADE ENGINE                             {Colors.RESET}")
@@ -3087,6 +3152,33 @@ from           noreply@{domain}
             else:
                 self.log("Dry-run: Would back up /etc/valkey, trigger snapshot, upgrade Valkey, and restart service.", Colors.DIM, prefix="  ℹ")
 
+        # -------------------------------------------------------------
+        # 4. PHP Runtime Tier & Security Patches (packages.sury.org)
+        # -------------------------------------------------------------
+        if target_comp in ["php", "all"]:
+            self.log("Preparing PHP runtime update via canonical packages.sury.org repository...", Colors.CYAN, prefix="  🚀")
+            if not self.dry_run:
+                self.configure_sury_php_repo()
+                if hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("apt-get"):
+                    env = os.environ.copy()
+                    env["DEBIAN_FRONTEND"] = "noninteractive"
+                    subprocess.run(["apt-get", "update", "-qq"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+                    pkgs = []
+                    for v in ["8.1", "8.2", "8.3", "8.4", "8.5"]:
+                        if os.path.exists(f"/etc/php/{v}"):
+                            pkgs.extend([f"php{v}-fpm", f"php{v}-cli", f"php{v}-common"])
+                    if pkgs:
+                        php_up_cmd = [
+                            "apt-get", "install", "-y", "-qq",
+                            "-o", "Dpkg::Options::=--force-confold",
+                            "-o", "Dpkg::Options::=--force-confdef"
+                        ] + pkgs
+                        subprocess.run(php_up_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+                        self.reload_services()
+                        self.log(f"PHP packages successfully updated from packages.sury.org ({', '.join(pkgs)}).", Colors.GREEN, prefix="  ✔")
+            else:
+                self.log("Dry-run: Would configure canonical packages.sury.org PHP repository, update package lists, and upgrade PHP packages.", Colors.DIM, prefix="  ℹ")
+
         print(f"\n{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}")
         print(f"{Colors.BOLD}{Colors.GREEN}✔ STACK UPGRADE FOR [{target_comp.upper()}] COMPLETED WITH ZERO DATA LOSS.{Colors.RESET}")
         print(f"{Colors.BOLD}{Colors.GREEN}=============================================================================={Colors.RESET}\n")
@@ -3124,9 +3216,10 @@ from           noreply@{domain}
         # 4. Migrations
         applied = self.run_migrations()
 
-        # 5. Binaries & Recommended Packages
+        # 5. Binaries & Recommended Packages & PHP Repo
         self.sync_binaries()
         self.reconcile_recommended_packages()
+        self.configure_sury_php_repo()
 
         # 6. Templates & Angie TLS reconciliation
         self.sync_templates_and_profiles()

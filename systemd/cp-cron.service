@@ -4,7 +4,7 @@ After=network.target mariadb.service valkey.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/cp-cron-queue
+ExecStart=/usr/local/bin/ls-cron-queue
 WorkingDirectory=/tmp
 TimeoutSec=180
 IOSchedulingClass=best-effort

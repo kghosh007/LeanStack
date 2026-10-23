@@ -411,7 +411,7 @@ class LeanStackInstaller:
         for f in os.listdir(systemd_dir):
             if f.endswith(".service") or f.endswith(".timer"):
                 src = os.path.join(systemd_dir, f)
-                subprocess.run(["cp", src, f"/etc/systemd/system/{f}"], check=True)
+                subprocess.run(["cp", "-P", src, f"/etc/systemd/system/{f}"], check=True)
         overrides_dir = os.path.join(systemd_dir, "overrides")
         if os.path.isdir(overrides_dir):
             for dropin in os.listdir(overrides_dir):

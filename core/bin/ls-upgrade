@@ -425,7 +425,7 @@ class LeanStackUpgrader:
         # Systemd service unit files and drop-in overrides
         if os.path.exists(self.systemd_dir) and os.path.isdir("/etc/systemd/system"):
             for s in os.listdir(self.systemd_dir):
-                if s == "cp-gatekeeper.service":
+                if s in ["cp-gatekeeper.service", "ls-cron.service", "ls-cron.timer"]:
                     continue
                 if s.endswith(".service") or s.endswith(".timer"):
                     src = os.path.join(self.systemd_dir, s)
@@ -438,15 +438,20 @@ class LeanStackUpgrader:
                                 pass
                         shutil.copy2(src, dest)
 
-            # Ensure cp-gatekeeper.service symlink exists pointing to ls-gatekeeper.service
-            legacy_gk = "/etc/systemd/system/cp-gatekeeper.service"
+            # Ensure canonical and legacy unit symlinks exist
+            unit_symlinks = [
+                ("/etc/systemd/system/cp-gatekeeper.service", "ls-gatekeeper.service"),
+                ("/etc/systemd/system/ls-cron.service", "cp-cron.service"),
+                ("/etc/systemd/system/ls-cron.timer", "cp-cron.timer"),
+            ]
             if not self.dry_run:
-                try:
-                    if os.path.islink(legacy_gk) or os.path.exists(legacy_gk):
-                        os.remove(legacy_gk)
-                    os.symlink("ls-gatekeeper.service", legacy_gk)
-                except Exception:
-                    pass
+                for link_path, target_name in unit_symlinks:
+                    try:
+                        if os.path.islink(link_path) or os.path.exists(link_path):
+                            os.remove(link_path)
+                        os.symlink(target_name, link_path)
+                    except Exception:
+                        pass
 
             overrides_dir = os.path.join(self.systemd_dir, "overrides")
             if os.path.isdir(overrides_dir):

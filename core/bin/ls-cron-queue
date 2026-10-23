@@ -25,7 +25,9 @@ elif [ -f "/var/lib/cpctl/sites.db" ]; then
 else
     DB_FILE="/var/lib/lsctl/sites.db"
 fi
-[ ! -f "$DB_FILE" ] && exit 0
+if [ ! -f "$DB_FILE" ]; then
+    exit 0
+fi
 
 LOG_DIR="/var/log/lsctl"
 if [ ! -d "$LOG_DIR" ] && [ -d "/var/log/cpctl" ]; then
@@ -36,12 +38,14 @@ LOG_FILE="${LOG_DIR}/cron.log"
 
 # Atomic Flocking Mutex (guarantees zero overlapping cron batches, Root-only mode 0600 in /run)
 LOCK_FILE="/run/ls-cron.lock"
-touch "$LOCK_FILE" 2>/dev/null || true
-chmod 600 "$LOCK_FILE" 2>/dev/null || true
-exec 201>"$LOCK_FILE"
-if ! flock -n 201; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack cron queue process is currently running. Skipping." >> "$LOG_FILE" 2>/dev/null || true
-    exit 0
+if [ -w "$LOCK_FILE" ] || { [ ! -e "$LOCK_FILE" ] && [ -w "/run" ]; }; then
+    touch "$LOCK_FILE" 2>/dev/null || true
+    chmod 600 "$LOCK_FILE" 2>/dev/null || true
+    exec 201>"$LOCK_FILE"
+    if ! flock -n 201; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Another LeanStack cron queue process is currently running. Skipping." >> "$LOG_FILE" 2>/dev/null || true
+        exit 0
+    fi
 fi
 
 run_site_cron() {
@@ -269,9 +273,15 @@ except Exception:
 " "$DB_FILE" "$TARGET_DOMAIN")
 fi
 
-[ -z "$SITES" ] && exit 0
+if [ -z "$SITES" ]; then
+    exit 0
+fi
 
 # Execute with max 4 parallel workers (Zero CPU starvation)
 echo "$SITES" | while IFS='|' read -r domain user site_path php_ver; do
-    [ -n "$domain" ] && echo "$domain $user $site_path $php_ver"
-done | xargs -r -n 4 -P 4 bash -c 'run_site_cron "$@"' _
+    if [ -n "$domain" ]; then
+        echo "$domain $user $site_path $php_ver"
+    fi
+done | xargs -r -n 4 -P 4 bash -c 'run_site_cron "$@"' _ || true
+
+exit 0

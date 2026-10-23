@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET="${SCRIPT_DIR}/ls-cron-queue"
-if [ ! -x "$TARGET" ] && [ -x "/usr/local/bin/ls-cron-queue" ]; then
+TARGET=""
+
+# Try same directory first, then standard system paths
+if [ -x "${SCRIPT_DIR}/ls-cron-queue" ] && [ "$(readlink -f "${SCRIPT_DIR}/ls-cron-queue" 2>/dev/null)" != "$(readlink -f "$0" 2>/dev/null)" ]; then
+    TARGET="${SCRIPT_DIR}/ls-cron-queue"
+elif [ -x "/usr/local/bin/ls-cron-queue" ] && [ "$(readlink -f /usr/local/bin/ls-cron-queue 2>/dev/null)" != "$(readlink -f "$0" 2>/dev/null)" ]; then
     TARGET="/usr/local/bin/ls-cron-queue"
+elif [ -x "/opt/leanstack/core/bin/ls-cron-queue" ] && [ "$(readlink -f /opt/leanstack/core/bin/ls-cron-queue 2>/dev/null)" != "$(readlink -f "$0" 2>/dev/null)" ]; then
+    TARGET="/opt/leanstack/core/bin/ls-cron-queue"
 fi
 
-TARGET_REAL="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
-CUR_REAL="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+if [ -z "$TARGET" ]; then
+    echo "❌ Error: Could not locate target ls-cron-queue binary." >&2
+    exit 1
+fi
 
-if [ -n "${_LEANSTACK_CPCRON_LOOP:-}" ] || [ "$TARGET_REAL" == "$CUR_REAL" ]; then
-    echo "❌ Error: Circular delegation detected. cp-cron-queue and ls-cron-queue resolve to the same binary ($CUR_REAL)." >&2
+if [ -n "${_LEANSTACK_CPCRON_LOOP:-}" ]; then
+    echo "❌ Error: Circular delegation detected for cp-cron-queue." >&2
     exit 1
 fi
 

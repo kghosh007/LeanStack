@@ -903,6 +903,73 @@ class TestHardwareTuning(unittest.TestCase):
         self.assertTrue(any("innodb_flush_log_at_trx_commit = 2" in r for r in report["recommendations"]))
         self.assertLess(report["score"], 100)
 
+    def test_cron_queue_and_valkey_resilience(self):
+        """Verify ls-cron-queue registers shutdown telemetry, defines WP_REDIS_GRACEFUL, and traps hook errors."""
+        cron_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-cron-queue"))
+        with open(cron_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("register_shutdown_function", content)
+        self.assertIn("WP_REDIS_GRACEFUL", content)
+        self.assertIn("try {", content)
+        self.assertIn("catch (\\Throwable", content)
+        self.assertIn("LS_TELEMETRY:", content)
+
+    def test_valkey_watcher_noauth_handling(self):
+        """Verify ls-watcher treats NOAUTH as a healthy, running Valkey instance without triggering false restarts."""
+        watcher_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "bin", "ls-watcher"))
+        with open(watcher_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn('[ "$ping_res" != "PONG" ] && [[ ! "$ping_res" =~ NOAUTH ]]', content)
+        self.assertIn("groupadd -f tenants", content)
+        self.assertIn("groupadd -f valkey", content)
+
+    def test_installer_phase7_and_provision_php_c_extensions(self):
+        """Verify phase 7 enables canonical ls-gatekeeper with force, and provision installs full PHP C extensions."""
+        tui_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "installer", "tui.py"))
+        with open(tui_path, "r", encoding="utf-8") as f:
+            tui_content = f.read()
+        self.assertIn('["systemctl", "enable", "--force", "--now", "cp-cron.timer", "cp-cf-sync.timer", "ls-gatekeeper.service"', tui_content)
+
+        provision_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "installer", "provision.py"))
+        with open(provision_path, "r", encoding="utf-8") as f:
+            prov_content = f.read()
+        for ext in ["redis", "igbinary", "apcu", "imagick", "gd", "intl", "bcmath", "soap"]:
+            self.assertIn(f"php{{ver}}-{ext}", prov_content)
+
+        from provision import _php_runtime_ini
+        cli_ini = _php_runtime_ini(is_cli=True)
+        fpm_ini = _php_runtime_ini(is_cli=False)
+        self.assertNotIn("proc_open", cli_ini)
+        self.assertNotIn("popen", cli_ini)
+        self.assertIn("proc_open", fpm_ini)
+        self.assertIn("popen", fpm_ini)
+        self.assertIn("apc.enabled = 1", fpm_ini)
+        self.assertIn("apc.shm_size = 64M", fpm_ini)
+        self.assertIn("apc.enable_cli = 0", cli_ini)
+
+    def test_apcu_store_on_miss_and_query_monitor_bypass(self):
+        """Verify LeanStackAPCu only stores alloptions on cache miss and guards cron status invalidation to once per request."""
+        apcu_tpl = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "templates", "leanstack-apcu.php.tpl"))
+        with open(apcu_tpl, "r", encoding="utf-8") as f:
+            apcu_content = f.read()
+        self.assertIn("private $cron_checked = false;", apcu_content)
+        self.assertIn("private $loaded_from_apcu = false;", apcu_content)
+        self.assertIn("if ( $this->loaded_from_apcu ) {", apcu_content)
+
+        wp_config_tpl = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "templates", "wp-config.php.tpl"))
+        with open(wp_config_tpl, "r", encoding="utf-8") as f:
+            wpc_content = f.read()
+        self.assertIn("define( 'QM_DISABLED', true );", wpc_content)
+        self.assertIn("define( 'QM_DISABLE', true );", wpc_content)
+        self.assertIn("define( 'WP_REDIS_GRACEFUL', true );", wpc_content)
+
+        shield_tpl = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "core", "templates", "leanstack-shield.php.tpl"))
+        with open(shield_tpl, "r", encoding="utf-8") as f:
+            shield_content = f.read()
+        self.assertIn("define( 'QM_DISABLED', true );", shield_content)
+        self.assertIn("define( 'QM_DISABLE', true );", shield_content)
+        self.assertIn("do_action( 'qm/cease' );", shield_content)
+
 
 if __name__ == "__main__":
     unittest.main()

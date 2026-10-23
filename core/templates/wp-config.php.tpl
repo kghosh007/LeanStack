@@ -39,6 +39,7 @@ define( 'WP_REDIS_DATABASE', {{VALKEY_DATABASE}} );
 define( 'WP_REDIS_PREFIX', '{{CACHE_KEY_SALT}}' );
 define( 'WP_CACHE_KEY_SALT', '{{CACHE_KEY_SALT}}' );
 define( 'WP_REDIS_SELECTIVE_FLUSH', true );
+define( 'WP_REDIS_GRACEFUL', true );
 define( 'WP_REDIS_TIMEOUT', 1 );
 define( 'WP_REDIS_READ_TIMEOUT', 1 );
 define( 'WP_REDIS_DISABLE_METRICS', true );
@@ -72,11 +73,14 @@ if ( ! defined( 'SAVEQUERIES' ) ) {
 }
 
 // Auto-disable Query Monitor backtrace profiling on benchmark requests
-if ( ! defined( 'QM_DISABLE' ) ) {
-    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_REQUEST['action'] ) ) ||
-         ( isset( $_GET['page'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_GET['page'] ) ) ||
-         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
-         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_REQUEST['action'] ) ) ||
+     ( isset( $_GET['page'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_GET['page'] ) ) ||
+     ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
+     ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+    if ( ! defined( 'QM_DISABLED' ) ) {
+        define( 'QM_DISABLED', true );
+    }
+    if ( ! defined( 'QM_DISABLE' ) ) {
         define( 'QM_DISABLE', true );
     }
 }

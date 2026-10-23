@@ -316,8 +316,15 @@ opcache.jit_hot_loop = 1
 """
 
 
-def _php_runtime_ini():
-    return """expose_php = Off
+def _php_runtime_ini(is_cli=False):
+    if is_cli:
+        disable_funcs = "exec,passthru,shell_exec,system,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"
+        apc_settings = "apc.enable_cli = 0\n"
+    else:
+        disable_funcs = "exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"
+        apc_settings = "apc.enabled = 1\napc.shm_size = 64M\napc.ttl = 3600\n"
+
+    return f"""expose_php = Off
 memory_limit = 256M
 upload_max_filesize = 128M
 post_max_size = 128M
@@ -328,7 +335,7 @@ session.use_strict_mode = 1
 session.cookie_httponly = 1
 session.cookie_secure = 1
 session.cookie_samesite = Lax
-disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache
+{apc_settings}disable_functions = {disable_funcs}
 """
 
 
@@ -453,8 +460,8 @@ def render_files(profile, php_versions):
         base = f"etc/php/{ver}"
         files[f"{base}/fpm/conf.d/99-leanstack-opcache.ini"] = _opcache_ini(profile)
         files[f"{base}/cli/conf.d/99-leanstack-opcache.ini"] = _opcache_ini(profile)
-        files[f"{base}/fpm/conf.d/98-leanstack-runtime.ini"] = _php_runtime_ini()
-        files[f"{base}/cli/conf.d/98-leanstack-runtime.ini"] = _php_runtime_ini()
+        files[f"{base}/fpm/conf.d/98-leanstack-runtime.ini"] = _php_runtime_ini(is_cli=False)
+        files[f"{base}/cli/conf.d/98-leanstack-runtime.ini"] = _php_runtime_ini(is_cli=True)
     return files
 
 
@@ -607,8 +614,16 @@ def install_packages(php_versions):
             check=False,
         )
     for ver in php_versions:
-        pkgs = [f"php{ver}-fpm", f"php{ver}-mysql", f"php{ver}-curl", f"php{ver}-mbstring", f"php{ver}-xml", f"php{ver}-zip"]
+        pkgs = [
+            f"php{ver}-fpm", f"php{ver}-cli", f"php{ver}-common",
+            f"php{ver}-mysql", f"php{ver}-curl", f"php{ver}-mbstring",
+            f"php{ver}-xml", f"php{ver}-zip", f"php{ver}-redis",
+            f"php{ver}-igbinary", f"php{ver}-apcu", f"php{ver}-imagick",
+            f"php{ver}-gd", f"php{ver}-intl", f"php{ver}-bcmath", f"php{ver}-soap"
+        ]
         subprocess.run(["apt-get", "install", "-y", "-qq", *pkgs, "msmtp", "msmtp-mta"], env=env, check=False)
+        if shutil.which("phpenmod"):
+            subprocess.run(["phpenmod", "-v", str(ver), "igbinary", "redis", "apcu"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     if not shutil.which("wp"):
         dest = "/usr/local/bin/wp"
         subprocess.run(

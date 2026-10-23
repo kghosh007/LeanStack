@@ -1383,7 +1383,12 @@ EOF
                 setfacl -x "u:${USER_NAME}" /run/valkey 2>/dev/null || true
                 setfacl -x "u:${USER_NAME}" /run/valkey/valkey.sock 2>/dev/null || true
             fi
-            valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+            local acl_del_res=""
+            acl_del_res=$(valkey-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
+            if [[ "$acl_del_res" != *"OK"* ]]; then
+                systemctl restart valkey 2>/dev/null || systemctl restart valkey-server 2>/dev/null || true
+                grant_valkey_socket
+            fi
         fi
 
         # 6. Tenant User Filesystem Removal
@@ -1564,7 +1569,12 @@ EOF
             rm -rf "/etc/angie/tenant-custom/${DOMAIN}" 2>/dev/null || true
             if [ -f /etc/valkey/users.acl ]; then
                 sed -i "/user ${USER_NAME} /d" /etc/valkey/users.acl 2>/dev/null || true
-                valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+                local acl_del_res=""
+                acl_del_res=$(valkey-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
+                if [[ "$acl_del_res" != *"OK"* ]]; then
+                    systemctl restart valkey 2>/dev/null || systemctl restart valkey-server 2>/dev/null || true
+                    grant_valkey_socket
+                fi
             fi
             if [ -n "$USER_NAME" ] && ! is_system_user "$USER_NAME"; then
                 userdel -r "$USER_NAME" 2>/dev/null || rm -rf "/home/${USER_NAME}"
@@ -1655,10 +1665,15 @@ define( 'NONCE_SALT',       '$(openssl rand -hex 32)' );"
             chown valkey:valkey "$ACL_FILE" 2>/dev/null || true
             chmod 640 "$ACL_FILE" 2>/dev/null || true
             grant_valkey_socket
+            local acl_add_res=""
             if command -v valkey-cli &>/dev/null; then
-                valkey-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+                acl_add_res=$(valkey-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
             elif command -v redis-cli &>/dev/null; then
-                redis-cli -s /run/valkey/valkey.sock acl load 2>/dev/null || true
+                acl_add_res=$(redis-cli -s /run/valkey/valkey.sock acl load 2>&1 || true)
+            fi
+            if [[ "$acl_add_res" != *"OK"* ]]; then
+                systemctl restart valkey 2>/dev/null || systemctl restart valkey-server 2>/dev/null || systemctl restart redis-server 2>/dev/null || true
+                grant_valkey_socket
             fi
         fi
 

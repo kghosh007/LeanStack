@@ -15,6 +15,8 @@ class LeanStackAPCu {
     private static $instance = null;
     private $enabled = false;
     private $prefix = '';
+    private $cron_checked = false;
+    private $loaded_from_apcu = false;
 
     public static function get_instance() {
         if ( null === self::$instance ) {
@@ -199,9 +201,10 @@ class LeanStackAPCu {
 
     // --- Alloptions Interception ---
     public function check_cron_status_invalidation() {
-        if ( ! $this->enabled ) {
+        if ( ! $this->enabled || $this->cron_checked ) {
             return;
         }
+        $this->cron_checked = true;
         $status_files = array();
         if ( defined( 'ABSPATH' ) ) {
             $doc_root = rtrim( ABSPATH, '/' );
@@ -237,8 +240,10 @@ class LeanStackAPCu {
         $success = false;
         $val = apcu_fetch( $this->key( 'opt', 'alloptions' ), $success );
         if ( $success && is_array( $val ) && ! empty( $val ) ) {
+            $this->loaded_from_apcu = true;
             return $val;
         }
+        $this->loaded_from_apcu = false;
         return $pre;
     }
 
@@ -246,14 +251,21 @@ class LeanStackAPCu {
         if ( ! $this->enabled || ! is_array( $alloptions ) || empty( $alloptions ) ) {
             return $alloptions;
         }
+        // Only store into APCu if this request did NOT already load alloptions from APCu,
+        // preventing costly write-lock thrashing and re-serialization on every get_option() call.
+        if ( $this->loaded_from_apcu ) {
+            return $alloptions;
+        }
         $cached_options = $alloptions;
         // Strictly exclude volatile 'cron' option so get_option('cron') never reads stale data from APCu
         unset( $cached_options['cron'] );
         apcu_store( $this->key( 'opt', 'alloptions' ), $cached_options, 3600 );
+        $this->loaded_from_apcu = true;
         return $alloptions;
     }
 
     public function invalidate_alloptions() {
+        $this->loaded_from_apcu = false;
         if ( ! $this->enabled ) {
             return;
         }

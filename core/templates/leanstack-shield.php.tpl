@@ -11,11 +11,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Auto-disable Query Monitor profiling during performance benchmarks
-if ( ! defined( 'QM_DISABLE' ) ) {
-    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_REQUEST['action'] ) ) ||
-         ( isset( $_GET['page'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_GET['page'] ) ) ||
-         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
-         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_REQUEST['action'] ) ) ||
+     ( isset( $_GET['page'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_GET['page'] ) ) ||
+     ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||
+     ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost|wp-performance|wphb/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {
+    if ( ! defined( 'QM_DISABLED' ) ) {
+        define( 'QM_DISABLED', true );
+    }
+    if ( ! defined( 'QM_DISABLE' ) ) {
         define( 'QM_DISABLE', true );
     }
 }
@@ -25,8 +28,11 @@ if ( ! defined( 'SAVEQUERIES' ) ) {
 
 // Eliminate query backtrace performance overhead during benchmark execution
 add_action( 'plugins_loaded', function() {
-    if ( defined( 'QM_DISABLE' ) && QM_DISABLE && isset( $GLOBALS['wpdb'] ) ) {
-        $GLOBALS['wpdb']->save_queries = false;
+    if ( ( defined( 'QM_DISABLED' ) && QM_DISABLED ) || ( defined( 'QM_DISABLE' ) && QM_DISABLE ) ) {
+        if ( isset( $GLOBALS['wpdb'] ) ) {
+            $GLOBALS['wpdb']->save_queries = false;
+        }
+        do_action( 'qm/cease' );
     }
 }, 0 );
 

@@ -1328,6 +1328,24 @@ opcache.jit_hot_loop = 1
             if not os.path.isdir(php_dir):
                 continue
             try:
+                if hasattr(os, "geteuid") and os.geteuid() == 0 and not self.dry_run and shutil.which("apt-get"):
+                    ext_probe = subprocess.run([f"php{p_ver}", "-m"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+                    ext_stdout = ext_probe.stdout.lower() if ext_probe.returncode == 0 else ""
+                    if any(ext not in ext_stdout for ext in ["redis", "apcu", "igbinary"]):
+                        pkgs = [
+                            f"php{p_ver}-fpm", f"php{p_ver}-cli", f"php{p_ver}-common",
+                            f"php{p_ver}-mysql", f"php{p_ver}-curl", f"php{p_ver}-mbstring",
+                            f"php{p_ver}-xml", f"php{p_ver}-zip", f"php{p_ver}-redis",
+                            f"php{p_ver}-igbinary", f"php{p_ver}-apcu", f"php{p_ver}-imagick",
+                            f"php{p_ver}-gd", f"php{p_ver}-intl", f"php{p_ver}-bcmath", f"php{p_ver}-soap"
+                        ]
+                        env = os.environ.copy()
+                        env["DEBIAN_FRONTEND"] = "noninteractive"
+                        subprocess.run(["apt-get", "install", "-y", "-qq", *pkgs], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        if shutil.which("phpenmod"):
+                            subprocess.run(["phpenmod", "-v", str(p_ver), "igbinary", "redis", "apcu"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                        reloaded = True
+
                 for target_sub in ["fpm", "cli"]:
                     conf_d = os.path.join(php_dir, target_sub, "conf.d")
                     if os.path.isdir(conf_d) and not self.dry_run:
@@ -1340,6 +1358,35 @@ opcache.jit_hot_loop = 1
                         if write_needed:
                             with open(opc_path, "w", encoding="utf-8") as f:
                                 f.write(opcache_ini_content)
+                            reloaded = True
+
+                        rt_path = os.path.join(conf_d, "98-leanstack-runtime.ini")
+                        if target_sub == "fpm":
+                            rt_content = (
+                                "expose_php = Off\nmemory_limit = 256M\nupload_max_filesize = 128M\n"
+                                "post_max_size = 128M\nmax_execution_time = 300\nmax_input_vars = 5000\n"
+                                "date.timezone = UTC\nsession.use_strict_mode = 1\nsession.cookie_httponly = 1\n"
+                                "session.cookie_secure = 1\nsession.cookie_samesite = Lax\n"
+                                "apc.enabled = 1\napc.shm_size = 64M\napc.ttl = 3600\n"
+                                "disable_functions = exec,passthru,shell_exec,system,proc_open,popen,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache\n"
+                            )
+                        else:
+                            rt_content = (
+                                "expose_php = Off\nmemory_limit = 256M\nupload_max_filesize = 128M\n"
+                                "post_max_size = 128M\nmax_execution_time = 300\nmax_input_vars = 5000\n"
+                                "date.timezone = UTC\nsession.use_strict_mode = 1\nsession.cookie_httponly = 1\n"
+                                "session.cookie_secure = 1\nsession.cookie_samesite = Lax\n"
+                                "apc.enable_cli = 0\n"
+                                "disable_functions = exec,passthru,shell_exec,system,dl,show_source,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache\n"
+                            )
+                        rt_needed = True
+                        if os.path.isfile(rt_path):
+                            with open(rt_path, "r", encoding="utf-8") as f_rt:
+                                if f_rt.read().strip() == rt_content.strip():
+                                    rt_needed = False
+                        if rt_needed:
+                            with open(rt_path, "w", encoding="utf-8") as f_rt:
+                                f_rt.write(rt_content)
                             reloaded = True
 
                     ini_path = os.path.join(php_dir, target_sub, "php.ini")
@@ -2199,13 +2246,16 @@ from           noreply@{domain}
                                 modified = True
 
                         # 4d. Auto-disable Query Monitor profiling during performance benchmarks
-                        if "QM_DISABLE" not in wpc:
+                        if "QM_DISABLED" not in wpc:
                             qm_snippet = (
                                 "\n// Auto-disable Query Monitor backtrace profiling on benchmark requests\n"
-                                "if ( ! defined( 'QM_DISABLE' ) ) {\n"
-                                "    if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_REQUEST['action'] ) ) ||\n"
-                                "         ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||\n"
-                                "         ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {\n"
+                                "if ( ( isset( $_REQUEST['action'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_REQUEST['action'] ) ) ||\n"
+                                "     ( isset( $_SERVER['HTTP_X_BENCHMARK'] ) ) ||\n"
+                                "     ( isset( $_SERVER['REQUEST_URI'] ) && preg_match( '/benchmark|divewp|boost/i', (string) $_SERVER['REQUEST_URI'] ) ) ) {\n"
+                                "    if ( ! defined( 'QM_DISABLED' ) ) {\n"
+                                "        define( 'QM_DISABLED', true );\n"
+                                "    }\n"
+                                "    if ( ! defined( 'QM_DISABLE' ) ) {\n"
                                 "        define( 'QM_DISABLE', true );\n"
                                 "    }\n"
                                 "}\n"
@@ -2234,6 +2284,7 @@ from           noreply@{domain}
                         redis_optimizations = [
                             ("WP_REDIS_DISABLE_METRICS", "define( 'WP_REDIS_DISABLE_METRICS', true );"),
                             ("WP_REDIS_SELECTIVE_FLUSH", "define( 'WP_REDIS_SELECTIVE_FLUSH', true );"),
+                            ("WP_REDIS_GRACEFUL", "define( 'WP_REDIS_GRACEFUL', true );"),
                             ("WP_REDIS_PERSISTENT", "define( 'WP_REDIS_PERSISTENT', true );"),
                             ("WP_REDIS_IGBINARY", "define( 'WP_REDIS_IGBINARY', true );"),
                             ("WP_REDIS_LOAD_APEXCHARTS", "define( 'WP_REDIS_LOAD_APEXCHARTS', false );"),
@@ -2409,7 +2460,11 @@ from           noreply@{domain}
                             ]
                             cli_cmd = next((c for c in cli_candidates if c), None)
                             if cli_cmd:
-                                subprocess.run([cli_cmd, "-s", valkey_sock, "acl", "load"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                                acl_proc = subprocess.run([cli_cmd, "-s", valkey_sock, "acl", "load"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+                                if "OK" not in acl_proc.stdout and "OK" not in acl_proc.stderr:
+                                    # If user default off is in effect, valkey-cli acl load fails with NOAUTH.
+                                    # Restart valkey service to cleanly read /etc/valkey/users.acl.
+                                    subprocess.run(["systemctl", "restart", "valkey"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                                 subprocess.run([cli_cmd, "-s", valkey_sock, "config", "set", "lua-time-limit", "500"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                             valkey_conf_file = "/etc/valkey/valkey.conf"
                             if os.path.exists(valkey_conf_file):

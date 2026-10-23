@@ -72,8 +72,8 @@ run_site_cron() {
         wp_bin="$(command -v wp)"
     fi
 
-    if [ -d "$site_path" ] && [ -n "$php_bin" ] && [ -n "$wp_bin" ]; then
-        # Open basedir must permit WP-CLI execution, temporary directories, socket paths, SSL certs, and tenant roots
+    if [ -d "$site_path" ] && [ -n "$php_bin" ]; then
+        # Open basedir must permit WordPress execution, tenant temporary directories, socket paths, SSL certs, and tenant roots
         local allowed_paths="/home/${user}/"
         if [[ "$site_path" != "/home/${user}"* ]]; then
             allowed_paths="${allowed_paths}:${site_path}/"
@@ -109,10 +109,11 @@ run_site_cron() {
             local mem="$3"
             local cnt="$4"
             local iso="$5"
+            local run_status="${6:-completed}"
 
             local py_script="
 import json, os, sys
-meta_file, dur, cpu, mem, cnt, iso = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5]), sys.argv[6]
+meta_file, dur, cpu, mem, cnt, iso, run_status = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5]), sys.argv[6], sys.argv[7]
 data = {}
 if os.path.exists(meta_file):
     try:
@@ -130,7 +131,8 @@ hist.insert(0, {
     'cpu_ms': cpu,
     'memory_mb': mem,
     'events_processed': cnt,
-    'ran_via': 'ls-cron-queue'
+    'ran_via': 'ls-cron-queue',
+    'status': run_status
 })
 hist = hist[:20]
 
@@ -142,7 +144,7 @@ total_events = int(data.get('total_events_processed', 0)) + cnt
 
 data.update({
     'last_run': iso,
-    'status': 'completed',
+    'status': run_status,
     'ran_via': 'ls-cron-queue',
     'duration_ms': dur,
     'cpu_ms': cpu,
@@ -161,12 +163,12 @@ with open(meta_file, 'w') as f:
     json.dump(data, f, indent=2)
 "
             if [ -d "$status_dir" ]; then
-                python3 -c "$py_script" "$cron_meta_file" "$dur" "$cpu" "$mem" "$cnt" "$iso" 2>/dev/null || true
+                python3 -c "$py_script" "$cron_meta_file" "$dur" "$cpu" "$mem" "$cnt" "$iso" "$run_status" 2>/dev/null || true
                 chown "${user}:www-data" "$cron_meta_file" 2>/dev/null || true
                 chmod 664 "$cron_meta_file" 2>/dev/null || true
             fi
             if [ -d "$alt_status_dir" ]; then
-                python3 -c "$py_script" "$alt_cron_meta_file" "$dur" "$cpu" "$mem" "$cnt" "$iso" 2>/dev/null || true
+                python3 -c "$py_script" "$alt_cron_meta_file" "$dur" "$cpu" "$mem" "$cnt" "$iso" "$run_status" 2>/dev/null || true
                 chown "${user}:www-data" "$alt_cron_meta_file" 2>/dev/null || true
                 chmod 664 "$alt_cron_meta_file" 2>/dev/null || true
             fi
@@ -181,7 +183,77 @@ with open(meta_file, 'w') as f:
             chown "${user}:${user}" "/home/${user}/tmp" 2>/dev/null || true
         fi
 
-        # Run WP-CLI cron event runner as tenant user within site root with strict PHP sandboxing
+        # Execute due WordPress cron hooks natively in PHP without WP-CLI proc_open dependency
+        local eval_php='
+@ini_set("display_errors", "0");
+if (function_exists("ignore_user_abort")) {
+    @ignore_user_abort(true);
+}
+$t0 = microtime(true);
+$r0 = function_exists("getrusage") ? getrusage() : null;
+$site_path = isset($argv[1]) ? rtrim($argv[1], "/") : "";
+$domain = isset($argv[2]) && $argv[2] !== "" ? $argv[2] : "localhost";
+$_SERVER["HTTP_HOST"] = $domain;
+$_SERVER["SERVER_NAME"] = $domain;
+$_SERVER["REQUEST_URI"] = "/wp-cron.php";
+$_SERVER["REQUEST_METHOD"] = "GET";
+$_SERVER["SERVER_PROTOCOL"] = "HTTP/1.1";
+$_SERVER["HTTPS"] = "on";
+if (!defined("DOING_CRON")) {
+    define("DOING_CRON", true);
+}
+if ($site_path === "" || !file_exists($site_path . "/wp-load.php")) {
+    fwrite(STDERR, "LeanStack cron runner: wp-load.php not found in " . $site_path . "\n");
+    exit(1);
+}
+@chdir($site_path);
+require_once $site_path . "/wp-load.php";
+if (function_exists("wp_raise_memory_limit")) {
+    wp_raise_memory_limit("cron");
+}
+$cron_array = function_exists("_get_cron_array") ? _get_cron_array() : array();
+$executed = 0;
+$now = time();
+if (!empty($cron_array) && is_array($cron_array)) {
+    foreach ($cron_array as $timestamp => $hooks) {
+        if ($timestamp <= $now && is_array($hooks)) {
+            foreach ($hooks as $hook => $keys) {
+                if (!is_array($keys)) {
+                    continue;
+                }
+                foreach ($keys as $k => $data) {
+                    $schedule = isset($data["schedule"]) ? $data["schedule"] : false;
+                    $args = isset($data["args"]) ? $data["args"] : array();
+                    if ($schedule) {
+                        wp_reschedule_event($timestamp, $schedule, $hook, $args);
+                    }
+                    wp_unschedule_event($timestamp, $hook, $args);
+                    do_action_ref_array($hook, $args);
+                    $executed++;
+                }
+            }
+        }
+    }
+}
+if (function_exists("delete_transient")) {
+    delete_transient("doing_cron");
+}
+if ($executed > 0 && function_exists("wp_cache_delete")) {
+    wp_cache_delete("alloptions", "options");
+    wp_cache_delete("cron", "options");
+}
+$dur = round((microtime(true) - $t0) * 1000, 2);
+$cpu = 0;
+if ($r0 && function_exists("getrusage")) {
+    $r1 = getrusage();
+    $utime = ($r1["ru_utime.tv_sec"] - $r0["ru_utime.tv_sec"]) + ($r1["ru_utime.tv_usec"] - $r0["ru_utime.tv_usec"]) / 1e6;
+    $stime = ($r1["ru_stime.tv_sec"] - $r0["ru_stime.tv_sec"]) + ($r1["ru_stime.tv_usec"] - $r0["ru_stime.tv_usec"]) / 1e6;
+    $cpu = round(($utime + $stime) * 1000, 2);
+}
+$mem = round(memory_get_peak_usage(true) / 1048576, 2);
+echo "LS_TELEMETRY:{$dur}:{$cpu}:{$mem}:{$executed}\n";
+'
+
         local cron_out=""
         cron_out=$(
             cd "$site_path" 2>/dev/null || true
@@ -195,8 +267,8 @@ with open(meta_file, 'w') as f:
             local t0 t1 tel_dur
             t0=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
 
-            out=$(timeout 60 env TMPDIR="/home/${user}/tmp" WP_CLI_DISABLE_AUTO_CHECK_UPDATE=1 COLUMNS=80 TERM=dumb \
-                "${sudo_cmd[@]}" "$php_bin" \
+            out=$(timeout 60 "${sudo_cmd[@]}" env TMPDIR="/home/${user}/tmp" WP_CLI_DISABLE_AUTO_CHECK_UPDATE=1 COLUMNS=80 TERM=dumb \
+                "$php_bin" \
                 -d sys_temp_dir="/home/${user}/tmp" \
                 -d upload_tmp_dir="/home/${user}/tmp" \
                 -d session.save_path="/home/${user}/tmp" \
@@ -204,7 +276,7 @@ with open(meta_file, 'w') as f:
                 -d disable_functions="${disabled_funcs}" \
                 -d display_errors=Off \
                 -d error_reporting="E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED" \
-                "$wp_bin" cron event run --due-now --path="$site_path" 2> "$err_tmp" || true)
+                -r "$eval_php" -- "$site_path" "$domain" 2> "$err_tmp" || true)
 
             t1=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
             tel_dur=$((t1 - t0))
@@ -216,25 +288,30 @@ with open(meta_file, 'w') as f:
             fi
             rm -f "$err_tmp"
 
-            local tel_count=0
-            if [[ "$out" =~ Executed\ a\ total\ of\ ([0-9]+)\ cron\ events ]]; then
-                tel_count="${BASH_REMATCH[1]}"
-            elif [[ "$out" =~ Executed\ the\ cron\ event ]]; then
-                tel_count=$(grep -c "Executed the cron event" <<< "$out" || echo 0)
+            if [[ "$out" =~ LS_TELEMETRY:([0-9.]+):([0-9.]+):([0-9.]+):([0-9]+) ]]; then
+                echo "LS_TELEMETRY:${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}:${BASH_REMATCH[4]}"
+            else
+                echo "LS_CRON_FAIL:${tel_dur}"
             fi
-
-            echo "LS_CRON_EXEC:${tel_dur}:${tel_count}"
         )
 
         local tel_dur=0
+        local tel_cpu=0
+        local tel_mem=0
         local tel_count=0
-        if [[ "$cron_out" =~ LS_CRON_EXEC:([0-9.]+):([0-9]+) ]]; then
+        local tel_status="completed"
+        if [[ "$cron_out" =~ LS_TELEMETRY:([0-9.]+):([0-9.]+):([0-9.]+):([0-9]+) ]]; then
             tel_dur="${BASH_REMATCH[1]}"
-            tel_count="${BASH_REMATCH[2]}"
+            tel_cpu="${BASH_REMATCH[2]}"
+            tel_mem="${BASH_REMATCH[3]}"
+            tel_count="${BASH_REMATCH[4]}"
+        elif [[ "$cron_out" =~ LS_CRON_FAIL:([0-9.]+) ]]; then
+            tel_dur="${BASH_REMATCH[1]}"
+            tel_status="failed"
         fi
         local iso_now
         iso_now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        update_cron_telemetry "$tel_dur" "0" "0" "$tel_count" "$iso_now"
+        update_cron_telemetry "$tel_dur" "$tel_cpu" "$tel_mem" "$tel_count" "$iso_now" "$tel_status"
     fi
 }
 export -f run_site_cron

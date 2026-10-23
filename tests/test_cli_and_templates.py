@@ -960,12 +960,23 @@ class TestProfilesAndTemplates(unittest.TestCase):
         self.assertIn('local df_strict="exec,passthru,shell_exec,system,proc_open,popen,curl_multi_exec,parse_ini_file,show_source,dl,opcache_reset,opcache_flush,apcu_clear_cache,apc_clear_cache"', watcher_content)
 
     def test_ls_cron_queue_sudo_arguments(self):
-        """Verify ls-cron-queue uses sudo -u "$user" -H without --chdir to avoid sudoers CWD permission errors."""
+        """Verify ls-cron-queue uses sudo -u "$user" -H without --chdir and runs native PHP cron loop without WP-CLI proc_open."""
         cq_path = os.path.join(BASE_DIR, "core", "bin", "ls-cron-queue")
         with open(cq_path, "r") as f:
             cq_content = f.read()
         self.assertIn('sudo_cmd=(sudo -u "$user" -H)', cq_content)
         self.assertNotIn('--chdir', cq_content)
+        self.assertIn('"_get_cron_array"', cq_content)
+        self.assertIn('do_action_ref_array($hook, $args);', cq_content)
+        self.assertIn('LS_TELEMETRY:', cq_content)
+        self.assertIn('"${sudo_cmd[@]}" env TMPDIR="/home/${user}/tmp"', cq_content)
+        self.assertNotIn('cron event run --due-now', cq_content)
+
+        for unit_name in ("cp-cron.service", "cp-cron.timer"):
+            unit_path = os.path.join(BASE_DIR, "systemd", unit_name)
+            with open(unit_path, "r") as f:
+                unit_content = f.read()
+            self.assertNotIn("Alias=ls-cron.", unit_content)
 
     def test_ls_cron_queue_surfaces_sandbox_warnings(self):
         """Verify ls-cron-queue does not filter or suppress open_basedir sandbox errors."""

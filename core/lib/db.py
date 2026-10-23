@@ -48,7 +48,7 @@ def query(db_path: str, sql: str, params: List[Any] = None) -> List[sqlite3.Row]
         conn.close()
 
 
-def site_info(db_path: str, domain: str, json_mode: bool = False) -> int:
+def site_info(db_path: str, domain: str, json_mode: bool = False, show_credentials: bool = False) -> int:
     if not os.path.exists(db_path):
         if json_mode:
             print(json.dumps({"error": "Database not initialized"}, indent=2))
@@ -69,11 +69,12 @@ def site_info(db_path: str, domain: str, json_mode: bool = False) -> int:
             return 1
 
         d = dict(row)
-        # Redact secrets strictly (LS-07)
-        if "db_pass" in d:
-            d["db_pass"] = "[REDACTED]"
-        if "admin_pass" in d:
-            d["admin_pass"] = "[REDACTED]"
+        # Redact secrets strictly by default (LS-07), reveal only when explicitly requested
+        if not show_credentials:
+            if "db_pass" in d:
+                d["db_pass"] = "[REDACTED]"
+            if "admin_pass" in d:
+                d["admin_pass"] = "[REDACTED]"
 
         if json_mode:
             print(json.dumps(d, indent=2))
@@ -90,8 +91,12 @@ def site_info(db_path: str, domain: str, json_mode: bool = False) -> int:
             print(f"Cache Prefix:    {d.get('cache_prefix', '')}")
             print(f"Admin Email:     {d.get('admin_email', '')}")
             print(f"Admin User:      {d.get('admin_user', '')}")
+            if show_credentials:
+                print(f"Admin Pass:      {d.get('admin_pass', '')}")
             print(f"Cloudflare:      {'Enabled' if d.get('is_cf') else 'Disabled'}")
             print(f"Created At:      {d.get('created_at', '')}")
+            if not show_credentials:
+                print("Tip: Use --show-credentials to reveal DB and WordPress admin passwords.")
             print("==========================================================")
         return 0
     finally:
@@ -147,8 +152,10 @@ def main():
 
     elif cmd == "site-info":
         domain = sys.argv[3] if len(sys.argv) > 3 else ""
-        json_mode = "--json" in sys.argv[4:] or (len(sys.argv) > 4 and sys.argv[4] == "1")
-        code = site_info(db_path, domain, json_mode)
+        args = sys.argv[4:]
+        json_mode = "--json" in args or (len(args) > 0 and args[0] == "1")
+        show_creds = "--show-credentials" in args or "--show-passwords" in args or "--reveal" in args or (len(args) > 1 and args[1] == "1")
+        code = site_info(db_path, domain, json_mode, show_creds)
         sys.exit(code)
 
     elif cmd == "cron-sites":

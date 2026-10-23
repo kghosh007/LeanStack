@@ -1731,6 +1731,75 @@ exit 0
         self.assertIn("Core update and schema migration failed", autoupdate_code)
         self.assertIn("rollback_system", autoupdate_code)
 
+    def test_site_info_show_credentials_flag(self):
+        """Verify site:info hides credentials by default and reveals them when --show-credentials is supplied."""
+        import tempfile
+        import sqlite3
+        import io
+        from contextlib import redirect_stdout
+        sys.path.insert(0, os.path.join(BASE_DIR, "core", "lib"))
+        import db
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = os.path.join(tmp_dir, "sites.db")
+            schema_sql = """
+            CREATE TABLE IF NOT EXISTS sites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT UNIQUE NOT NULL,
+                user TEXT NOT NULL,
+                php_version TEXT NOT NULL,
+                pool_type TEXT NOT NULL,
+                pool_mode TEXT DEFAULT 'dynamic',
+                memory_limit TEXT DEFAULT '256M',
+                table_prefix TEXT DEFAULT 'wp_',
+                is_cf INTEGER DEFAULT 0,
+                profile_used TEXT DEFAULT 'default',
+                site_path TEXT NOT NULL,
+                db_name TEXT NOT NULL,
+                db_user TEXT NOT NULL,
+                db_pass TEXT NOT NULL,
+                admin_user TEXT NOT NULL,
+                admin_pass TEXT NOT NULL,
+                admin_email TEXT NOT NULL,
+                wp_version TEXT DEFAULT 'latest',
+                cache_prefix TEXT DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+            conn = db.get_connection(db_path)
+            conn.executescript(schema_sql)
+            conn.execute(
+                "INSERT INTO sites (domain, user, php_version, pool_type, pool_mode, memory_limit, table_prefix, is_cf, profile_used, site_path, db_name, db_user, db_pass, admin_user, admin_pass, admin_email, wp_version, cache_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("secret.test", "sec_user", "8.5", "dedicated", "ondemand", "256M", "wp_", 0, "default", "/home/sec", "sec_db", "sec_u", "super_secret_db_pass", "admin", "super_secret_admin_pass", "admin@secret.test", "6.5", "pref_")
+            )
+            conn.commit()
+            conn.close()
+
+            # 1. Default (redacted)
+            buf_default = io.StringIO()
+            with redirect_stdout(buf_default):
+                db.site_info(db_path, "secret.test", json_mode=False, show_credentials=False)
+            out_default = buf_default.getvalue()
+            self.assertIn("DB Pass:         [REDACTED]", out_default)
+            self.assertNotIn("super_secret_db_pass", out_default)
+            self.assertNotIn("super_secret_admin_pass", out_default)
+
+            # 2. Revealed with show_credentials=True
+            buf_revealed = io.StringIO()
+            with redirect_stdout(buf_revealed):
+                db.site_info(db_path, "secret.test", json_mode=False, show_credentials=True)
+            out_revealed = buf_revealed.getvalue()
+            self.assertIn("DB Pass:         super_secret_db_pass", out_revealed)
+            self.assertIn("Admin Pass:      super_secret_admin_pass", out_revealed)
+
+            # 3. JSON with show_credentials=True
+            buf_json = io.StringIO()
+            with redirect_stdout(buf_json):
+                db.site_info(db_path, "secret.test", json_mode=True, show_credentials=True)
+            data = json.loads(buf_json.getvalue())
+            self.assertEqual(data["db_pass"], "super_secret_db_pass")
+            self.assertEqual(data["admin_pass"], "super_secret_admin_pass")
+
     def test_provision_delete_transactions_and_resource_caps_phase5(self):
         """Verify Phase 5 fixes: LS-10 error cleanup trap, LS-11 cache_prefix tracking, LS-12 worker budget, LS-17 domain & dump guardrails."""
         lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")

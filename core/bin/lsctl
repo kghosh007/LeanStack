@@ -1003,16 +1003,18 @@ for r in rows:
         fi
         init_db
         TARGET_DOMAIN="${2:-}"
-        [ -z "$TARGET_DOMAIN" ] && { echo "Usage: lsctl site:info <domain> [--json]"; exit 1; }
+        [ -z "$TARGET_DOMAIN" ] && { echo "Usage: lsctl site:info <domain> [--json] [--show-credentials]"; exit 1; }
         validate_domain "$TARGET_DOMAIN" || exit 1
 
         JSON_MODE=0
+        SHOW_SECRETS=0
         for arg in "$@"; do
             [ "$arg" == "--json" ] && JSON_MODE=1
+            [ "$arg" == "--show-credentials" ] || [ "$arg" == "--show-passwords" ] || [ "$arg" == "--reveal" ] && SHOW_SECRETS=1
         done
 
         if [ -f "${LIB_DIR}/db.py" ]; then
-            python3 "${LIB_DIR}/db.py" site-info "$DB_FILE" "$TARGET_DOMAIN" "$JSON_MODE"
+            python3 "${LIB_DIR}/db.py" site-info "$DB_FILE" "$TARGET_DOMAIN" "$JSON_MODE" "$SHOW_SECRETS"
         else
             python3 -c "
 import sqlite3, json, sys

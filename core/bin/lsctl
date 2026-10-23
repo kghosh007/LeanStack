@@ -1837,7 +1837,15 @@ EOF
             for PLUG in $PLUGINS; do
                 sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" plugin install "$PLUG" --activate --path="${WEB_ROOT}" 2>/dev/null || true
             done
-            [ "$CACHE_ARG" == "on" ] && sudo -u "${USER_NAME}" "$PHP_BIN" "$WP_BIN" redis enable --path="${WEB_ROOT}" 2>/dev/null || true
+            if [ -d "${WEB_ROOT}/wp-content/plugins/redis-cache" ]; then
+                DROPIN_SRC="${WEB_ROOT}/wp-content/plugins/redis-cache/includes/object-cache.php"
+                [ ! -f "$DROPIN_SRC" ] && DROPIN_SRC="${WEB_ROOT}/wp-content/plugins/redis-cache/object-cache.php"
+                if [ -f "$DROPIN_SRC" ]; then
+                    cp -f "$DROPIN_SRC" "${WEB_ROOT}/wp-content/object-cache.php"
+                    chown "${USER_NAME}:www-data" "${WEB_ROOT}/wp-content/object-cache.php"
+                    chmod 644 "${WEB_ROOT}/wp-content/object-cache.php"
+                fi
+            fi
         fi
 
         # Install Theme

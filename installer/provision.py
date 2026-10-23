@@ -479,6 +479,13 @@ def write_files(root, files):
             handle.write(content)
         if rel.endswith("users.acl") or rel.endswith("valkey.conf"):
             os.chmod(dest, 0o640)
+            try:
+                import pwd, grp
+                v_u = pwd.getpwnam("valkey")
+                v_g = grp.getgrnam("valkey")
+                os.chown(dest, v_u.pw_uid, v_g.gr_gid)
+            except Exception:
+                pass
 
 
 def _run(cmd):
@@ -591,25 +598,66 @@ def configure_sury_php_repo(target_root="/"):
         return False
 
 
+def configure_angie_repo(target_root="/"):
+    """Configures the official Angie web server repository."""
+    keyrings_dir = os.path.join(target_root, "etc/apt/trusted.gpg.d")
+    keyring_file = os.path.join(keyrings_dir, "angie-signing.gpg")
+    sources_dir = os.path.join(target_root, "etc/apt/sources.list.d")
+    sources_file = os.path.join(sources_dir, "angie.list")
+
+    os_info = {"ID": "ubuntu", "VERSION_ID": "24.04", "VERSION_CODENAME": "noble"}
+    os_release = os.path.join(target_root, "etc/os-release")
+    if os.path.exists(os_release):
+        try:
+            with open(os_release) as f:
+                for line in f:
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip().strip('"\'')
+                    if k in os_info:
+                        os_info[k] = v
+        except Exception:
+            pass
+
+    try:
+        os.makedirs(keyrings_dir, exist_ok=True)
+        os.makedirs(sources_dir, exist_ok=True)
+        if not os.path.exists(keyring_file) or os.path.getsize(keyring_file) == 0:
+            res = subprocess.run(
+                ["curl", "-fsSL", "--connect-timeout", "10", "--retry", "3", "https://angie.software/keys/angie-signing.gpg", "-o", keyring_file],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+            )
+            if res.returncode == 0 and os.path.exists(keyring_file):
+                os.chmod(keyring_file, 0o644)
+
+        repo_url = f"https://download.en.angie.software/angie/{os_info['ID']}/{os_info['VERSION_ID']} {os_info['VERSION_CODENAME']} main\n"
+        with open(sources_file, "w") as f:
+            f.write(f"deb {repo_url}")
+        return True
+    except Exception:
+        return False
+
+
 def install_packages(php_versions):
     """Install host packages. Runs only when applying onto / as root."""
     configure_sury_php_repo("/")
+    configure_angie_repo("/")
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
+    dpkg_opts = ["-o", "Dpkg::Options::=--force-confold", "-o", "Dpkg::Options::=--force-confdef"]
     base = [
         "curl", "ca-certificates", "gnupg", "lsb-release", "sqlite3", "git",
         "msmtp", "msmtp-mta", "mysqltuner", "zram-tools", "cpufrequtils",
         "htop", "iotop", "iftop", "net-tools", "unattended-upgrades",
     ]
     _run(["apt-get", "update", "-qq"])
-    subprocess.run(["apt-get", "install", "-y", "-qq", *base], env=env, check=False)
+    subprocess.run(["apt-get", "install", "-y", "-qq", *dpkg_opts, *base], env=env, check=False)
     if not shutil.which("valkey-server") and not shutil.which("redis-server"):
-        subprocess.run(["apt-get", "install", "-y", "-qq", "valkey-server", "valkey-tools"], env=env, check=False)
+        subprocess.run(["apt-get", "install", "-y", "-qq", *dpkg_opts, "valkey-server", "valkey-tools"], env=env, check=False)
     if not shutil.which("mariadb"):
-        subprocess.run(["apt-get", "install", "-y", "-qq", "mariadb-server", "mariadb-client"], env=env, check=False)
+        subprocess.run(["apt-get", "install", "-y", "-qq", *dpkg_opts, "mariadb-server", "mariadb-client"], env=env, check=False)
     if not shutil.which("angie"):
         subprocess.run(
-            ["apt-get", "install", "-y", "-qq", "angie", "angie-module-brotli", "angie-module-cache-purge"],
+            ["apt-get", "install", "-y", "-qq", *dpkg_opts, "angie", "angie-module-brotli", "angie-module-cache-purge"],
             env=env,
             check=False,
         )
@@ -621,7 +669,7 @@ def install_packages(php_versions):
             f"php{ver}-igbinary", f"php{ver}-apcu", f"php{ver}-imagick",
             f"php{ver}-gd", f"php{ver}-intl", f"php{ver}-bcmath", f"php{ver}-soap"
         ]
-        subprocess.run(["apt-get", "install", "-y", "-qq", *pkgs, "msmtp", "msmtp-mta"], env=env, check=False)
+        subprocess.run(["apt-get", "install", "-y", "-qq", *dpkg_opts, *pkgs, "msmtp", "msmtp-mta"], env=env, check=False)
         if shutil.which("phpenmod"):
             subprocess.run(["phpenmod", "-v", str(ver), "igbinary", "redis", "apcu"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     if not shutil.which("wp"):
@@ -643,6 +691,8 @@ def host_services(php_versions):
     heal_grubenv()
     _run(["groupadd", "-f", "valkey"])
     _run(["groupadd", "-f", "tenants"])
+    _run(["chown", "-R", "valkey:valkey", "/etc/valkey"])
+    _run(["chmod", "750", "/etc/valkey"])
     _run(["systemctl", "enable", "valkey.service"])
     _run(["systemctl", "restart", "valkey.service"])
     sockets_bin = os.path.join(_repo_root(), "core", "bin", "ls-valkey-sockets")
@@ -651,6 +701,22 @@ def host_services(php_versions):
     elif shutil.which("ls-valkey-sockets"):
         _run(["ls-valkey-sockets"])
     _run(["systemctl", "restart", "mariadb"])
+    # Ensure TLS session ticket key exists for Angie
+    os.makedirs("/etc/angie", exist_ok=True)
+    ticket_key = "/etc/angie/tls_session_ticket.key"
+    if not os.path.exists(ticket_key) or os.path.getsize(ticket_key) == 0:
+        subprocess.run(["openssl", "rand", "-out", ticket_key, "48"], check=False)
+        if os.path.exists(ticket_key):
+            os.chmod(ticket_key, 0o600)
+    # Ensure fallback SSL key and cert exist
+    ssl_dir = "/etc/angie/ssl"
+    os.makedirs(ssl_dir, exist_ok=True)
+    if not os.path.exists(f"{ssl_dir}/default.key"):
+        subprocess.run(["openssl", "req", "-x509", "-nodes", "-days", "3650", "-newkey", "rsa:2048",
+                        "-keyout", f"{ssl_dir}/default.key", "-out", f"{ssl_dir}/default.crt",
+                        "-subj", "/CN=localhost"], check=False)
+        if os.path.exists(f"{ssl_dir}/default.key"):
+            os.chmod(f"{ssl_dir}/default.key", 0o600)
     snippets = os.path.join(_repo_root(), "core", "snippets")
     if os.path.isdir(snippets):
         os.makedirs("/etc/angie/snippets", exist_ok=True)

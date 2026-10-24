@@ -215,6 +215,95 @@ grant_valkey_socket() {
     fi
 }
 
+send_site_credentials_email() {
+    local domain="$1"
+    local admin_user="$2"
+    local admin_pass="$3"
+    local admin_email="$4"
+    local db_name="$5"
+    local db_user="$6"
+    local db_pass="$7"
+    local table_prefix="$8"
+    local php_ver="$9"
+    local profile="${10}"
+    local user_name="${11}"
+    local web_root="${12}"
+
+    [ -z "$admin_email" ] && return 0
+
+    local mail_subject="[LeanStack] WordPress Credentials: https://${domain}"
+    local mail_body="Hello,
+
+Your WordPress instance for https://${domain} has been successfully provisioned by LeanStack.
+
+==============================================================================
+WORDPRESS ACCESS CREDENTIALS
+==============================================================================
+Site URL:         https://${domain}
+Admin Login URL:  https://${domain}/wp-login.php
+Admin Username:   ${admin_user}
+Admin Password:   ${admin_pass}
+Admin Email:      ${admin_email}
+
+==============================================================================
+DATABASE DETAILS
+==============================================================================
+Database Name:    ${db_name}
+Database User:    ${db_user}
+Database Pass:    ${db_pass}
+Table Prefix:     ${table_prefix}
+Database Host:    localhost (UNIX Socket /run/mysqld/mysqld.sock)
+
+==============================================================================
+ARCHITECTURE & DEPLOYMENT
+==============================================================================
+Profile Used:     ${profile}
+PHP Version:      PHP ${php_ver}
+Tenant User:      ${user_name}
+Web Root:         ${web_root}
+FastCGI Cache:    Active (Angie Enterprise Microcaching)
+Object Cache:     Active (Valkey Socket DB 0)
+Created At:       $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+==============================================================================
+-- 
+LeanStack Autonomous Control Plane
+"
+
+    local dispatched=0
+
+    # Non-SMTP Attempt 1: Direct OS sendmail / msmtp MTA pipe
+    if command -v sendmail &>/dev/null; then
+        sendmail -t -i <<EOF 2>/dev/null || true
+To: ${admin_email}
+From: LeanStack <noreply@${domain}>
+Subject: ${mail_subject}
+Date: $(date -R)
+Content-Type: text/plain; charset=UTF-8
+
+${mail_body}
+EOF
+        dispatched=1
+    fi
+
+    # Non-SMTP Attempt 2: WordPress Core native wp_mail() via WP-CLI
+    if [ "$dispatched" -eq 0 ] && [ -x "$PHP_BIN" ] && [ -x "$WP_BIN" ] && [ -d "$web_root" ]; then
+        sudo -u "${user_name}" "$PHP_BIN" "$WP_BIN" eval '
+        $to = $args[0];
+        $subj = $args[1];
+        $body = $args[2];
+        $from = "noreply@" . $args[3];
+        $headers = array("From: LeanStack <" . $from . ">", "Content-Type: text/plain; charset=UTF-8");
+        wp_mail($to, $subj, $body, $headers);
+        ' "$admin_email" "$mail_subject" "$mail_body" "$domain" --path="${web_root}" >/dev/null 2>&1 || true
+        dispatched=1
+    fi
+
+    if [ "$dispatched" -eq 1 ]; then
+        echo "✔ Non-SMTP provisioning credentials dispatched to ${admin_email}"
+    fi
+}
+
 if [ -n "${LEANSTACK_ROOT:-}" ]; then
     BACKUP_DIR="${LEANSTACK_ROOT}/var/backups/lsctl/trash"
 else
@@ -379,8 +468,8 @@ Options for wp:create:
     --profile=agency_woocommerce (Default: default)
     --php=8.5                    (Default: 8.5)
     --pool-mode=ondemand         (ondemand, dynamic, or static)
-    --admin-user=user            (Overrides profile default)
-    --admin-email=me@site.com    (Overrides profile default)
+    --admin-user=user            (Default: unique random admin_<6chars>)
+    --admin-email=me@site.com    (Prompted interactively if omitted)
     --admin-pass=secret          (Auto-generates if omitted)
     --memory-limit=512M          (Overrides profile default)
     --cf                         (Enables Cloudflare Proxy & SSL headers)
@@ -872,92 +961,25 @@ PY
 
     profile:create)
         require_root
-        P_NAME="${2:-}"
-        [ -z "$P_NAME" ] && { echo "Usage: sudo lsctl profile:create <name> [--description=...] [--php=8.5] [--mem=256M] [--cf]"; exit 1; }
-
-        DESC="Custom agency profile"
-        PHP="8.5"
-        MEM="256M"
-        POOL="ondemand"
-        CF="false"
-        THEME="twentytwentyfour"
-
-        for arg in "$@"; do
-            case $arg in
-                --description=*) DESC="${arg#*=}" ;;
-                --php=*) PHP="${arg#*=}" ;;
-                --mem=*|--memory-limit=*) MEM="${arg#*=}" ;;
-                --pool-mode=*) POOL="${arg#*=}" ;;
-                --cf) CF="true" ;;
-                --theme=*) THEME="${arg#*=}" ;;
-            esac
-        done
-
-        python3 - "$PROFILES_FILE" "$P_NAME" "$DESC" "$PHP" "$MEM" "$POOL" "$CF" "$THEME" << 'PY'
-import yaml, sys
-p_file = sys.argv[1]
-p_name = sys.argv[2]
-desc = sys.argv[3]
-php = sys.argv[4]
-mem = sys.argv[5]
-pool = sys.argv[6]
-cf = sys.argv[7].lower() == "true"
-theme = sys.argv[8]
-
-try:
-    with open(p_file, "r") as f:
-        profiles = yaml.safe_load(f) or {}
-    if p_name in profiles:
-        print(f"ERROR: Profile '{p_name}' already exists.", file=sys.stderr)
-        sys.exit(1)
-    profiles[p_name] = {
-        "description": desc,
-        "admin_user": "admin",
-        "admin_email": "admin@example.com",
-        "php": php,
-        "pool_mode": pool,
-        "memory_limit": mem,
-        "timezone": "UTC",
-        "cache": "on",
-        "cf": cf,
-        "plugins": ["redis-cache"],
-        "theme": theme
-    }
-    with open(p_file, "w") as f:
-        yaml.dump(profiles, f, default_flow_style=False)
-    print(f"✅ Created new operational profile: {p_name}")
-except Exception as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    sys.exit(1)
-PY
-        exit 0
+        shift
+        if [ -f "${LIB_DIR}/profiles.py" ]; then
+            python3 "${LIB_DIR}/profiles.py" create "$PROFILES_FILE" "$@"
+        else
+            python3 -c "import sys; sys.path.insert(0, sys.argv[1]); from profiles import create_profile; sys.exit(create_profile(sys.argv[2], sys.argv[3:]))" "$LIB_DIR" "$PROFILES_FILE" "$@"
+        fi
+        exit $?
         ;;
 
     profile:delete|profile:rm)
         require_root
         P_NAME="${2:-}"
         [ -z "$P_NAME" ] && { echo "Usage: sudo lsctl profile:delete <name>"; exit 1; }
-        [ "$P_NAME" == "default" ] && { echo "ERROR: Cannot delete the default core profile."; exit 1; }
-
-        python3 - "$PROFILES_FILE" "$P_NAME" << 'PY'
-import yaml, sys
-p_file = sys.argv[1]
-p_name = sys.argv[2]
-try:
-    with open(p_file, "r") as f:
-        profiles = yaml.safe_load(f) or {}
-    if p_name not in profiles:
-        print(f"ERROR: Profile '{p_name}' does not exist.", file=sys.stderr)
-        sys.exit(1)
-    del profiles[p_name]
-    with open(p_file, "w") as f:
-        yaml.dump(profiles, f, default_flow_style=False)
-    print(f"🗑️ Removed profile: {p_name}")
-except Exception as e:
-    print(f"ERROR: {e}", file=sys.stderr)
-    sys.exit(1)
-PY
-        exit 0
+        if [ -f "${LIB_DIR}/profiles.py" ]; then
+            python3 "${LIB_DIR}/profiles.py" delete "$PROFILES_FILE" "$P_NAME"
+        else
+            python3 -c "import sys; sys.path.insert(0, sys.argv[1]); from profiles import delete_profile; sys.exit(delete_profile(sys.argv[2], sys.argv[3]))" "$LIB_DIR" "$PROFILES_FILE" "$P_NAME"
+        fi
+        exit $?
         ;;
 
     site:list)
@@ -1489,8 +1511,8 @@ except Exception:
             fi
         fi
 
-        P_ADMIN_USER=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_user', 'admin'))" "$PROFILE_DATA")
-        P_ADMIN_EMAIL=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_email', 'admin@example.com'))" "$PROFILE_DATA")
+        P_ADMIN_USER=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_user', ''))" "$PROFILE_DATA")
+        P_ADMIN_EMAIL=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_email', ''))" "$PROFILE_DATA")
         P_ADMIN_PASS=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('admin_pass', ''))" "$PROFILE_DATA")
         P_PHP=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('php', '8.5'))" "$PROFILE_DATA")
         P_POOL_MODE=$(python3 -c "import json, sys; print(json.loads(sys.argv[1]).get('pool_mode', 'ondemand'))" "$PROFILE_DATA")
@@ -1502,7 +1524,37 @@ except Exception:
         P_PLUGINS=$(python3 -c "import json, sys; pl = json.loads(sys.argv[1]).get('plugins', []); print(' '.join(pl) if isinstance(pl, list) else '')" "$PROFILE_DATA")
 
         ADMIN_USER="${CLI_ADMIN_USER:-$P_ADMIN_USER}"
+        if [ -z "$ADMIN_USER" ]; then
+            RAND_ADMIN_SUFFIX=$(python3 -c "import secrets, string; pool = string.ascii_letters + string.digits + '_-'; print(''.join(secrets.choice(pool) for _ in range(6)))")
+            ADMIN_USER="admin_${RAND_ADMIN_SUFFIX}"
+        fi
+
         ADMIN_EMAIL="${CLI_ADMIN_EMAIL:-$P_ADMIN_EMAIL}"
+        if [ -z "$ADMIN_EMAIL" ]; then
+            if [ -n "${LEANSTACK_ROOT:-}" ]; then
+                ADMIN_EMAIL="admin@test.local"
+            elif [ -t 0 ]; then
+                while true; do
+                    read -r -p "? Enter WordPress Admin Email for ${DOMAIN}: " INPUT_EMAIL
+                    INPUT_EMAIL=$(echo "$INPUT_EMAIL" | tr -d '[:space:]')
+                    if [[ "$INPUT_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                        ADMIN_EMAIL="$INPUT_EMAIL"
+                        break
+                    else
+                        echo "  ✖ Invalid email address format. Please enter a valid email (e.g. admin@${DOMAIN}):" >&2
+                    fi
+                done
+            else
+                echo "ERROR: Admin email is required. Please specify --admin-email=<email> when running in non-interactive mode." >&2
+                exit 1
+            fi
+        else
+            if ! [[ "$ADMIN_EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                echo "ERROR: Invalid admin email format '$ADMIN_EMAIL'." >&2
+                exit 1
+            fi
+        fi
+
         ADMIN_PASS="${CLI_ADMIN_PASS:-$P_ADMIN_PASS}"
         PHP_VER="${CLI_PHP:-$P_PHP}"
         POOL_MODE="${CLI_POOL_MODE:-$P_POOL_MODE}"
@@ -1927,6 +1979,9 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
 
         trap - ERR
 
+        # Dispatch non-SMTP site credentials email to administrator
+        send_site_credentials_email "$DOMAIN" "$ADMIN_USER" "$ADMIN_PASS" "$ADMIN_EMAIL" "$DB_NAME" "$DB_USER" "$DB_PASS" "$TABLE_PREFIX" "$PHP_VER" "$PROFILE" "$USER_NAME" "$WEB_ROOT"
+
         echo ""
         echo "=========================================================="
         echo "🎉 WordPress Provisioned Successfully!"
@@ -1941,6 +1996,7 @@ VALUES ('$DOMAIN', '$USER_NAME', '$PHP_VER', 'dedicated', '$POOL_MODE', '$MEMORY
         echo "Tenant User:     ${USER_NAME}"
         echo "Admin User:      ${ADMIN_USER}"
         echo "Admin Pass:      ${ADMIN_PASS}"
+        echo "Admin Email:     ${ADMIN_EMAIL}"
         echo "DB Name:         ${DB_NAME}"
         echo "Table Prefix:    ${TABLE_PREFIX}"
         echo "=========================================================="

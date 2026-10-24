@@ -6,8 +6,8 @@
 
 default:
   description: "Standard high-density WordPress profile"
-  admin_user: "admin"
-  admin_email: "admin@example.com"
+  admin_user: ""
+  admin_email: ""
   php: "8.5"
   pool_mode: "ondemand"
   memory_limit: "256M"
@@ -20,8 +20,8 @@ default:
 
 agency_woocommerce:
   description: "High-throughput WooCommerce E-Commerce Profile"
-  admin_user: "su_admin"
-  admin_email: "orders@example.com"
+  admin_user: ""
+  admin_email: ""
   php: "8.5"
   pool_mode: "ondemand"
   memory_limit: "512M"
@@ -35,8 +35,8 @@ agency_woocommerce:
 
 high_traffic:
   description: "Heavy traffic publishing portal with aggressive microcaching"
-  admin_user: "editor"
-  admin_email: "editorial@example.com"
+  admin_user: ""
+  admin_email: ""
   php: "8.5"
   pool_mode: "ondemand"
   memory_limit: "384M"
@@ -49,8 +49,8 @@ high_traffic:
 
 headless_wp:
   description: "Decoupled headless WordPress serving GraphQL and REST APIs"
-  admin_user: "api_admin"
-  admin_email: "api@example.com"
+  admin_user: ""
+  admin_email: ""
   php: "8.5"
   pool_mode: "ondemand"
   memory_limit: "256M"

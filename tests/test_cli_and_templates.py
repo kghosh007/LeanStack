@@ -2073,6 +2073,92 @@ exit 0
             upgrade_code = f.read()
         self.assertIn('core/lib', upgrade_code)
 
+    def test_random_admin_username_and_profile_decoupling(self):
+        """Verify dynamic random admin username generation and default profile decoupling."""
+        import secrets, string, re
+        
+        # Verify default profile has blank/decoupled admin credentials
+        profiles_yaml_path = os.path.join(BASE_DIR, "core", "config", "profiles.yaml")
+        with open(profiles_yaml_path, "r") as f:
+            data = yaml.safe_load(f)
+        self.assertEqual(data["default"].get("admin_user", ""), "")
+        self.assertEqual(data["default"].get("admin_email", ""), "")
+
+        # Test generation of 6-character random admin username
+        usernames = set()
+        pool = string.ascii_letters + string.digits + "_-"
+        for _ in range(50):
+            suffix = "".join(secrets.choice(pool) for _ in range(6))
+            user = f"admin_{suffix}"
+            self.assertTrue(re.match(r"^admin_[a-zA-Z0-9_-]{6}$", user))
+            usernames.add(user)
+        # All 50 should be distinct
+        self.assertEqual(len(usernames), 50)
+
+    def test_interactive_and_noninteractive_profile_crud(self):
+        """Verify core/lib/profiles.py create, list, show, and delete operations."""
+        import tempfile
+        import shutil
+        sys.path.insert(0, os.path.join(BASE_DIR, "core", "lib"))
+        import profiles
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_profiles = os.path.join(tmp_dir, "profiles.yaml")
+            shutil.copy2(os.path.join(BASE_DIR, "core", "config", "profiles.yaml"), tmp_profiles)
+
+            # Test non-interactive profile:create
+            ret = profiles.create_profile(tmp_profiles, [
+                "vip_agency",
+                "--description=VIP Agency Client Profile",
+                "--php=8.4",
+                "--mem=512M",
+                "--pool-mode=dynamic",
+                "--cf",
+                "--theme=storefront",
+                "--non-interactive"
+            ])
+            self.assertEqual(ret, 0)
+
+            # Verify profile:show
+            data = profiles.load_profiles(tmp_profiles)
+            self.assertIn("vip_agency", data)
+            prof = data["vip_agency"]
+            self.assertEqual(prof["php"], "8.4")
+            self.assertEqual(prof["memory_limit"], "512M")
+            self.assertEqual(prof["pool_mode"], "dynamic")
+            self.assertTrue(prof["cf"])
+            self.assertEqual(prof["theme"], "storefront")
+            self.assertEqual(prof["admin_user"], "")
+
+            # Test duplicate profile creation fails
+            dup_ret = profiles.create_profile(tmp_profiles, ["vip_agency", "--non-interactive"])
+            self.assertEqual(dup_ret, 1)
+
+            # Test profile:delete
+            del_ret = profiles.delete_profile(tmp_profiles, "vip_agency")
+            self.assertEqual(del_ret, 0)
+            data_after = profiles.load_profiles(tmp_profiles)
+            self.assertNotIn("vip_agency", data_after)
+
+            # Test cannot delete default profile
+            del_def_ret = profiles.delete_profile(tmp_profiles, "default")
+            self.assertEqual(del_def_ret, 1)
+
+    def test_site_creation_admin_email_and_mail_dispatch_resilience(self):
+        """Verify lsctl wp:create admin email enforcement and send_site_credentials_email helper."""
+        lsctl_path = os.path.join(BASE_DIR, "core", "bin", "lsctl")
+        with open(lsctl_path, "r") as f:
+            code = f.read()
+
+        # Check random admin generator presence
+        self.assertIn("ADMIN_USER=\"admin_${RAND_ADMIN_SUFFIX}\"", code)
+        # Check non-interactive admin-email error
+        self.assertIn("ERROR: Admin email is required. Please specify --admin-email=<email>", code)
+        # Check send_site_credentials_email function
+        self.assertIn("send_site_credentials_email()", code)
+        self.assertIn("WORDPRESS ACCESS CREDENTIALS", code)
+        self.assertIn("send_site_credentials_email \"$DOMAIN\"", code)
+
 
 if __name__ == "__main__":
     unittest.main()

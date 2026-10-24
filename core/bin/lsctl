@@ -1604,7 +1604,7 @@ except Exception:
         fi
 
         RAND_PREFIX=$(openssl rand -hex 3)
-        TABLE_PREFIX="${RAND_PREFIX}_"
+        TABLE_PREFIX="wp_${RAND_PREFIX}_"
         RAND_SALT=$(openssl rand -hex 3)
         CACHE_KEY_SALT="${RAND_SALT}_"
 
